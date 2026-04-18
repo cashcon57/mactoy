@@ -1,0 +1,14 @@
+.DS_Store
+xcuserdata/
+*.xcuserstate
+build/
+DerivedData/
+*.xcworkspace/xcuserdata/
+.swiftpm/
+Package.resolved
+.build/
+*.dmg
+*.zip
+.env
+.env.*
+!.env.example
