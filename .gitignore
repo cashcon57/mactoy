@@ -5,7 +5,6 @@ build/
 DerivedData/
 *.xcworkspace/xcuserdata/
 .swiftpm/
-Package.resolved
 .build/
 *.dmg
 *.zip
