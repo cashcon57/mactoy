@@ -44,10 +44,43 @@ if [[ -d "$BUILD_DIR/Mactoy_Mactoy.bundle" ]]; then
     cp -R "$BUILD_DIR/Mactoy_Mactoy.bundle" "$APP/Contents/Resources/"
 fi
 
-# Ad-hoc sign if requested (so macOS doesn't quarantine as hard)
+# Signing:
+#   SIGN=nosign    : no codesign at all
+#   SIGN=sign      : ad-hoc sign (for local dev)
+#   SIGN=devid     : Developer ID Application + hardened runtime (release-ready)
+# The Developer ID identity is read from env var MACTOY_DEVID_IDENTITY or
+# defaults to the first Developer ID Application cert on the keychain.
 if [[ "$SIGN" == "sign" ]]; then
     codesign --force --deep --sign - "$APP/Contents/Resources/mactoyd"
     codesign --force --deep --sign - "$APP"
+elif [[ "$SIGN" == "devid" ]]; then
+    IDENTITY="${MACTOY_DEVID_IDENTITY:-}"
+    if [[ -z "$IDENTITY" ]]; then
+        IDENTITY="$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application:/ {print $2; exit}')"
+    fi
+    if [[ -z "$IDENTITY" ]]; then
+        echo "error: no Developer ID Application identity on keychain" >&2
+        exit 1
+    fi
+    echo "==> Signing with: $IDENTITY"
+
+    APP_ENT="$ROOT/app-support/Mactoy.entitlements"
+    HELPER_ENT="$ROOT/app-support/mactoyd.entitlements"
+
+    # Sign helper first (inside-out)
+    codesign --force --options runtime --timestamp \
+        --entitlements "$HELPER_ENT" \
+        --sign "$IDENTITY" \
+        "$APP/Contents/Resources/mactoyd"
+
+    # Sign the app itself
+    codesign --force --options runtime --timestamp \
+        --entitlements "$APP_ENT" \
+        --sign "$IDENTITY" \
+        "$APP"
+
+    # Verify
+    codesign --verify --deep --strict --verbose=2 "$APP"
 fi
 
 echo "==> Built $APP"

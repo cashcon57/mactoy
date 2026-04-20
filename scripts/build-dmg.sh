@@ -34,6 +34,18 @@ create-dmg \
     "$DMG" \
     "$APP"
 
+# Sign the DMG with the same Developer ID if requested
+if [[ "${2:-}" == "devid" ]]; then
+    IDENTITY="${MACTOY_DEVID_IDENTITY:-}"
+    if [[ -z "$IDENTITY" ]]; then
+        IDENTITY="$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application:/ {print $2; exit}')"
+    fi
+    if [[ -n "$IDENTITY" ]]; then
+        echo "==> Signing DMG with: $IDENTITY"
+        codesign --force --sign "$IDENTITY" --timestamp "$DMG"
+    fi
+fi
+
 echo "==> Built $DMG"
 du -sh "$DMG"
 shasum -a 256 "$DMG"
