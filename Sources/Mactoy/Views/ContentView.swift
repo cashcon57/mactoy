@@ -5,28 +5,17 @@ struct ContentView: View {
     @Environment(AppState.self) private var state
 
     var body: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
             DiskSidebar()
-                .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
-        } detail: {
-            DetailPane()
-        }
-        .toolbar(removing: .sidebarToggle)
-        .background(BackgroundGradient())
-    }
-}
+                .frame(width: 300)
+                .background(Color(nsColor: .windowBackgroundColor))
 
-private struct BackgroundGradient: View {
-    var body: some View {
-        LinearGradient(
-            colors: [
-                Color(nsColor: .windowBackgroundColor),
-                Color(nsColor: .underPageBackgroundColor)
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-        .ignoresSafeArea()
+            Divider()
+
+            DetailPane()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(minWidth: 880, minHeight: 600)
     }
 }
 
@@ -34,28 +23,29 @@ struct DetailPane: View {
     @Environment(AppState.self) private var state
 
     var body: some View {
-        @Bindable var state = state
         VStack(spacing: 0) {
             ModeTabs()
                 .padding(.horizontal, 20)
-                .padding(.top, 16)
+                .padding(.top, 20)
+                .padding(.bottom, 12)
 
-            Divider().padding(.horizontal, 20)
+            Divider()
 
-            Group {
-                switch state.mode {
-                case .installVentoy: InstallVentoyPanel()
-                case .flashImage:    FlashImagePanel()
-                case .manageDisk:    ManageDiskPanel()
+            ScrollView {
+                Group {
+                    switch state.mode {
+                    case .installVentoy: InstallVentoyPanel()
+                    case .flashImage:    FlashImagePanel()
+                    case .manageDisk:    ManageDiskPanel()
+                    }
                 }
+                .padding(20)
             }
-            .padding(20)
 
-            Spacer()
+            Divider()
 
             ActionBar()
-                .padding(.horizontal, 20)
-                .padding(.bottom, 16)
+                .padding(20)
         }
     }
 }

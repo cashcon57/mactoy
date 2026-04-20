@@ -8,12 +8,11 @@ struct MactoyApp: App {
         WindowGroup("Mactoy") {
             ContentView()
                 .environment(appState)
-                .frame(minWidth: 820, minHeight: 560)
+                .frame(minWidth: 880, minHeight: 600)
                 .task {
-                    await appState.startDiskEnumeration()
+                    appState.startDiskEnumeration()
                 }
         }
-        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
     }
 }
