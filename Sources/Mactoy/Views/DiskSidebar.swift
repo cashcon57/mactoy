@@ -48,41 +48,71 @@ private struct DiskCard: View {
 
     var body: some View {
         Button(action: onTap) {
-            HStack(spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "externaldrive.fill")
                     .font(.title2)
                     .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(disk.bsdName)
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(.primary)
-                    Text(sizeString)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(disk.displayName)
+                            .font(.body.bold())
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Text(disk.bsdName)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(Self.sizeString(disk.sizeInBytes))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    if !disk.volumes.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(disk.volumes, id: \.bsdName) { vol in
+                                HStack(spacing: 6) {
+                                    Image(systemName: "circle.fill")
+                                        .font(.system(size: 4))
+                                        .foregroundStyle(.secondary)
+                                    Text(vol.volumeName.isEmpty ? vol.bsdName : vol.volumeName)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                    Spacer(minLength: 0)
+                                    Text(Self.sizeString(vol.sizeInBytes))
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                        }
+                        .padding(.top, 2)
+                    }
                 }
-                Spacer()
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(Color.accentColor)
                 }
             }
             .padding(12)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.plain)
         .glassEffect(
             isSelected
             ? .regular.tint(.accentColor).interactive()
-            : .regular.interactive()
+            : .regular.interactive(),
+            in: .rect(cornerRadius: 14)
         )
     }
 
-    var sizeString: String {
-        let bytes = Double(disk.sizeInBytes)
-        let gb = bytes / 1_073_741_824
+    static func sizeString(_ bytes: UInt64) -> String {
+        let b = Double(bytes)
+        let gb = b / 1_073_741_824
         if gb >= 1 { return String(format: "%.1f GB", gb) }
-        let mb = bytes / 1_048_576
-        return String(format: "%.0f MB", mb)
+        let mb = b / 1_048_576
+        if mb >= 1 { return String(format: "%.0f MB", mb) }
+        return String(format: "%.0f KB", b / 1024)
     }
 }
 
@@ -102,6 +132,6 @@ private struct EmptyDisksHint: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity)
-        .glassEffect(.regular)
+        .glassEffect(.regular, in: .rect(cornerRadius: 14))
     }
 }

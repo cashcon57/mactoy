@@ -112,7 +112,11 @@ private struct PrimaryButton: View {
     }
 
     private func runAction() {
-        Task { @MainActor in await state.run() }
+        // Route through the confirmation sheet instead of starting the
+        // install immediately. Users asked for an explicit "are you
+        // sure" step showing drive name + used/total bytes before a
+        // destructive operation kicks off.
+        state.requestRun()
     }
 
     private var primaryLabel: String {

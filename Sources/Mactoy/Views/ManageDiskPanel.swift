@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import MactoyKit
 
 struct ManageDiskPanel: View {
@@ -13,7 +14,12 @@ struct ManageDiskPanel: View {
                 Text("Ventoy volume mounted at \(volumeURL.path)")
                     .foregroundStyle(.secondary)
 
+                // `id: volumeURL` forces ISOList to rebuild its state
+                // when the user switches between disks, instead of
+                // keeping stale items from the previously-selected
+                // drive.
                 ISOList(volumeURL: volumeURL)
+                    .id(volumeURL)
                     .frame(maxHeight: .infinity)
 
                 HStack {
@@ -42,12 +48,24 @@ struct ManageDiskPanel: View {
         }
     }
 
+    /// Find the `Ventoy` volume that actually lives on the selected
+    /// disk, not just any volume named `Ventoy` anywhere on the system.
+    /// Previously we matched by name alone, which would pick the wrong
+    /// drive if the user had two Ventoy sticks plugged in.
     private func ventoyVolumeURL(for disk: DiskTarget) -> URL? {
         let fm = FileManager.default
         guard let mounts = try? fm.contentsOfDirectory(atPath: "/Volumes") else { return nil }
-        for name in mounts {
-            if name == "Ventoy" {
-                return URL(fileURLWithPath: "/Volumes/\(name)")
+        for name in mounts where name == "Ventoy" || name.hasPrefix("Ventoy") {
+            let candidate = URL(fileURLWithPath: "/Volumes/\(name)")
+            if let info = try? Subprocess.run(
+                "/usr/sbin/diskutil", ["info", "-plist", candidate.path]
+            ),
+               info.status == 0,
+               let data = info.stdout.data(using: .utf8),
+               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+               let deviceIdentifier = plist["DeviceIdentifier"] as? String,
+               deviceIdentifier.hasPrefix(disk.bsdName + "s") {
+                return candidate
             }
         }
         return nil
@@ -60,9 +78,24 @@ struct ManageDiskPanel: View {
         if panel.runModal() == .OK {
             for src in panel.urls {
                 let dest = vol.appendingPathComponent(src.lastPathComponent)
-                try? FileManager.default.copyItem(at: src, to: dest)
+                do {
+                    try FileManager.default.copyItem(at: src, to: dest)
+                } catch {
+                    presentError(
+                        title: "Could not copy \(src.lastPathComponent)",
+                        message: error.localizedDescription
+                    )
+                }
             }
         }
+    }
+
+    private func presentError(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 }
 
@@ -71,26 +104,56 @@ private struct ISOList: View {
     @State private var items: [URL] = []
 
     var body: some View {
-        List(items, id: \.self) { url in
+        VStack(spacing: 0) {
             HStack {
-                Image(systemName: "opticaldisc")
-                Text(url.lastPathComponent)
-                    .font(.system(.body, design: .monospaced))
+                if items.isEmpty {
+                    Text("No ISOs on this drive yet — drop some onto the volume or use **Add ISO…** below.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("\(items.count) ISO\(items.count == 1 ? "" : "s") on this drive")
+                        .font(.callout.bold())
+                }
                 Spacer()
-                Text(sizeString(for: url))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button(role: .destructive) {
-                    try? FileManager.default.removeItem(at: url)
+                Button {
                     refresh()
                 } label: {
-                    Image(systemName: "trash")
+                    Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
+                .help("Rescan the Ventoy volume")
             }
+            .padding(.bottom, 6)
+
+            List(items, id: \.self) { url in
+                HStack {
+                    Image(systemName: "opticaldisc")
+                    Text(url.lastPathComponent)
+                        .font(.system(.body, design: .monospaced))
+                    Spacer()
+                    Text(sizeString(for: url))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button(role: .destructive) {
+                        do {
+                            try FileManager.default.removeItem(at: url)
+                        } catch {
+                            let alert = NSAlert()
+                            alert.messageText = "Could not delete \(url.lastPathComponent)"
+                            alert.informativeText = error.localizedDescription
+                            alert.alertStyle = .warning
+                            alert.runModal()
+                        }
+                        refresh()
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            .listStyle(.inset)
+            .onAppear(perform: refresh)
         }
-        .listStyle(.inset)
-        .onAppear(perform: refresh)
     }
 
     private func refresh() {

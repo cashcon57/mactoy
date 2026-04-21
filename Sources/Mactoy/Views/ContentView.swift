@@ -28,6 +28,9 @@ struct ContentView: View {
         .sheet(isPresented: $state.showFullDiskAccessSheet) {
             FullDiskAccessSheet()
         }
+        .sheet(item: $state.pendingEraseConfirmation) { info in
+            EraseConfirmationSheet(info: info)
+        }
     }
 }
 

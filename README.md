@@ -47,16 +47,17 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 
 ---
 
-## Status — v0.1.1 alpha
+## Status — v0.1.3 alpha
 
 - [x] GPT + boot-image math ported from the Python proof-of-concept (cross-validated: Swift and Python produce bit-identical layouts for the same disk).
 - [x] Ventoy install flow end-to-end (download → extract → partition → write → format).
 - [x] Raw image flashing with `.xz` and `.gz` decompression.
 - [x] Liquid Glass SwiftUI interface (macOS 26 Tahoe).
-- [x] Unit tests for partition layout, GPT header/entry/CRC, MBR, and plan validation.
-- [x] **Developer ID signed + Apple notarized.** DMG and app are signed with "Developer ID Application: Clayton Conway (MUQ3H79Y4N)" under the hardened runtime, notarized by Apple, and the notary ticket is stapled to the DMG. `spctl --assess` reports `accepted, source=Notarized Developer ID`.
-- [ ] **Not yet verified on real hardware by the author.** The code is a faithful port of a Python script that successfully flashed a Ventoy drive on the same machine this was built on; first-party hardware confirmation comes in v0.1.1.
-- [ ] SMAppService privileged helper (currently uses `osascript`-based admin prompt; migration to SMAppService is planned for v0.2).
+- [x] Unit tests for partition layout, GPT header/entry/CRC, MBR, plan validation, version-string allowlist.
+- [x] **Developer ID signed + Apple notarized.** DMG and app are signed under the hardened runtime, notarized by Apple, and the notary ticket is stapled to the DMG. `spctl --assess` reports `accepted, source=Notarized Developer ID`.
+- [x] **Verified on real hardware.** v0.1.3 was tested end-to-end on a 128 GB USB drive on macOS 26.2 — the resulting drive boots and runs Ventoy, and the `Ventoy` exFAT partition accepts ISO drops.
+- [x] **SMAppService privileged helper.** v0.1.3 replaced the old `osascript`-based admin prompt with an XPC-based `SMAppService` LaunchDaemon — one-time approval via the native macOS "Background Items Added" flow, no password prompt per install, and XPC peer-signature verification on every connection.
+- [ ] Full Disk Access (FDA) still has to be granted manually by the user; macOS deliberately does not allow apps to request FDA programmatically. The app deep-links straight to the Privacy & Security pane and walks you through it once.
 
 ## Installing
 
@@ -66,7 +67,7 @@ Grab `Mactoy-<version>.dmg` from the [Releases page](https://github.com/cashcon5
 
 ### Open it
 
-1. Open `Mactoy-0.1.1.dmg`.
+1. Open `Mactoy-0.1.3.dmg`.
 2. Drag `Mactoy.app` into `/Applications`.
 3. Launch from Launchpad or `/Applications`. Opens normally — no right-click dance needed. The DMG is Apple-notarized, so Gatekeeper sees it as a known-good Developer ID build.
 
@@ -97,19 +98,20 @@ Grab `Mactoy-<version>.dmg` from the [Releases page](https://github.com/cashcon5
 ## Architecture
 
 ```text
-┌─────────────────────────────┐   stdin: plan JSON   ┌─────────────────────────────┐
-│  Mactoy.app  (user, GUI)    │ ───────────────────► │  mactoyd  (helper, root)    │
-│  SwiftUI + Liquid Glass     │ ◄─────────────────── │  GPT writer, boot images,   │
-│  DiskArbitration, URLSession│   stdout: NDJSON     │  newfs_exfat, fsync         │
-└─────────────────────────────┘      progress        └─────────────────────────────┘
-         │                                                        ▲
-         │  osascript admin prompt                                │
-         └────────────────────────────────────────────────────────┘
+┌─────────────────────────────┐       XPC        ┌─────────────────────────────┐
+│  Mactoy.app  (user, GUI)    │ ───────────────► │  mactoyd  (launchd, root)   │
+│  SwiftUI + Liquid Glass     │ ◄─────────────── │  GPT writer, boot images,   │
+│  DiskArbitration, URLSession│  progress stream │  newfs_exfat, fsync         │
+└─────────────────────────────┘                  └─────────────────────────────┘
+         │                                                    ▲
+         │  SMAppService.daemon(plistName:).register()        │
+         │  + NSXPCConnection(machServiceName:, .privileged)  │
+         └────────────────────────────────────────────────────┘
 ```
 
-- **Mactoy** — SwiftUI app. Enumerates disks, downloads Ventoy from GitHub releases, drives the UI, launches `mactoyd` under admin privileges via `osascript` (one auth prompt per install).
-- **mactoyd** — tiny Swift CLI bundled inside `Mactoy.app/Contents/Resources/`. Reads a JSON `InstallPlan` from stdin, writes to `/dev/rdiskN`, reports NDJSON progress to stdout. Refuses to run unless EUID 0.
-- **MactoyKit** — Swift Package with all the install logic (GPT construction, Ventoy download + extract, driver protocol, raw image flasher). Linked by both the app and the helper.
+- **Mactoy** — SwiftUI app. Enumerates disks, downloads Ventoy from GitHub releases, drives the UI, opens an XPC connection to `mactoyd` for each install.
+- **mactoyd** — Swift CLI bundled at `Mactoy.app/Contents/MacOS/mactoyd`. Registered with `launchd` via `SMAppService` using the LaunchDaemon plist at `Mactoy.app/Contents/Library/LaunchDaemons/com.mactoy.mactoyd.plist`. Listens on the `com.mactoy.mactoyd` mach service. Verifies every connecting client's Developer ID + bundle identifier against a designated requirement before accepting an install plan. Exits after the XPC connection closes so launchd re-spawns a fresh process on the next install.
+- **MactoyKit** — Swift Package with all the install logic (GPT construction, Ventoy download + extract, driver protocol, raw image flasher, XPC protocol definitions). Linked by both the app and the helper.
 
 ### Why not the Mac App Store?
 
@@ -121,11 +123,14 @@ The [original proof-of-concept](https://gist.github.com/VladimirMakaev/93503ab7c
 
 ## Security model
 
-- The helper binary is only invoked via `osascript` admin prompt — one authentication per install run.
-- The helper refuses to run without root (`getuid() == 0`).
-- The helper validates the incoming plan: no `disk0`/`disk1`, only external or removable volumes, size sanity-checked.
-- The helper does not accept arbitrary shell commands. It reads a strongly-typed `InstallPlan` struct from stdin.
-- No network access from the helper. All downloads happen in the user-privilege app.
+- The helper is a proper `launchd` daemon installed via `SMAppService` — one-time user approval in **System Settings → General → Login Items & Extensions**, then no prompts on subsequent installs.
+- The helper verifies every connecting XPC client's Developer ID + bundle identifier against a designated requirement before accepting any install plan. A malicious local process cannot make Mactoy's daemon do disk writes even if that process runs as root.
+- The helper refuses to run without root (`getuid() == 0`) as a defensive second check.
+- The helper validates the incoming plan: whole-disk BSD names only (`^disk[0-9]+$`), never `disk0` / `disk1`, external or removable volumes only, size sanity-checked.
+- The helper re-probes the target disk on its own side — it does not trust the `isExternal` / `isRemovable` flags set by the app layer.
+- Ventoy tarballs are SHA-256-verified against the `sha256.txt` file published alongside each Ventoy release before the bytes are handed to the driver. Cache reuse re-verifies on every install.
+- The helper has a narrow entitlement set (`com.apple.security.network.client` only, to fetch the Ventoy tarball).
+- See [`SECURITY.md`](SECURITY.md) for the full threat model and the remaining known limitations.
 
 ## Building from source
 

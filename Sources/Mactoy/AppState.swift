@@ -32,6 +32,17 @@ enum InstallStatus {
     case failed(String)
 }
 
+/// Payload for the "you're about to wipe this drive" confirmation
+/// sheet. Captured when the user clicks Install / Flash so the dialog
+/// can describe the exact disk + usage at that moment.
+struct EraseConfirmation: Identifiable {
+    let id = UUID()
+    let mode: AppMode
+    let disk: DiskTarget
+    let usedBytes: UInt64?   // nil = couldn't measure (no mounted volumes)
+    let totalBytes: UInt64
+}
+
 @MainActor
 @Observable
 final class AppState {
@@ -58,6 +69,9 @@ final class AppState {
     var showHelperExplainer: Bool = false     // drives the pre-register sheet
     var isAwaitingHelperApproval: Bool = false
     var showFullDiskAccessSheet: Bool = false // drives the FDA remediation sheet
+
+    // erase confirmation
+    var pendingEraseConfirmation: EraseConfirmation?
 
     // run state
     var status: InstallStatus = .idle
@@ -237,6 +251,30 @@ final class AppState {
         }
         let sel = ventoyVersionInput.trimmingCharacters(in: .whitespaces)
         return sel // empty = latest
+    }
+
+    /// User clicked the primary action. Gather the "this many bytes of
+    /// data will be erased" summary and present the confirmation sheet.
+    /// The actual install kicks off only if they hit **Erase**.
+    func requestRun() {
+        guard canRun, let target = selectedDisk else { return }
+        guard mode != .manageDisk else { return }
+        pendingEraseConfirmation = EraseConfirmation(
+            mode: mode,
+            disk: target,
+            usedBytes: DiskInfo.estimatedUsedBytes(bsdName: target.bsdName),
+            totalBytes: target.sizeInBytes
+        )
+    }
+
+    func cancelRun() {
+        pendingEraseConfirmation = nil
+    }
+
+    func confirmRun() {
+        guard pendingEraseConfirmation != nil else { return }
+        pendingEraseConfirmation = nil
+        Task { @MainActor in await self.run() }
     }
 
     func run() async {

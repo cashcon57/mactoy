@@ -9,22 +9,62 @@ public enum DriverID: String, Codable, Sendable {
     case rawImage = "raw-image"
 }
 
+public struct DiskVolumeInfo: Codable, Sendable, Hashable {
+    public let bsdName: String  // e.g. "disk8s1"
+    public let volumeName: String  // e.g. "Ventoy" — nil on disk means unlabeled/unmounted
+    public let sizeInBytes: UInt64
+
+    public init(bsdName: String, volumeName: String, sizeInBytes: UInt64) {
+        self.bsdName = bsdName
+        self.volumeName = volumeName
+        self.sizeInBytes = sizeInBytes
+    }
+}
+
 public struct DiskTarget: Codable, Sendable {
     public let bsdName: String
     public let sizeInBytes: UInt64
     public let isExternal: Bool
     public let isRemovable: Bool
+    /// Human-readable name macOS shows in Finder (the `MediaName` key
+    /// from `diskutil info`). Falls back to the BSD name when the disk
+    /// has no descriptive label — typical for freshly-formatted sticks.
+    public let mediaName: String?
+    /// Volumes currently on this disk (partition + friendly label). Empty
+    /// for a completely unformatted disk.
+    public let volumes: [DiskVolumeInfo]
 
-    public init(bsdName: String, sizeInBytes: UInt64, isExternal: Bool, isRemovable: Bool) {
+    public init(
+        bsdName: String,
+        sizeInBytes: UInt64,
+        isExternal: Bool,
+        isRemovable: Bool,
+        mediaName: String? = nil,
+        volumes: [DiskVolumeInfo] = []
+    ) {
         self.bsdName = bsdName
         self.sizeInBytes = sizeInBytes
         self.isExternal = isExternal
         self.isRemovable = isRemovable
+        self.mediaName = mediaName
+        self.volumes = volumes
     }
 
     public var devicePath: String { "/dev/\(bsdName)" }
     public var rawDevicePath: String { "/dev/r\(bsdName)" }
     public var sectorCount: UInt64 { sizeInBytes / 512 }
+
+    /// Best display name for the sidebar / warning copy. Prefers the
+    /// disk's `MediaName`, then the first volume's label, then the BSD
+    /// name as a last resort. This is what turns "disk8" into
+    /// something like "SanDisk Ultra USB 3.0" in the UI.
+    public var displayName: String {
+        if let mediaName, !mediaName.isEmpty { return mediaName }
+        if let first = volumes.first(where: { !$0.volumeName.isEmpty }) {
+            return first.volumeName
+        }
+        return bsdName
+    }
 }
 
 public enum InstallSource: Codable, Sendable {

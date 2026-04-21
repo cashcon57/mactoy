@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.1.4] — 2026-04-21
+
+Applies the same disk-handling fixes that unblocked Install Ventoy in v0.1.3 to the other two tabs, and tightens Manage Disk so it binds to the selected drive instead of any volume named `Ventoy`.
+
+### Fixed
+
+- **Flash Image: release raw-disk fd before asking macOS to re-probe.** `RawImageDriver` now explicitly `close()`es the `DiskWriter` after `fsync` (same fix applied to `VentoyDriver` in v0.1.3) and calls `diskutil reloadDisk` + `mountDisk` so whatever filesystem lives on the flashed image is picked up by macOS automatically. Previously the flashed drive might not mount until the user unplugged and replugged it.
+- **Manage Disk: match the `Ventoy` volume to the selected disk.** Previously the tab would happily show the ISO list from *any* volume named `Ventoy` mounted on the system. If you had two Ventoy sticks plugged in, you might have been editing the wrong one. The panel now uses `diskutil info` to confirm the volume's `DeviceIdentifier` actually sits on the currently-selected BSD disk.
+- **Manage Disk: ISO list refreshes when you switch drives.** `.id(volumeURL)` now forces the embedded list to rebuild when the user picks a different disk, instead of keeping stale items from the previously-selected drive.
+- **Manage Disk: surface copy / delete errors.** The Add ISO and trash-button actions previously used `try?` and silently swallowed failures. Both now raise an `NSAlert` with the underlying error.
+
+### Added
+
+- **Manage Disk: Refresh button** and an ISO-count header (`N ISOs on this drive` / `No ISOs on this drive yet`).
+
+### Docs
+
+- README status section bumped to v0.1.3 alpha with the **"Verified on real hardware"** checkmark.
+- Architecture diagram + Security model rewritten for the XPC-based SMAppService daemon flow. Removes lingering `osascript` references.
+- Install step updated to reference `Mactoy-0.1.3.dmg`.
+
 ## [0.1.3] — 2026-04-21
 
 This is the first release that has been end-to-end verified on real hardware — Ventoy installs to a real USB stick, boots, and works. Every previous release had a disk-writing bug hiding behind the permission wall.

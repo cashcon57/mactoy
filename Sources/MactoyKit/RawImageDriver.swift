@@ -75,6 +75,20 @@ public struct RawImageDriver: InstallDriver {
         }
 
         try writer.fsync()
+        // Release the raw-disk fd so macOS can re-probe the newly
+        // written image. The kernel refuses to re-scan a disk that
+        // still has an open writer — same root-cause as the Ventoy
+        // driver's post-install format stall before v0.1.3.
+        writer.close()
+
+        progress.report(.init(phase: .formatting, message: "Asking macOS to re-read the partition table…"))
+        _ = try? Subprocess.run("/usr/sbin/diskutil", ["reloadDisk", "/dev/\(plan.target.bsdName)"])
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        // Attempt to mount whatever's on the flashed image. Silent on
+        // failure — some images (pure raw partitions, non-macOS
+        // filesystems) won't mount without extra drivers and that's OK.
+        _ = try? Subprocess.run("/usr/sbin/diskutil", ["mountDisk", "/dev/\(plan.target.bsdName)"])
+
         progress.report(.init(phase: .done, message: "Flashed \(src.lastPathComponent) to \(plan.target.devicePath)"))
     }
 }
