@@ -1,10 +1,20 @@
-# Mactoy
+<p align="center">
+  <img src="docs/assets/icon.png" alt="Mactoy icon" width="160" height="160" />
+</p>
 
-> Native macOS app for installing Ventoy on a USB drive — no Linux VM, no macFUSE, no booting a live CD just to flash a stick.
+<h1 align="center">Mactoy</h1>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![macOS 26+](https://img.shields.io/badge/macOS-26+-orange)](https://developer.apple.com/macos/)
-[![Swift 6.2](https://img.shields.io/badge/Swift-6.2-blue)](https://swift.org)
+<p align="center">
+  Native macOS app for installing Ventoy on a USB drive — no Linux VM, no macFUSE, no booting a live CD just to flash a stick.
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
+  <a href="https://developer.apple.com/macos/"><img alt="macOS 26+" src="https://img.shields.io/badge/macOS-26+-orange"></a>
+  <a href="https://swift.org"><img alt="Swift 6.2" src="https://img.shields.io/badge/Swift-6.2-blue"></a>
+</p>
+
+> **Heads up on the icon.** The header art above is a placeholder that still has some rough edges — mixed anti-aliasing on the bezel, slightly uneven inner text rendering at small sizes. A proper redesign is in progress and will land in a future release.
 
 ## Why Mactoy exists
 
@@ -32,7 +42,7 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 
 ---
 
-## Status — v0.1.0 alpha
+## Status — v0.1.1 alpha
 
 - [x] GPT + boot-image math ported from the Python proof-of-concept (cross-validated: Swift and Python produce bit-identical layouts for the same disk).
 - [x] Ventoy install flow end-to-end (download → extract → partition → write → format).
@@ -51,7 +61,7 @@ Grab `Mactoy-<version>.dmg` from the [Releases page](https://github.com/cashcon5
 
 ### Open it
 
-1. Open `Mactoy-0.1.0.dmg`.
+1. Open `Mactoy-0.1.1.dmg`.
 2. Drag `Mactoy.app` into `/Applications`.
 3. Launch from Launchpad or `/Applications`. Opens normally — no right-click dance needed. The DMG is Apple-notarized, so Gatekeeper sees it as a known-good Developer ID build.
 
@@ -134,7 +144,7 @@ swift test
 
 # Build the signed release bundle + DMG (requires a Developer ID cert in Keychain)
 ./scripts/build-app.sh release devid
-./scripts/build-dmg.sh 0.1.0 devid
+./scripts/build-dmg.sh 0.1.1 devid
 
 # Open
 open build/Mactoy.app
