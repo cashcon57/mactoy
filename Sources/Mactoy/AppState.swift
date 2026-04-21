@@ -45,6 +45,9 @@ final class AppState {
     // ventoy mode
     var ventoyVersionInput: String = ""    // empty = latest
     var latestVentoyVersion: String?
+    var availableVentoyVersions: [String] = []
+    var useCustomVentoyVersion: Bool = false
+    var customVentoyVersion: String = ""
 
     // flash mode
     var selectedImagePath: String?
@@ -81,7 +84,9 @@ final class AppState {
         }
 
         Task { [weak self] in
-            if let v = try? await VentoyDownloader().latestVersion() {
+            if let versions = try? await VentoyDownloader().recentVersions(limit: 20), !versions.isEmpty {
+                await self?.setAvailableVentoyVersions(versions)
+            } else if let v = try? await VentoyDownloader().latestVersion() {
                 await self?.setLatestVentoyVersion(v)
             }
         }
@@ -101,6 +106,29 @@ final class AppState {
         self.latestVentoyVersion = v
     }
 
+    private func setAvailableVentoyVersions(_ versions: [String]) {
+        self.availableVentoyVersions = versions
+        if self.latestVentoyVersion == nil {
+            self.latestVentoyVersion = versions.first
+        }
+        // If the persisted selection no longer exists in the list, snap to latest.
+        if !useCustomVentoyVersion,
+           !ventoyVersionInput.isEmpty,
+           !versions.contains(ventoyVersionInput) {
+            ventoyVersionInput = ""
+        }
+    }
+
+    /// Resolves the version the user effectively wants to install.
+    /// Empty string means "latest at install time".
+    var effectiveVentoyVersion: String {
+        if useCustomVentoyVersion {
+            return customVentoyVersion.trimmingCharacters(in: .whitespaces)
+        }
+        let sel = ventoyVersionInput.trimmingCharacters(in: .whitespaces)
+        return sel // empty = latest
+    }
+
     func run() async {
         guard canRun, let target = selectedDisk else { return }
 
@@ -112,7 +140,7 @@ final class AppState {
         switch mode {
         case .installVentoy:
             driver = .ventoy
-            let v = ventoyVersionInput.trimmingCharacters(in: .whitespaces)
+            let v = effectiveVentoyVersion
             source = .ventoyVersion(v.isEmpty ? (latestVentoyVersion ?? "") : v)
         case .flashImage:
             driver = .rawImage

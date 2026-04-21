@@ -28,18 +28,63 @@ struct InstallVentoyPanel: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(.regular)
+            .glassEffect(.regular, in: .rect(cornerRadius: 16))
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Version")
                     .font(.headline)
-                HStack {
-                    TextField("latest", text: $state.ventoyVersionInput)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 240)
-                    Text("leave blank for latest")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    Menu {
+                        Button("Latest") {
+                            state.useCustomVentoyVersion = false
+                            state.ventoyVersionInput = ""
+                        }
+                        if !state.availableVentoyVersions.isEmpty {
+                            Divider()
+                            ForEach(state.availableVentoyVersions, id: \.self) { v in
+                                Button("v\(v)") {
+                                    state.useCustomVentoyVersion = false
+                                    state.ventoyVersionInput = v
+                                }
+                            }
+                        }
+                        Divider()
+                        Button("Custom…") {
+                            state.useCustomVentoyVersion = true
+                            if state.customVentoyVersion.isEmpty {
+                                state.customVentoyVersion = state.ventoyVersionInput
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(versionMenuLabel)
+                                .fontWeight(.medium)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .frame(minWidth: 200, alignment: .leading)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 10))
+
+                    if state.useCustomVentoyVersion {
+                        TextField("e.g. 1.1.11", text: $state.customVentoyVersion)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 200)
+                        Text("enter a Ventoy release tag")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(state.availableVentoyVersions.isEmpty
+                             ? "resolves latest at install time"
+                             : "pick an older release or choose Custom…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer()
                 }
             }
@@ -53,6 +98,20 @@ struct InstallVentoyPanel: View {
 
             Spacer()
         }
+    }
+
+    private var versionMenuLabel: String {
+        if state.useCustomVentoyVersion {
+            return "Custom"
+        }
+        let sel = state.ventoyVersionInput.trimmingCharacters(in: .whitespaces)
+        if sel.isEmpty {
+            if let latest = state.latestVentoyVersion {
+                return "Latest (v\(latest))"
+            }
+            return "Latest"
+        }
+        return "v\(sel)"
     }
 }
 
@@ -75,7 +134,7 @@ struct DangerBanner: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity)
-        .glassEffect(.regular.tint(.red.opacity(0.25)))
+        .glassEffect(.regular.tint(.red.opacity(0.25)), in: .rect(cornerRadius: 14))
     }
 
     static func sizeString(_ bytes: UInt64) -> String {

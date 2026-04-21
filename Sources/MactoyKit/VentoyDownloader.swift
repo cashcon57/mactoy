@@ -27,6 +27,20 @@ public struct VentoyDownloader: Sendable {
         return rel.version
     }
 
+    /// List recent stable Ventoy releases, newest first. Excludes prereleases.
+    public func recentVersions(limit: Int = 20) async throws -> [String] {
+        var comps = URLComponents(string: "https://api.github.com/repos/ventoy/Ventoy/releases")!
+        comps.queryItems = [URLQueryItem(name: "per_page", value: "\(max(1, limit))")]
+        var req = URLRequest(url: comps.url!)
+        req.setValue("Mactoy", forHTTPHeaderField: "User-Agent")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            throw DriverError.network("GitHub releases API returned non-200")
+        }
+        let releases = try JSONDecoder().decode([VentoyRelease].self, from: data)
+        return releases.filter { !$0.prerelease }.map(\.version)
+    }
+
     /// Download the `ventoy-<version>-linux.tar.gz` tarball to `workDir`,
     /// emitting progress. Returns the URL of the downloaded file.
     public func downloadTarball(

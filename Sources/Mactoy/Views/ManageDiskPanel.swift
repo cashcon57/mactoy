@@ -35,7 +35,7 @@ struct ManageDiskPanel: View {
                 }
                 .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .glassEffect(.regular)
+                .glassEffect(.regular, in: .rect(cornerRadius: 16))
 
                 Spacer()
             }

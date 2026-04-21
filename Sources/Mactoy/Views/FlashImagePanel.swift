@@ -23,7 +23,20 @@ struct FlashImagePanel: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(.regular)
+            .glassEffect(.regular, in: .rect(cornerRadius: 16))
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text("This creates bootable media from a single image. If you want to boot multiple ISOs from one drive, use the **Install Ventoy** tab, then drop your ISOs onto the `Ventoy` volume.")
+                    .foregroundStyle(.red)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glassEffect(.regular.tint(.red.opacity(0.22)), in: .rect(cornerRadius: 14))
 
             DropZone(
                 path: $state.selectedImagePath,
@@ -73,7 +86,7 @@ private struct DropZone: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: 180)
-        .glassEffect(.regular.interactive())
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
             guard let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
