@@ -116,7 +116,7 @@ enum HelperInvoker {
                     cont.resume()
                 } else {
                     let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
-                    let err = String(data: errData ?? Data(), encoding: .utf8) ?? ""
+                    let err = String(data: errData, encoding: .utf8) ?? ""
                     if err.contains("User canceled") || err.contains("(-128)") {
                         cont.resume(throwing: HelperError.cancelledByUser)
                     } else {

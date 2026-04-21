@@ -12,6 +12,11 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
   <a href="https://developer.apple.com/macos/"><img alt="macOS 26+" src="https://img.shields.io/badge/macOS-26+-orange"></a>
   <a href="https://swift.org"><img alt="Swift 6.2" src="https://img.shields.io/badge/Swift-6.2-blue"></a>
+  <a href="https://ko-fi.com/cash508287"><img alt="Support on Ko-fi" src="https://img.shields.io/badge/Ko--fi-Support-F16061?logo=ko-fi&logoColor=white"></a>
+</p>
+
+<p align="center">
+  <a href="https://ko-fi.com/cash508287"><img alt="Support me on Ko-fi" src="https://storage.ko-fi.com/cdn/brandasset/v2/support_me_on_kofi_dark.png" height="44"></a>
 </p>
 
 > **Heads up on the icon.** The header art above is a placeholder that still has some rough edges — mixed anti-aliasing on the bezel, slightly uneven inner text rendering at small sizes. A proper redesign is in progress and will land in a future release.

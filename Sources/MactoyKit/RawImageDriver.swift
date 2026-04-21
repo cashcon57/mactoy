@@ -13,6 +13,15 @@ public struct RawImageDriver: InstallDriver {
             throw DriverError.unsupportedSource("RawImageDriver requires .localImage source")
         }
 
+        // Re-probe the disk inside the privileged helper so we never trust
+        // the `isExternal`/`isRemovable` booleans in the plan as authority
+        // on our own. A spoofed plan targeting an internal volume is
+        // rejected here, not just at the app layer.
+        let live = try DiskInfo.probe(bsdName: plan.target.bsdName)
+        guard live.isExternal || live.isRemovable else {
+            throw PlanValidationError.nonexternalDisk
+        }
+
         let src = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: src.path) else {
             throw DriverError.validation("Source image not found: \(path)")

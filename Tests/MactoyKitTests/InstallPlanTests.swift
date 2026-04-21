@@ -38,6 +38,30 @@ struct InstallPlanValidateTests {
         }
     }
 
+    @Test("rejects slice names and malformed bsdNames")
+    func rejectsNonWholeDisk() {
+        let bad = [
+            "disk2s1",       // a slice, not a whole disk
+            "disk",          // empty index
+            "diskfoo",       // non-numeric
+            "disk10s3",      // two-digit slice
+            "disk2 ",        // trailing space
+            "../disk2",      // path traversal
+            "disk2/../disk0" // path traversal
+        ]
+        for name in bad {
+            #expect(throws: PlanValidationError.self) {
+                try plan(target(bsd: name)).validate()
+            }
+        }
+    }
+
+    @Test("accepts multi-digit disk indices")
+    func acceptsTwoDigitIndex() throws {
+        try plan(target(bsd: "disk10")).validate()
+        try plan(target(bsd: "disk127")).validate()
+    }
+
     @Test("rejects non-external non-removable")
     func rejectsInternal() {
         #expect(throws: PlanValidationError.self) {

@@ -7,11 +7,22 @@ public struct SubprocessResult: Sendable {
 }
 
 public enum Subprocess {
+    /// Minimal environment we hand to child processes. Keeps the helper
+    /// from inheriting the user's PATH/LD_*/DYLD_* when running as root.
+    /// All call sites pass absolute executable paths so `PATH` only
+    /// matters for anything `diskutil`/`tar`/`newfs_exfat` fork internally.
+    private static let safeEnv: [String: String] = [
+        "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+        "LC_ALL": "C",
+        "LANG": "C",
+    ]
+
     @discardableResult
     public static func run(_ path: String, _ args: [String], timeout: TimeInterval? = nil) throws -> SubprocessResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = args
+        process.environment = safeEnv
         let outPipe = Pipe()
         let errPipe = Pipe()
         process.standardOutput = outPipe

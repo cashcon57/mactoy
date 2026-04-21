@@ -30,7 +30,10 @@ let package = Package(
         .executableTarget(
             name: "Mactoy",
             dependencies: ["MactoyKit"],
-            path: "Sources/Mactoy"
+            path: "Sources/Mactoy",
+            resources: [
+                .process("Resources")
+            ]
         ),
         .testTarget(
             name: "MactoyKitTests",
