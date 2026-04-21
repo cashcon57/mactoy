@@ -22,8 +22,7 @@ Both modes share one clean Liquid Glass UI.
 - [x] Raw image flashing with `.xz` and `.gz` decompression.
 - [x] Liquid Glass SwiftUI interface (macOS 26 Tahoe).
 - [x] Unit tests for partition layout, GPT header/entry/CRC, MBR, and plan validation.
-- [ ] **Not yet signed with Developer ID.** The initial v0.1.0 DMG is ad-hoc signed — Gatekeeper will warn. See [Installing](#installing) for the right-click workaround.
-- [ ] **Not yet notarized.** Notarization + Developer ID signing are planned for v0.2.
+- [x] **Developer ID signed + Apple notarized.** DMG and app are signed with "Developer ID Application: Clayton Conway (MUQ3H79Y4N)" under the hardened runtime, notarized by Apple, and the notary ticket is stapled to the DMG. `spctl --assess` reports `accepted, source=Notarized Developer ID`.
 - [ ] **Not yet verified on real hardware by the author.** The code is a faithful port of a Python script that successfully flashed a Ventoy drive on the same machine this was built on; first-party hardware confirmation comes in v0.1.1.
 - [ ] SMAppService privileged helper (currently uses `osascript`-based admin prompt; migration to SMAppService is planned for v0.2).
 
@@ -33,20 +32,11 @@ Both modes share one clean Liquid Glass UI.
 
 Grab `Mactoy-<version>.dmg` from the [Releases page](https://github.com/cashcon57/mactoy/releases/latest).
 
-### Open it (first time, unsigned build)
+### Open it
 
-Because v0.1.0 is ad-hoc signed, macOS Gatekeeper will block the first launch. Once:
-
-1. Drag `Mactoy.app` into `/Applications`.
-2. Control-click `Mactoy.app` in Applications → **Open** → **Open** again at the confirm dialog.
-3. Subsequent launches work normally.
-
-Alternative, from Terminal:
-
-```sh
-xattr -cr /Applications/Mactoy.app
-open /Applications/Mactoy.app
-```
+1. Open `Mactoy-0.1.0.dmg`.
+2. Drag `Mactoy.app` into `/Applications`.
+3. Launch from Launchpad or `/Applications`. Opens normally — no right-click dance needed. The DMG is Apple-notarized, so Gatekeeper sees it as a known-good Developer ID build.
 
 ## Using Mactoy
 
@@ -74,7 +64,7 @@ open /Applications/Mactoy.app
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────┐   stdin: plan JSON   ┌─────────────────────────────┐
 │  Mactoy.app  (user, GUI)    │ ───────────────────► │  mactoyd  (helper, root)    │
 │  SwiftUI + Liquid Glass     │ ◄─────────────────── │  GPT writer, boot images,   │
@@ -135,7 +125,7 @@ open build/Mactoy.app
 
 ### Repo layout
 
-```
+```text
 Mactoy/
 ├── Package.swift
 ├── Sources/
@@ -151,14 +141,14 @@ Mactoy/
 
 ## Roadmap
 
-| Version | Feature |
-|---------|---------|
-| v0.1    | Ventoy install + raw flash + ISO library (this release) |
-| v0.2    | Developer ID signing + notarization + SMAppService helper + Homebrew cask |
-| v0.3    | Specific Ventoy version picker, SHA256 verification UI |
-| v0.4    | Sparkle auto-update, Ventoy update-in-place (preserve data) |
-| v1.0    | Ventoy plugin (JSON) editor, persistence `.dat` creator, stability pass |
-| v1.1+   | Windows ISO driver, macOS installer USB driver |
+| Version | Feature                                                                    |
+| ------- | -------------------------------------------------------------------------- |
+| v0.1    | Ventoy install + raw flash + ISO library, signed + notarized (this release) |
+| v0.2    | SMAppService privileged helper, Homebrew cask, first-party hardware CI     |
+| v0.3    | Specific Ventoy version picker, SHA256 verification UI                     |
+| v0.4    | Sparkle auto-update, Ventoy update-in-place (preserve data)                |
+| v1.0    | Ventoy plugin (JSON) editor, persistence `.dat` creator, stability pass    |
+| v1.1+   | Windows ISO driver, macOS installer USB driver                             |
 
 ## License
 
