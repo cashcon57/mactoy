@@ -46,7 +46,7 @@ private struct StatusRow: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity)
-            .glassEffect(.regular)
+            .glassEffect(.regular, in: .rect(cornerRadius: 16))
         case .success(let m):
             HStack {
                 Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
@@ -54,17 +54,20 @@ private struct StatusRow: View {
                 Spacer()
             }
             .padding(12)
-            .glassEffect(.regular.tint(.green.opacity(0.25)))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glassEffect(.regular.tint(.green.opacity(0.25)), in: .rect(cornerRadius: 16))
         case .failed(let m):
-            HStack(alignment: .top) {
+            HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
                 Text(m)
                     .font(.callout)
                     .textSelection(.enabled)
-                Spacer()
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
             }
             .padding(12)
-            .glassEffect(.regular.tint(.red.opacity(0.25)))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glassEffect(.regular.tint(.red.opacity(0.25)), in: .rect(cornerRadius: 16))
         }
     }
 }

@@ -4,20 +4,53 @@ import Foundation
 /// privileged helper (mactoyd), since /dev/rdisk* requires root.
 public final class DiskWriter {
     public let rawPath: String
-    private let fd: Int32
+    private var fd: Int32
+    private var closed: Bool = false
 
     public init(rawPath: String, writable: Bool = true) throws {
         self.rawPath = rawPath
         let flags: Int32 = writable ? (O_RDWR) : O_RDONLY
         let fd = open(rawPath, flags)
         if fd < 0 {
-            throw DriverError.diskIO("open(\(rawPath)): \(String(cString: strerror(errno)))")
+            let code = errno
+            let base = String(cString: strerror(code))
+            // EPERM when opening /dev/rdisk* means macOS TCC blocked the
+            // raw-disk access even though we are root. The user has to
+            // grant Full Disk Access to Mactoy in System Settings so the
+            // privileged helper inherits the TCC grant.
+            if code == EPERM {
+                throw DriverError.diskIO(
+                    """
+                    open(\(rawPath)) blocked by macOS (Operation not permitted).
+
+                    Grant Full Disk Access to Mactoy:
+                      System Settings -> Privacy & Security -> Full Disk Access -> +
+                      Add /Applications/Mactoy.app (or wherever Mactoy is installed).
+
+                    Then quit and reopen Mactoy and try again.
+                    """
+                )
+            }
+            throw DriverError.diskIO("open(\(rawPath)): \(base)")
         }
         self.fd = fd
     }
 
     deinit {
-        close(fd)
+        if !closed {
+            Darwin.close(fd)
+        }
+    }
+
+    /// Explicitly release the raw-disk fd. Call this before asking
+    /// macOS to re-scan the partition table (e.g. `diskutil reloadDisk`)
+    /// — the kernel refuses to re-probe a disk that still has an open
+    /// writer, which stalls the post-install format step indefinitely.
+    public func close() {
+        guard !closed else { return }
+        closed = true
+        Darwin.close(fd)
+        fd = -1
     }
 
     public func seek(to offset: UInt64) throws {

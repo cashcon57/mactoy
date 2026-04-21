@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.1.3] — 2026-04-21
+
+This is the first release that has been end-to-end verified on real hardware — Ventoy installs to a real USB stick, boots, and works. Every previous release had a disk-writing bug hiding behind the permission wall.
+
+### Added
+
+- **First-time helper setup flow.** A pre-approval sheet explains what the background helper does before macOS shows its "Background Items Added" prompt, including why the helper is needed and that it does not actually run in the background. Ships with a "Remove the helper after this install" toggle (default on) so the system is left clean.
+- **Full Disk Access guidance sheet.** When macOS TCC blocks raw-disk access the app surfaces a numbered-step remediation sheet with a deep-link straight into the Privacy & Security pane. Apple does not allow apps to request FDA programmatically — this is the cleanest UX possible.
+- **Live download progress.** The Ventoy tarball download now reports incremental bytes-done / bytes-total instead of a single indeterminate sweep.
+- **Auto-recovery for BTM/launchd desync.** If the daemon's Login Items toggle is on but launchd has no live registration, the app transparently re-registers and retries the install instead of surfacing a generic "No such process" error.
+
+### Changed
+
+- **XPC-based helper architecture.** The privileged `mactoyd` helper now runs as a `SMAppService` LaunchDaemon and communicates with the app over XPC. Replaces the previous `osascript` admin-prompt invocation, which prompted for a password every install and required users to grant Full Disk Access by hand. Also closes security issue C2 — XPC peer authentication now verifies the connecting client's Developer ID + bundle identifier against the daemon's expected requirement before accepting any install plan.
+- **Daemon auto-exits after the XPC connection closes** so launchd re-spawns a fresh process on each install. Without this, a stale daemon from an earlier app launch could service new installs with out-of-date code.
+- **Ventoy boot-image layout paths updated for Ventoy 1.1.11+.** Upstream moved `ventoy.disk.img.xz` from `boot/` to `ventoy/`; the driver now searches both locations so older and newer Ventoy releases both work.
+
+### Fixed
+
+- **Post-install format step no longer races macOS's partition-table re-scan.** The previous flow unmounted the disk and then immediately ran `newfs_exfat /dev/diskNs1`, which failed on most disks because macOS hadn't yet noticed the new partitions. The driver now calls `diskutil reloadDisk` and polls the `/dev` tree (up to 90 s, retrying every 10 s) before attempting the format.
+- **`DiskWriter` releases its raw-disk fd before the re-scan.** Previously the Swift class held `/dev/rdisk*` open until its `deinit`, which happens at the end of `execute()` — long after we needed macOS to re-probe the partition table. The kernel refuses to re-scan a disk that still has an open writer, so the wait loop was polling a disk its own process was preventing from updating. Now we explicitly `close()` after `fsync` and before asking `diskutil` to reload.
+- **UI no longer shows "Failed" + progress bar + "Working…" button simultaneously.** A terminal `.failed` progress update arriving after the XPC reply's `status = .failed` used to overwrite the failure state with `.running(phase: .failed)`. Terminal phases (`.failed`, `.done`) are now ignored by the per-update handler — the XPC reply decides the final state.
+- **Status-row / error bubbles no longer render as capsules.** `.glassEffect(.regular, in: .rect(cornerRadius: 16))` replaces the default capsule shape (matching the fix applied to the info panels in v0.1.1).
+- **Ventoy version strings pulled from the GitHub API are re-validated** against the same allowlist applied to user-supplied versions. Prevents a malformed upstream tag from being interpolated into a download URL unchecked.
+
+### Known issues (carried over from v0.1.2)
+
+- C2 (unauthenticated root helper) is closed by the XPC peer-check above. **C1** (hash-pin against a bundled-in-binary table) is still unresolved — the SHA-256 verification added in v0.1.2 defends against transport tampering but not against a compromised Ventoy repo. v0.2 target.
+- GitHub Releases downloads of the Ventoy tarball can be slow (~30 s for 20 MB) on some network paths. Not a Mactoy bug, but the live progress bar now makes this visible instead of feeling like a hang.
+
 ## [0.1.2] — 2026-04-20
 
 ### Added

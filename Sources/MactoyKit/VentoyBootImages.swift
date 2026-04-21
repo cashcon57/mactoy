@@ -14,22 +14,27 @@ public struct VentoyBootImages: Sendable {
         self.diskImg = diskImg
     }
 
-    /// Given a path to a directory containing `ventoy/boot/*`, load and
-    /// decompress the three boot images.
+    /// Given a path to a directory containing an extracted Ventoy release,
+    /// load and decompress the three boot images. Ventoy's release layout
+    /// has shifted over time — `ventoy.disk.img.xz` used to live at
+    /// `boot/ventoy.disk.img.xz` and moved to `ventoy/ventoy.disk.img.xz`
+    /// in a recent release. We search both so new and old versions work.
     public static func load(fromVentoyDir ventoyDir: URL) throws -> VentoyBootImages {
-        let bootPath = ventoyDir.appending(path: "boot/boot.img")
-        let corePath = ventoyDir.appending(path: "boot/core.img.xz")
-        let diskPath = ventoyDir.appending(path: "boot/ventoy.disk.img.xz")
-
-        guard FileManager.default.fileExists(atPath: bootPath.path) else {
-            throw DriverError.corruptPayload("missing boot.img at \(bootPath.path)")
-        }
-        guard FileManager.default.fileExists(atPath: corePath.path) else {
-            throw DriverError.corruptPayload("missing core.img.xz at \(corePath.path)")
-        }
-        guard FileManager.default.fileExists(atPath: diskPath.path) else {
-            throw DriverError.corruptPayload("missing ventoy.disk.img.xz at \(diskPath.path)")
-        }
+        let bootPath = try firstExisting(
+            in: ventoyDir,
+            candidates: ["boot/boot.img"],
+            displayName: "boot.img"
+        )
+        let corePath = try firstExisting(
+            in: ventoyDir,
+            candidates: ["boot/core.img.xz", "ventoy/core.img.xz"],
+            displayName: "core.img.xz"
+        )
+        let diskPath = try firstExisting(
+            in: ventoyDir,
+            candidates: ["ventoy/ventoy.disk.img.xz", "boot/ventoy.disk.img.xz"],
+            displayName: "ventoy.disk.img.xz"
+        )
 
         let bootImg = try Data(contentsOf: bootPath)
         let coreXZ = try Data(contentsOf: corePath)
@@ -39,5 +44,22 @@ public struct VentoyBootImages: Sendable {
         let diskImg = try XZArchive.unarchive(archive: diskXZ)
 
         return VentoyBootImages(bootImg: bootImg, coreImg: coreImg, diskImg: diskImg)
+    }
+
+    private static func firstExisting(
+        in dir: URL,
+        candidates: [String],
+        displayName: String
+    ) throws -> URL {
+        for rel in candidates {
+            let url = dir.appending(path: rel)
+            if FileManager.default.fileExists(atPath: url.path) {
+                return url
+            }
+        }
+        let tried = candidates.map { "  - \(dir.appending(path: $0).path)" }.joined(separator: "\n")
+        throw DriverError.corruptPayload(
+            "missing \(displayName); looked in:\n\(tried)"
+        )
     }
 }

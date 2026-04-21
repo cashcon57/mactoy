@@ -5,6 +5,8 @@ struct ContentView: View {
     @Environment(AppState.self) private var state
 
     var body: some View {
+        @Bindable var state = state
+
         HStack(spacing: 0) {
             DiskSidebar()
                 .frame(width: 300)
@@ -16,6 +18,16 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 880, minHeight: 600)
+        .task { state.refreshHelperStatus() }
+        .sheet(isPresented: $state.showHelperExplainer) {
+            HelperExplainerSheet()
+        }
+        .sheet(isPresented: $state.isAwaitingHelperApproval) {
+            HelperAwaitingApprovalSheet()
+        }
+        .sheet(isPresented: $state.showFullDiskAccessSheet) {
+            FullDiskAccessSheet()
+        }
     }
 }
 

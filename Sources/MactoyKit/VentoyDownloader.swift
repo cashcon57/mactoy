@@ -96,13 +96,15 @@ public struct VentoyDownloader: Sendable {
 
         progress.report(.init(phase: .downloading, message: "Downloading Ventoy \(version)..."))
 
-        var req = URLRequest(url: url)
-        req.setValue("Mactoy", forHTTPHeaderField: "User-Agent")
-
-        let (tmp, resp) = try await URLSession.shared.download(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            throw DriverError.network("Download failed: HTTP \((resp as? HTTPURLResponse)?.statusCode ?? -1)")
-        }
+        // Delegate-driven download so we can emit byte-by-byte progress
+        // to the UI. `URLSession.shared.download(for:)` gives us no
+        // progress visibility — the whole transfer looks like a single
+        // silent pause to the user.
+        let tmp = try await downloadWithProgress(
+            url: url,
+            displayName: name,
+            progress: progress
+        )
 
         if FileManager.default.fileExists(atPath: dest.path) {
             try FileManager.default.removeItem(at: dest)
@@ -153,6 +155,35 @@ public struct VentoyDownloader: Sendable {
         throw DriverError.validation("sha256.txt missing entry for \(filename)")
     }
 
+    /// Download a file and emit per-chunk progress updates so the UI's
+    /// progress bar actually moves. `URLSessionDownloadDelegate` gives us
+    /// `didWriteData` callbacks with `totalBytesWritten` /
+    /// `totalBytesExpectedToWrite`, which map cleanly onto
+    /// `ProgressUpdate.bytesDone` / `bytesTotal`.
+    private func downloadWithProgress(
+        url: URL,
+        displayName: String,
+        progress: ProgressSink
+    ) async throws -> URL {
+        var req = URLRequest(url: url)
+        req.setValue("Mactoy", forHTTPHeaderField: "User-Agent")
+
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<URL, Error>) in
+            let delegate = DownloadProgressDelegate(
+                displayName: displayName,
+                progress: progress,
+                completion: { cont.resume(with: $0) }
+            )
+            let session = URLSession(
+                configuration: .default,
+                delegate: delegate,
+                delegateQueue: nil
+            )
+            let task = session.downloadTask(with: req)
+            task.resume()
+        }
+    }
+
     private func hash(of file: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
@@ -191,5 +222,103 @@ public struct VentoyDownloader: Sendable {
             }
         }
         throw DriverError.corruptPayload("Could not find extracted ventoy-* directory in \(workDir.path)")
+    }
+}
+
+/// URLSession delegate that forwards download progress to a
+/// `ProgressSink` and resolves the continuation with the final
+/// temp-file URL on success (or the error on failure).
+///
+/// Declared `@unchecked Sendable` because URLSession delegate callbacks
+/// happen on URLSession's delegate queue, which serializes access to
+/// stored state. We only mutate inside the callbacks.
+private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let displayName: String
+    private let progress: ProgressSink
+    private let completion: (Result<URL, Error>) -> Void
+    private var lastReported: Date = .distantPast
+    private var finalLocation: URL?
+
+    init(
+        displayName: String,
+        progress: ProgressSink,
+        completion: @escaping (Result<URL, Error>) -> Void
+    ) {
+        self.displayName = displayName
+        self.progress = progress
+        self.completion = completion
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        // Throttle to ~8 Hz so we don't flood the NDJSON stream.
+        let now = Date()
+        if now.timeIntervalSince(lastReported) < 0.12 && totalBytesWritten < totalBytesExpectedToWrite {
+            return
+        }
+        lastReported = now
+
+        let done = UInt64(max(0, totalBytesWritten))
+        let total: UInt64? = totalBytesExpectedToWrite > 0
+            ? UInt64(totalBytesExpectedToWrite)
+            : nil
+        let mb = Double(done) / 1_048_576
+        let message: String
+        if let total {
+            let totalMB = Double(total) / 1_048_576
+            message = String(format: "Downloading %@ (%.1f / %.1f MB)", displayName, mb, totalMB)
+        } else {
+            message = String(format: "Downloading %@ (%.1f MB)", displayName, mb)
+        }
+        progress.report(.init(
+            phase: .downloading,
+            message: message,
+            bytesDone: done,
+            bytesTotal: total
+        ))
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        // Move out of the ephemeral delegate-owned temp into a path we
+        // control, since the system deletes `location` as soon as this
+        // callback returns.
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mactoy-dl-\(UUID().uuidString.prefix(8))")
+        do {
+            try FileManager.default.moveItem(at: location, to: tmp)
+            finalLocation = tmp
+        } catch {
+            completion(.failure(error))
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        defer { session.finishTasksAndInvalidate() }
+        if let error {
+            completion(.failure(error))
+            return
+        }
+        if let resp = task.response as? HTTPURLResponse, resp.statusCode != 200 {
+            completion(.failure(DriverError.network("Download failed: HTTP \(resp.statusCode)")))
+            return
+        }
+        if let url = finalLocation {
+            completion(.success(url))
+        } else {
+            completion(.failure(DriverError.network("Download finished but no file was produced")))
+        }
     }
 }
