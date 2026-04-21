@@ -11,3 +11,5 @@ DerivedData/
 .env
 .env.*
 !.env.example
+app-support/AppIcon.iconset/
+Mactoy-transparent.png
