@@ -67,27 +67,69 @@ Grab `Mactoy-<version>.dmg` from the [Releases page](https://github.com/cashcon5
 
 ### Open it
 
-1. Open `Mactoy-0.1.3.dmg`.
+1. Open `Mactoy-0.1.4.dmg`.
 2. Drag `Mactoy.app` into `/Applications`.
 3. Launch from Launchpad or `/Applications`. Opens normally — no right-click dance needed. The DMG is Apple-notarized, so Gatekeeper sees it as a known-good Developer ID build.
+
+## Permissions
+
+Mactoy asks for **two** one-time system permissions the first time you click Install Ventoy or Flash Image. Both are required by macOS to write raw bytes to an external disk — not Mactoy being paranoid. Neither has to be granted again on future runs.
+
+### 1. Background Items (Login Items & Extensions)
+
+**What you'll see:** a native macOS notification, "Background Items Added — *Mactoy added an item that can run in the background.*" Clicking it opens **System Settings → General → Login Items & Extensions**, and Mactoy walks you through flipping its toggle on under **Allow in the Background**.
+
+**Why Mactoy needs it:** direct writes to `/dev/rdisk*` require root. Apple removed most paths to elevation on modern macOS — the supported one is to register a privileged helper binary (`mactoyd`) with `launchd` via `SMAppService`. When the toggle is on, Mactoy can start the helper on demand without asking for your password every install.
+
+**What "Background" does NOT mean here:** the helper is **not** running when Mactoy is closed, and it is **not** running at login. The toggle label is macOS UI — functionally, `mactoyd` is an on-demand XPC service that launches only when Mactoy opens a connection to it and exits as soon as the connection closes. `ps -ax | grep mactoyd` between installs shows nothing.
+
+**Toggle it off any time:** the helper entry stays in Login Items until you remove it. Mactoy also offers an **"Uninstall the helper after this install"** checkbox on the first-time approval sheet (checked by default) that unregisters the daemon automatically once a run finishes, so the system is left clean by default.
+
+### 2. Full Disk Access (Privacy & Security)
+
+**What you'll see:** the first time Mactoy tries to open `/dev/rdisk<N>` the call returns *Operation not permitted*. Mactoy catches this and surfaces a **Full Disk Access needed** sheet with a one-click deep-link into **System Settings → Privacy & Security → Full Disk Access** and a "Reveal Mactoy in Finder" button so you can drag the right bundle into the list.
+
+**Why Mactoy needs it:** macOS's TCC subsystem protects raw-disk access separately from the helper running as root. Even a `launchd`-spawned root daemon is blocked from `/dev/rdisk*` unless the responsible app has the user-granted Full Disk Access entitlement. TCC propagates the grant from `Mactoy.app` → `mactoyd` via the `AssociatedBundleIdentifiers` key in the LaunchDaemon plist, so you grant it **once to the app** and the daemon inherits.
+
+**Why Mactoy can't ask for it automatically:** Apple deliberately does not allow apps to request Full Disk Access programmatically. There is no prompt API. Every USB-flashing tool on macOS (balenaEtcher, Raspberry Pi Imager, Ventoy itself when they ship a Mac build) has the same hand-guided step. The best a third-party app can do is deep-link to the right pane — which Mactoy does.
+
+**What FDA does NOT let Mactoy do:** read any other files on your system. Mactoy's helper only accesses raw block devices it's been handed as part of an install plan, and refuses any plan that targets `disk0`/`disk1` or an internal volume. The grant is required because TCC's FDA toggle is the only category that covers raw-disk writes.
+
+### Why two separate prompts?
+
+They cover different things:
+
+- **Login Items** is about whether Mactoy is allowed to **spawn the root helper** in the first place.
+- **Full Disk Access** is about whether that root helper is allowed to **touch raw block devices** once spawned.
+
+Either one alone isn't enough. Once both are granted, installs run without any further prompts — no passwords, no dialogs, just a progress bar.
+
+### Why not…?
+
+- **An admin password prompt per install?** That's what v0.1.2 did (via `osascript`). It required Full Disk Access anyway *and* asked for your password every single time. The SMAppService flow replaces that with a one-time toggle.
+- **A sandbox-friendly system extension?** System extensions require an Apple-approved `com.apple.developer.driverkit.*` entitlement that isn't available to anyone outside a small whitelist. Not an option for a third-party tool.
+- **Just using `diskutil`?** Apple's `diskutil` is signed with `com.apple.rootless.storage.*` entitlements that third-party apps can't replicate. It works without prompts because it's Apple code.
+
+---
 
 ## Using Mactoy
 
 ### Install Ventoy on a USB drive
 
-1. Plug in a USB drive. It appears in the sidebar.
+1. Plug in a USB drive. It appears in the sidebar with its friendly name and volume list.
 2. Click the disk card to select it.
 3. Stay on the **Install Ventoy** tab. The **Version** dropdown defaults to "Latest"; pick a specific release, or choose **Custom…** to type a tag yourself. Click **Install Ventoy**.
-4. Authenticate when macOS asks for admin rights (this is needed to write raw bytes to the disk; see [Security](#security-model)).
-5. Wait for the progress bar. When done, the new `Ventoy` volume mounts on your Desktop.
-6. Drag any `.iso`, `.img`, or `.wim` onto the `Ventoy` volume. Boot the USB on any machine and Ventoy will list the images.
+4. If this is your first run, follow the [Permissions](#permissions) flow once. You won't see either prompt again.
+5. Confirm the erase in the **"Erase \<drive name\>?"** sheet. It lists the drive's total size, a best-effort estimate of how much data is currently on it, and the volume labels about to be wiped.
+6. Wait for the progress bar. When done, the new `Ventoy` volume mounts on your Desktop.
+7. Drag any `.iso`, `.img`, or `.wim` onto the `Ventoy` volume. Boot the USB on any machine and Ventoy will list the images.
 
 ### Flash a raw image
 
 1. Switch to the **Flash Image** tab.
 2. Drag an ISO / IMG onto the drop zone (or click to browse). `.xz` and `.gz` compressed images are auto-decompressed.
 3. Select target disk in sidebar.
-4. Click **Flash Image**, authenticate, wait.
+4. Click **Flash Image**, confirm the erase prompt, wait. (Same one-time [permissions](#permissions) flow as Install Ventoy — if you've already run an install the prompts won't reappear.)
 
 ### Manage ISOs on an existing Ventoy drive
 
