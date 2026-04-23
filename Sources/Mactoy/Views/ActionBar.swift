@@ -2,7 +2,7 @@ import SwiftUI
 import MactoyKit
 
 struct ActionBar: View {
-    @Environment(AppState.self) private var state
+    @EnvironmentObject private var state: AppState
 
     var body: some View {
         VStack(spacing: 10) {
@@ -17,7 +17,7 @@ struct ActionBar: View {
 }
 
 private struct StatusRow: View {
-    @Environment(AppState.self) private var state
+    @EnvironmentObject private var state: AppState
 
     var body: some View {
         switch state.status {
@@ -46,7 +46,7 @@ private struct StatusRow: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity)
-            .glassEffect(.regular, in: .rect(cornerRadius: 16))
+            .mactoyGlass(cornerRadius: 16)
         case .success(let m):
             HStack {
                 Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
@@ -55,7 +55,7 @@ private struct StatusRow: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(.regular.tint(.green.opacity(0.25)), in: .rect(cornerRadius: 16))
+            .mactoyGlass(cornerRadius: 16, tint: .green.opacity(0.25))
         case .failed(let m):
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
@@ -67,13 +67,13 @@ private struct StatusRow: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(.regular.tint(.red.opacity(0.25)), in: .rect(cornerRadius: 16))
+            .mactoyGlass(cornerRadius: 16, tint: .red.opacity(0.25))
         }
     }
 }
 
 private struct PrimaryButton: View {
-    @Environment(AppState.self) private var state
+    @EnvironmentObject private var state: AppState
 
     var body: some View {
         switch state.status {
@@ -85,10 +85,9 @@ private struct PrimaryButton: View {
                     .padding(.vertical, 10)
             }
             .buttonStyle(.plain)
-            .glassEffect(
-                state.canRun
-                ? .regular.tint(tint).interactive()
-                : .regular
+            .mactoyGlass(
+                tint: state.canRun ? tint : nil,
+                interactive: state.canRun
             )
             .disabled(!state.canRun)
         case .preparing, .running:
@@ -98,7 +97,7 @@ private struct PrimaryButton: View {
                     .padding(.vertical, 10)
             }
             .buttonStyle(.plain)
-            .glassEffect(.regular)
+            .mactoyGlass()
             .disabled(true)
         case .success, .failed:
             Button(action: { Task { @MainActor in state.reset() } }) {
@@ -107,7 +106,7 @@ private struct PrimaryButton: View {
                     .padding(.vertical, 10)
             }
             .buttonStyle(.plain)
-            .glassEffect(.regular.interactive())
+            .mactoyGlass(interactive: true)
         }
     }
 

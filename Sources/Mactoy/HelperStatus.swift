@@ -1,6 +1,24 @@
 import Foundation
 import ServiceManagement
 
+/// Version-dependent names for System Settings panes + concepts we
+/// reference in user-facing copy. macOS 15 Sequoia renamed the
+/// "Login Items" pane to "Login Items & Extensions"; writing one
+/// hardcoded string leaves Ventura and Sonoma users hunting for a
+/// pane that doesn't exist under that name on their system.
+enum SystemSettingsStrings {
+    /// The name of the pane that lists registered daemons / login
+    /// items. "Login Items" on 13/14, "Login Items & Extensions" on
+    /// 15+.
+    static var loginItemsPane: String {
+        if #available(macOS 15.0, *) {
+            return "Login Items & Extensions"
+        } else {
+            return "Login Items"
+        }
+    }
+}
+
 /// Lifecycle state of the `mactoyd` LaunchDaemon as far as Mactoy cares.
 /// Drives the pre-install explainer sheet and the Install button's copy.
 enum HelperStatus: Equatable {

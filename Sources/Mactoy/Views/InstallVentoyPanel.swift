@@ -2,11 +2,9 @@ import SwiftUI
 import MactoyKit
 
 struct InstallVentoyPanel: View {
-    @Environment(AppState.self) private var state
+    @EnvironmentObject private var state: AppState
 
     var body: some View {
-        @Bindable var state = state
-
         VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Install Ventoy")
@@ -28,7 +26,7 @@ struct InstallVentoyPanel: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(.regular, in: .rect(cornerRadius: 16))
+            .mactoyGlass(cornerRadius: 16)
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Version")
@@ -69,7 +67,7 @@ struct InstallVentoyPanel: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 10))
+                    .mactoyGlass(cornerRadius: 10, interactive: true)
 
                     if state.useCustomVentoyVersion {
                         TextField("e.g. 1.1.11", text: $state.customVentoyVersion)
@@ -134,7 +132,7 @@ struct DangerBanner: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity)
-        .glassEffect(.regular.tint(.red.opacity(0.25)), in: .rect(cornerRadius: 14))
+        .mactoyGlass(cornerRadius: 14, tint: .red.opacity(0.25))
     }
 
     static func sizeString(_ bytes: UInt64) -> String {

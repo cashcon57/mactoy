@@ -7,7 +7,7 @@ import AppKit
 /// because it unlocks every file on the system. The best we can do is
 /// auto-open the exact settings pane and explain what to drop in.
 struct FullDiskAccessSheet: View {
-    @Environment(AppState.self) private var state
+    @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
 
     private static let fdaSettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!
@@ -35,7 +35,7 @@ struct FullDiskAccessSheet: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(.regular, in: .rect(cornerRadius: 14))
+            .mactoyGlass(cornerRadius: 14)
 
             Text("Why this is one-time: the grant stays in place after the first install, so you won't see this sheet again.")
                 .font(.caption)

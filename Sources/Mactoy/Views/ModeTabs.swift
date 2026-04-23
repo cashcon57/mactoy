@@ -2,10 +2,10 @@ import SwiftUI
 import MactoyKit
 
 struct ModeTabs: View {
-    @Environment(AppState.self) private var state
+    @EnvironmentObject private var state: AppState
 
     var body: some View {
-        GlassEffectContainer(spacing: 8) {
+        MactoyGlassContainer(spacing: 8) {
             HStack(spacing: 8) {
                 ForEach(AppMode.allCases, id: \.self) { mode in
                     ModeChip(
@@ -36,10 +36,9 @@ private struct ModeChip: View {
             .padding(.vertical, 8)
         }
         .buttonStyle(.plain)
-        .glassEffect(
-            isActive
-            ? .regular.tint(.accentColor).interactive()
-            : .regular.interactive()
+        .mactoyGlass(
+            tint: isActive ? .accentColor : nil,
+            interactive: true
         )
     }
 }

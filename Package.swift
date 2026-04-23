@@ -4,7 +4,11 @@ import PackageDescription
 let package = Package(
     name: "Mactoy",
     platforms: [
-        .macOS("26.0")
+        // 13.5 floor, not 13.0. Pre-13.5 Ventura shipped multiple
+        // SMAppService bugs (register() returning success while launchd
+        // never loaded; BTM/launchd desync; "Operation not permitted"
+        // on re-register loops). Fixes landed in 13.5 / 14.2.
+        .macOS("13.5")
     ],
     products: [
         .library(name: "MactoyKit", targets: ["MactoyKit"]),

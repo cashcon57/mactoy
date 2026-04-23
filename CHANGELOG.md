@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.2.0] — 2026-04-23
+
+Mactoy drops down to **macOS 13.5 Ventura** and ships as a **universal (arm64 + x86_64) binary**, so the same `Mactoy-0.2.0.dmg` runs on Intel Macs, older Apple Silicon, and OCLP-patched hardware — not just macOS 26 Tahoe. Liquid Glass stays on Tahoe; older macOS gets an automatic `regularMaterial` fallback that reads as translucent cards without the real glass.
+
+### Added
+
+- **Universal build support.** `MACTOY_UNIVERSAL=1 ./scripts/build-app.sh release devid` produces a fat binary (`lipo -info` reports `x86_64 arm64`) with one `codesign` pass that signs both slices under the hardened runtime. Default builds stay native-arch for dev speed.
+- **`.mactoyGlass(cornerRadius:tint:interactive:)` view modifier + `MactoyGlassContainer`** in `Sources/Mactoy/Views/LiquidGlass.swift`. On macOS 26 it applies `glassEffect(...)` / `GlassEffectContainer` directly; on 13.5 / 14 / 15 it falls back to `.regularMaterial` inside a rounded shape (or `Capsule()` when no radius is specified) with an optional tint overlay and a 0.5pt `Color.primary.opacity(0.08)` stroke. Every previous `.glassEffect(...)` and `GlassEffectContainer { }` call migrated to the helper.
+- **`SystemSettingsStrings.loginItemsPane`** helper that returns `"Login Items"` on macOS 13/14 and `"Login Items & Extensions"` on 15+. All user-facing copy in `HelperExplainerSheet`, `HelperAwaitingApprovalSheet`, and the two `status = .failed(...)` messages in `AppState` now use it — Ventura users no longer see instructions pointing at a pane that doesn't exist on their system.
+
+### Changed
+
+- **Minimum macOS 26.0 → 13.5 (Ventura).** `Package.swift` platform and `Info.plist` `LSMinimumSystemVersion` both pinned to 13.5. The 13.5 floor (rather than 13.0) is deliberate: `SMAppService.register()` shipped with multiple bugs in early Ventura (register returning success while launchd never loaded, BTM/launchd desync surviving reboots, `Operation not permitted` re-register loops). Apple fixed them by 13.5 / 14.2.
+- **Reactive architecture: `@Observable` → `ObservableObject` + `@Published`.** `AppState` is now a `@MainActor final class AppState: ObservableObject` with `@Published` on every stored property. `MactoyApp` uses `@StateObject` + `.environmentObject(appState)`. Every view swapped `@Environment(AppState.self)` + `@Bindable var state = state` for `@EnvironmentObject var state: AppState` (which provides `$state.foo` bindings via dynamic member lookup automatically). Drops the dependency on the macOS 14+ Observation framework.
+- **`.onChange(of:) { _, new in }` → `{ new in }`** in `HelperAwaitingApprovalSheet`. The two-arg closure overload is macOS 14+; the single-arg form is available since macOS 12.
+- **README requirements + badges.** macOS badge reads `13.5+` with a new "Universal (arm64 + x86_64)" badge alongside. Build-from-source section now lists Xcode 16+ / Swift 6.0+ (Package manifest uses `swift-tools-version: 6.0`, which Swift 5 toolchains can't parse).
+
+### Fixed
+
+- **Fallback capsule shape.** The first cut of the glass fallback used `RoundedRectangle(cornerRadius: 999, style: .continuous)` as a "capsule" substitute. SwiftUI clamps the corner radius to `min(w,h)/2` but the `.continuous` style produces flatter sides than `Capsule()` on wider chips — ModeTab chips on Ventura would have looked slightly wrong. Fallback now branches on `cornerRadius == nil` and uses `Capsule(style: .continuous)` via a generic `glassStack<S: InsettableShape>(_:)` helper.
+- **Bash 3.2 compatibility in `scripts/build-app.sh`.** `"${ARCH_ARGS[@]}"` on an empty array trips `set -u` on macOS-shipped bash 3.2 at `/bin/bash`. Swapped to the `${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"}` idiom so the script works under both Homebrew bash 5 and system bash 3.2.
+
+### Verified
+
+- `swift build -c release` clean on both `Mactoy` and `mactoyd`.
+- `swift build -c release --arch arm64 --arch x86_64` produces fat binaries for both products; `lipo -info build/Mactoy.app/Contents/MacOS/Mactoy` and `.../mactoyd` both report `x86_64 arm64`.
+- `swift test` — 16/16 tests pass.
+- Real-hardware smoke test on Intel Ventura **not** performed (no Intel Mac available). Universal-slice verification is from `file` / `lipo` static analysis. Runtime behaviour on Intel will be validated via user testing.
+
 ## [0.1.4] — 2026-04-21
 
 Applies the same disk-handling fixes that unblocked Install Ventoy in v0.1.3 to the other two tabs, and tightens Manage Disk so it binds to the selected drive instead of any volume named `Ventoy`.
