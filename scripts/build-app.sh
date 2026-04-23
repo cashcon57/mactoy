@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Build Mactoy.app bundle from SPM output.
 # Usage:
-#   scripts/build-app.sh                  # debug
-#   scripts/build-app.sh release          # release, unsigned
-#   scripts/build-app.sh release sign     # release, ad-hoc signed (local)
+#   scripts/build-app.sh                          # debug, native arch
+#   scripts/build-app.sh release                  # release, native arch
+#   scripts/build-app.sh release sign             # release, ad-hoc signed
+#   scripts/build-app.sh release devid            # release, Developer ID
+#   MACTOY_UNIVERSAL=1 scripts/build-app.sh ...   # build arm64 + x86_64
+#     fat binaries (ships a single app that runs on Apple Silicon AND
+#     Intel Macs back to macOS 13 Ventura).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,11 +21,27 @@ if [[ "$MODE" == "release" ]]; then
     CONFIG="release"
 fi
 
-echo "==> Building $CONFIG"
-swift build -c "$CONFIG" --product Mactoy
-swift build -c "$CONFIG" --product mactoyd
+# Universal binary opt-in. SwiftPM supports multiple --arch flags in a
+# single `swift build` invocation to produce a fat binary directly.
+# Default off so local dev builds stay fast on Apple Silicon; CI /
+# release builds should export MACTOY_UNIVERSAL=1.
+ARCH_ARGS=()
+if [[ "${MACTOY_UNIVERSAL:-0}" == "1" ]]; then
+    ARCH_ARGS=(--arch arm64 --arch x86_64)
+    echo "==> Universal build (arm64 + x86_64)"
+fi
 
-BUILD_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
+echo "==> Building $CONFIG"
+# ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} is the bash-3.2-safe idiom for
+# "expand to nothing when the array is empty, quoted args otherwise".
+# macOS still ships bash 3.2 at /bin/bash and trips `set -u` without it.
+swift build -c "$CONFIG" ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} --product Mactoy
+swift build -c "$CONFIG" ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} --product mactoyd
+
+# With multiple --arch flags SwiftPM puts the universal binary in an
+# `apple/Products/<Config>` directory instead of the normal flat path.
+# --show-bin-path returns the right directory in both cases.
+BUILD_DIR="$(swift build -c "$CONFIG" ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} --show-bin-path)"
 
 APP="$ROOT/build/Mactoy.app"
 rm -rf "$APP"

@@ -3,7 +3,7 @@ import AppKit
 import MactoyKit
 
 struct ManageDiskPanel: View {
-    @Environment(AppState.self) private var state
+    @EnvironmentObject private var state: AppState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -41,7 +41,7 @@ struct ManageDiskPanel: View {
                 }
                 .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .glassEffect(.regular, in: .rect(cornerRadius: 16))
+                .mactoyGlass(cornerRadius: 16)
 
                 Spacer()
             }

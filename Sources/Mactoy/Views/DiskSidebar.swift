@@ -2,10 +2,9 @@ import SwiftUI
 import MactoyKit
 
 struct DiskSidebar: View {
-    @Environment(AppState.self) private var state
+    @EnvironmentObject private var state: AppState
 
     var body: some View {
-        @Bindable var state = state
         VStack(alignment: .leading, spacing: 16) {
             Text("Mactoy")
                 .font(.largeTitle.bold())
@@ -18,7 +17,7 @@ struct DiskSidebar: View {
                 .padding(.horizontal, 20)
 
             ScrollView {
-                GlassEffectContainer(spacing: 12) {
+                MactoyGlassContainer(spacing: 12) {
                     VStack(spacing: 12) {
                         if state.disks.isEmpty {
                             EmptyDisksHint()
@@ -98,11 +97,10 @@ private struct DiskCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.plain)
-        .glassEffect(
-            isSelected
-            ? .regular.tint(.accentColor).interactive()
-            : .regular.interactive(),
-            in: .rect(cornerRadius: 14)
+        .mactoyGlass(
+            cornerRadius: 14,
+            tint: isSelected ? .accentColor : nil,
+            interactive: true
         )
     }
 
@@ -132,6 +130,6 @@ private struct EmptyDisksHint: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity)
-        .glassEffect(.regular, in: .rect(cornerRadius: 14))
+        .mactoyGlass(cornerRadius: 14)
     }
 }

@@ -1,5 +1,5 @@
 import Foundation
-import Observation
+import Combine
 import MactoyKit
 
 enum AppMode: String, CaseIterable, Hashable {
@@ -44,38 +44,37 @@ struct EraseConfirmation: Identifiable {
 }
 
 @MainActor
-@Observable
-final class AppState {
+final class AppState: ObservableObject {
     // disk enumeration
-    var disks: [DiskTarget] = []
-    var selectedDiskBSD: String?
+    @Published var disks: [DiskTarget] = []
+    @Published var selectedDiskBSD: String?
 
     // mode
-    var mode: AppMode = .installVentoy
+    @Published var mode: AppMode = .installVentoy
 
     // ventoy mode
-    var ventoyVersionInput: String = ""    // empty = latest
-    var latestVentoyVersion: String?
-    var availableVentoyVersions: [String] = []
-    var useCustomVentoyVersion: Bool = false
-    var customVentoyVersion: String = ""
+    @Published var ventoyVersionInput: String = ""    // empty = latest
+    @Published var latestVentoyVersion: String?
+    @Published var availableVentoyVersions: [String] = []
+    @Published var useCustomVentoyVersion: Bool = false
+    @Published var customVentoyVersion: String = ""
 
     // flash mode
-    var selectedImagePath: String?
+    @Published var selectedImagePath: String?
 
     // helper lifecycle
-    var helperStatus: HelperStatus = .notRegistered
-    var uninstallHelperAfterRun: Bool = true  // default: leave system clean
-    var showHelperExplainer: Bool = false     // drives the pre-register sheet
-    var isAwaitingHelperApproval: Bool = false
-    var showFullDiskAccessSheet: Bool = false // drives the FDA remediation sheet
+    @Published var helperStatus: HelperStatus = .notRegistered
+    @Published var uninstallHelperAfterRun: Bool = true  // default: leave system clean
+    @Published var showHelperExplainer: Bool = false     // drives the pre-register sheet
+    @Published var isAwaitingHelperApproval: Bool = false
+    @Published var showFullDiskAccessSheet: Bool = false // drives the FDA remediation sheet
 
     // erase confirmation
-    var pendingEraseConfirmation: EraseConfirmation?
+    @Published var pendingEraseConfirmation: EraseConfirmation?
 
     // run state
-    var status: InstallStatus = .idle
-    var log: [ProgressUpdate] = []
+    @Published var status: InstallStatus = .idle
+    @Published var log: [ProgressUpdate] = []
 
     var selectedDisk: DiskTarget? {
         guard let b = selectedDiskBSD else { return nil }
@@ -158,7 +157,7 @@ final class AppState {
                 HelperLifecycle.openLoginItemsSettings()
                 self.helperStatus = HelperLifecycle.status
                 if self.helperStatus == .notRegistered, let err = registerError {
-                    self.status = .failed("Helper registration failed: \(err)\n\nIf Mactoy already appears in Login Items & Extensions, turn its toggle on manually.")
+                    self.status = .failed("Helper registration failed: \(err)\n\nIf Mactoy already appears in \(SystemSettingsStrings.loginItemsPane), turn its toggle on manually.")
                     self.isAwaitingHelperApproval = false
                 }
             }
@@ -389,7 +388,7 @@ final class AppState {
                 )
                 status = .success("Install complete")
             } catch {
-                status = .failed("Helper daemon could not be reached and auto-recovery failed.\n\nIn System Settings → General → Login Items & Extensions, turn the Mactoy toggle OFF and back ON, then try again.\n\nUnderlying error: \(error.localizedDescription)")
+                status = .failed("Helper daemon could not be reached and auto-recovery failed.\n\nIn System Settings → General → \(SystemSettingsStrings.loginItemsPane), turn the Mactoy toggle OFF and back ON, then try again.\n\nUnderlying error: \(error.localizedDescription)")
             }
         } catch {
             status = .failed(error.localizedDescription)

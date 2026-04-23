@@ -10,7 +10,8 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
-  <a href="https://developer.apple.com/macos/"><img alt="macOS 26+" src="https://img.shields.io/badge/macOS-26+-orange"></a>
+  <a href="https://developer.apple.com/macos/"><img alt="macOS 13.5+" src="https://img.shields.io/badge/macOS-13.5+-orange"></a>
+  <a href="#"><img alt="Universal (arm64 + x86_64)" src="https://img.shields.io/badge/Universal-arm64%20%2B%20x86__64-8A2BE2"></a>
   <a href="https://swift.org"><img alt="Swift 6.2" src="https://img.shields.io/badge/Swift-6.2-blue"></a>
   <a href="https://ko-fi.com/cash508287"><img alt="Support on Ko-fi" src="https://img.shields.io/badge/Ko--fi-Support-F16061?logo=ko-fi&logoColor=white"></a>
 </p>
@@ -47,15 +48,15 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 
 ---
 
-## Status — v0.1.3 alpha
+## Status — v0.2.0 alpha
 
 - [x] GPT + boot-image math ported from the Python proof-of-concept (cross-validated: Swift and Python produce bit-identical layouts for the same disk).
 - [x] Ventoy install flow end-to-end (download → extract → partition → write → format).
 - [x] Raw image flashing with `.xz` and `.gz` decompression.
-- [x] Liquid Glass SwiftUI interface (macOS 26 Tahoe).
+- [x] Liquid Glass SwiftUI interface on macOS 26 Tahoe; automatic `regularMaterial` fallback on macOS 13–15 so the same binary runs on Ventura, Sonoma, Sequoia, and Tahoe — Apple Silicon *and* Intel.
 - [x] Unit tests for partition layout, GPT header/entry/CRC, MBR, plan validation, version-string allowlist.
 - [x] **Developer ID signed + Apple notarized.** DMG and app are signed under the hardened runtime, notarized by Apple, and the notary ticket is stapled to the DMG. `spctl --assess` reports `accepted, source=Notarized Developer ID`.
-- [x] **Verified on real hardware.** v0.1.3 was tested end-to-end on a 128 GB USB drive on macOS 26.2 — the resulting drive boots and runs Ventoy, and the `Ventoy` exFAT partition accepts ISO drops.
+- [x] **Verified on real hardware (Apple Silicon, macOS 26).** v0.1.3 was tested end-to-end on a 128 GB USB drive on macOS 26.2 — the resulting drive boots and runs Ventoy, and the `Ventoy` exFAT partition accepts ISO drops. v0.2.0's universal binary is static-verified (`lipo -info` reports `x86_64 arm64` on both `Mactoy` and `mactoyd`); **runtime verification on Intel Macs is pending user reports** — see *Known limitations* in the v0.2.0 release notes.
 - [x] **SMAppService privileged helper.** v0.1.3 replaced the old `osascript`-based admin prompt with an XPC-based `SMAppService` LaunchDaemon — one-time approval via the native macOS "Background Items Added" flow, no password prompt per install, and XPC peer-signature verification on every connection.
 - [ ] Full Disk Access (FDA) still has to be granted manually by the user; macOS deliberately does not allow apps to request FDA programmatically. The app deep-links straight to the Privacy & Security pane and walks you through it once.
 
@@ -67,7 +68,7 @@ Grab `Mactoy-<version>.dmg` from the [Releases page](https://github.com/cashcon5
 
 ### Open it
 
-1. Open `Mactoy-0.1.4.dmg`.
+1. Open `Mactoy-0.2.0.dmg`.
 2. Drag `Mactoy.app` into `/Applications`.
 3. Launch from Launchpad or `/Applications`. Opens normally — no right-click dance needed. The DMG is Apple-notarized, so Gatekeeper sees it as a known-good Developer ID build.
 
@@ -75,9 +76,9 @@ Grab `Mactoy-<version>.dmg` from the [Releases page](https://github.com/cashcon5
 
 Mactoy asks for **two** one-time system permissions the first time you click Install Ventoy or Flash Image. Both are required by macOS to write raw bytes to an external disk — not Mactoy being paranoid. Neither has to be granted again on future runs.
 
-### 1. Background Items (Login Items & Extensions)
+### 1. Background Items (Login Items, or Login Items & Extensions on macOS 15+)
 
-**What you'll see:** a native macOS notification, "Background Items Added — *Mactoy added an item that can run in the background.*" Clicking it opens **System Settings → General → Login Items & Extensions**, and Mactoy walks you through flipping its toggle on under **Allow in the Background**.
+**What you'll see:** a native macOS notification, "Background Items Added — *Mactoy added an item that can run in the background.*" Clicking it opens **System Settings → General → Login Items** (macOS 13 / 14) or **Login Items & Extensions** (macOS 15 / 26), and Mactoy walks you through flipping its toggle on under **Allow in the Background**. Mactoy's in-app copy automatically uses the right pane name for your macOS version.
 
 **Why Mactoy needs it:** direct writes to `/dev/rdisk*` require root. Apple removed most paths to elevation on modern macOS — the supported one is to register a privileged helper binary (`mactoyd`) with `launchd` via `SMAppService`. When the toggle is on, Mactoy can start the helper on demand without asking for your password every install.
 
@@ -178,8 +179,8 @@ The [original proof-of-concept](https://gist.github.com/VladimirMakaev/93503ab7c
 
 ### Requirements
 
-- macOS 26 (Tahoe) or newer
-- Xcode 26.2+ (Swift 6.2)
+- **macOS 13.5 (Ventura) or newer** — runs on both Apple Silicon *and* Intel Macs. The 13.5 floor (rather than 13.0) is deliberate: early Ventura shipped several `SMAppService` bugs that prevented the privileged helper from registering reliably. Apple fixed those by 13.5. Liquid Glass UI kicks in automatically on macOS 26 (Tahoe); on 13.5 / 14 / 15 Mactoy falls back to a translucent `regularMaterial` look and keeps the rest of the behavior identical.
+- Xcode 16+ / Swift 6.0+ (Xcode 26.2 builds it cleanly). Swift 5 toolchains will not accept the Package.swift `swift-tools-version: 6.0` header.
 - `create-dmg` (for building the DMG): `brew install create-dmg`
 
 ### Build commands
@@ -191,12 +192,16 @@ cd mactoy
 # Run tests (no root needed, no real disks touched)
 swift test
 
-# Build the app bundle (debug)
+# Build the app bundle (debug, native arch)
 ./scripts/build-app.sh
 
 # Build the signed release bundle + DMG (requires a Developer ID cert in Keychain)
 ./scripts/build-app.sh release devid
-./scripts/build-dmg.sh 0.1.1 devid
+./scripts/build-dmg.sh 0.2.0 devid
+
+# Build a universal (arm64 + x86_64) app bundle — ship this if you
+# want one binary that runs on both Apple Silicon and Intel Macs.
+MACTOY_UNIVERSAL=1 ./scripts/build-app.sh release devid
 
 # Open
 open build/Mactoy.app
@@ -220,14 +225,15 @@ Mactoy/
 
 ## Roadmap
 
-| Version | Feature                                                                    |
-| ------- | -------------------------------------------------------------------------- |
-| v0.1    | Ventoy install + raw flash + ISO library, signed + notarized, version picker (this release) |
-| v0.2    | SMAppService privileged helper, Homebrew cask, first-party hardware CI     |
-| v0.3    | SHA256 verification UI, NTFS option, per-disk exFAT label override         |
-| v0.4    | Sparkle auto-update, Ventoy update-in-place (preserve data)                |
-| v1.0    | Ventoy plugin (JSON) editor, persistence `.dat` creator, stability pass    |
-| v1.1+   | Windows ISO driver, macOS installer USB driver                             |
+| Version | Feature                                                                                            |
+| ------- | -------------------------------------------------------------------------------------------------- |
+| v0.1    | Ventoy install + raw flash + ISO library, signed + notarized, version picker, SMAppService helper  |
+| v0.2    | Universal binary (arm64 + x86_64), macOS 13.5+ support, Liquid Glass fallback (**this release**)   |
+| v0.3    | Homebrew cask, first-party hardware CI, SHA256 verification UI                                     |
+| v0.4    | NTFS option, per-disk exFAT label override, Sparkle auto-update                                    |
+| v0.5    | Ventoy update-in-place (preserve data), plugin (JSON) editor                                       |
+| v1.0    | Persistence `.dat` creator, stability pass, real-hardware Intel CI                                 |
+| v1.1+   | Windows ISO driver, macOS installer USB driver                                                     |
 
 ## License
 

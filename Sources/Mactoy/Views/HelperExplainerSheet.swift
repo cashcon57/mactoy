@@ -5,12 +5,10 @@ import SwiftUI
 /// is about to ask macOS for, so the "Background Items Added"
 /// notification doesn't feel like it came out of nowhere.
 struct HelperExplainerSheet: View {
-    @Environment(AppState.self) private var state
+    @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        @Bindable var state = state
-
         VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Image(systemName: "lock.shield.fill")
@@ -32,7 +30,7 @@ struct HelperExplainerSheet: View {
 
                 bullet(icon: "hand.raised.fill",
                        title: "Approval is a one-time click",
-                       body: "When you continue, macOS will show a 'Background Items Added' notification and open Login Items & Extensions. Turn the Mactoy toggle on once — you won't be asked again.")
+                       body: "When you continue, macOS will show a 'Background Items Added' notification and open \(SystemSettingsStrings.loginItemsPane). Turn the Mactoy toggle on once — you won't be asked again.")
 
                 bullet(icon: "trash",
                        title: "You can remove the helper when you're done",
@@ -53,7 +51,7 @@ struct HelperExplainerSheet: View {
             .toggleStyle(.switch)
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(.regular, in: .rect(cornerRadius: 14))
+            .mactoyGlass(cornerRadius: 14)
 
             HStack(spacing: 10) {
                 Spacer()
@@ -103,7 +101,7 @@ struct HelperExplainerSheet: View {
 /// the toggle in Login Items & Extensions. Polls `helperStatus` in the
 /// background and dismisses automatically when the state is `.enabled`.
 struct HelperAwaitingApprovalSheet: View {
-    @Environment(AppState.self) private var state
+    @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -113,7 +111,7 @@ struct HelperAwaitingApprovalSheet: View {
                 Text("Waiting for macOS approval")
                     .font(.title2.bold())
             }
-            Text("System Settings should be open at **Login Items & Extensions**. Scroll to **Allow in the Background** and turn on **Mactoy**. This window will close automatically as soon as macOS confirms the toggle.")
+            Text("System Settings should be open at **\(SystemSettingsStrings.loginItemsPane)**. Scroll to **Allow in the Background** and turn on **Mactoy**. This window will close automatically as soon as macOS confirms the toggle.")
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -130,7 +128,7 @@ struct HelperAwaitingApprovalSheet: View {
         }
         .padding(26)
         .frame(width: 480)
-        .onChange(of: state.helperStatus) { _, new in
+        .onChange(of: state.helperStatus) { new in
             if new == .enabled { dismiss() }
         }
     }

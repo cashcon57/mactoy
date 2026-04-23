@@ -3,12 +3,10 @@ import MactoyKit
 import UniformTypeIdentifiers
 
 struct FlashImagePanel: View {
-    @Environment(AppState.self) private var state
+    @EnvironmentObject private var state: AppState
     @State private var isTargeted = false
 
     var body: some View {
-        @Bindable var state = state
-
         VStack(alignment: .leading, spacing: 20) {
             Text("Flash Image")
                 .font(.title.bold())
@@ -23,7 +21,7 @@ struct FlashImagePanel: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(.regular, in: .rect(cornerRadius: 16))
+            .mactoyGlass(cornerRadius: 16)
 
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -36,7 +34,7 @@ struct FlashImagePanel: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(.regular.tint(.red.opacity(0.22)), in: .rect(cornerRadius: 14))
+            .mactoyGlass(cornerRadius: 14, tint: .red.opacity(0.22))
 
             DropZone(
                 path: $state.selectedImagePath,
@@ -86,7 +84,7 @@ private struct DropZone: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: 180)
-        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))
+        .mactoyGlass(cornerRadius: 14, interactive: true)
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
             guard let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in

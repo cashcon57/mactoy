@@ -2,11 +2,9 @@ import SwiftUI
 import MactoyKit
 
 struct ContentView: View {
-    @Environment(AppState.self) private var state
+    @EnvironmentObject private var state: AppState
 
     var body: some View {
-        @Bindable var state = state
-
         HStack(spacing: 0) {
             DiskSidebar()
                 .frame(width: 300)
@@ -35,7 +33,7 @@ struct ContentView: View {
 }
 
 struct DetailPane: View {
-    @Environment(AppState.self) private var state
+    @EnvironmentObject private var state: AppState
 
     var body: some View {
         VStack(spacing: 0) {
@@ -67,6 +65,6 @@ struct DetailPane: View {
 
 #Preview {
     ContentView()
-        .environment(AppState())
+        .environmentObject(AppState())
         .frame(width: 900, height: 600)
 }

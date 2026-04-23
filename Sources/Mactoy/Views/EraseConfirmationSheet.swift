@@ -13,7 +13,7 @@ import MactoyKit
 /// re-flashing — the estimate isn't available and we say "up to
 /// <total size>" instead.
 struct EraseConfirmationSheet: View {
-    @Environment(AppState.self) private var state
+    @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
     let info: EraseConfirmation
 
@@ -56,7 +56,7 @@ struct EraseConfirmationSheet: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(.regular.tint(.red.opacity(0.15)), in: .rect(cornerRadius: 14))
+            .mactoyGlass(cornerRadius: 14, tint: .red.opacity(0.15))
 
             Text("This cannot be undone. If you've got anything important on the drive, cancel and back it up first.")
                 .font(.caption)
