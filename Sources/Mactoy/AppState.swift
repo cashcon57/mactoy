@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import MactoyKit
+import os
 
 enum AppMode: String, CaseIterable, Hashable {
     case installVentoy
@@ -45,6 +46,14 @@ struct EraseConfirmation: Identifiable {
 
 @MainActor
 final class AppState: ObservableObject {
+    /// Cap on the in-memory progress `log` to bound memory during
+    /// long-running flashes. v0.2.0 shipped unbounded; a multi-GB
+    /// install could push thousands of `ProgressUpdate` entries
+    /// before the user closed the run, none of which were rendered
+    /// in the UI but all of which kept @Published thrashing.
+    private static let maxLogEntries = 500
+    private static let log = Logger(subsystem: "com.mactoy", category: "appstate")
+
     // disk enumeration
     @Published var disks: [DiskTarget] = []
     @Published var selectedDiskBSD: String?
@@ -110,15 +119,18 @@ final class AppState: ObservableObject {
     }
 
     func refreshHelperStatus() {
-        helperStatus = HelperLifecycle.status
+        let new = HelperLifecycle.status
+        if helperStatus != new {
+            helperStatus = new
+            Self.log.info("helperStatus -> \(String(describing: new), privacy: .public)")
+        }
         // Default the uninstall-after-run checkbox: if the helper is
         // already installed, leave it alone by default (unchecked). If we
         // are about to install the helper for the first time, prefer to
         // clean up after ourselves (checked).
-        if helperStatus == .enabled {
-            uninstallHelperAfterRun = false
-        } else {
-            uninstallHelperAfterRun = true
+        let nextUninstall = (new != .enabled)
+        if uninstallHelperAfterRun != nextUninstall {
+            uninstallHelperAfterRun = nextUninstall
         }
     }
 
@@ -176,7 +188,10 @@ final class AppState: ObservableObject {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard let self else { return }
                 await MainActor.run {
-                    self.helperStatus = HelperLifecycle.status
+                    let new = HelperLifecycle.status
+                    if self.helperStatus != new {
+                        self.helperStatus = new
+                    }
                     if self.helperStatus == .enabled {
                         self.isAwaitingHelperApproval = false
                         self.helperPollTask = nil
@@ -216,7 +231,13 @@ final class AppState: ObservableObject {
     }
 
     private func applyDiskList(_ disks: [DiskTarget]) {
-        self.disks = disks
+        // Skip the assign when nothing changed — every @Published write
+        // fires `objectWillChange` regardless of equality, invalidating
+        // every @EnvironmentObject subscriber. The disk poll runs every
+        // 2s and produces an identical list most of the time.
+        if self.disks != disks {
+            self.disks = disks
+        }
         if let sel = selectedDiskBSD, !disks.contains(where: { $0.bsdName == sel }) {
             selectedDiskBSD = nil
         }
@@ -226,13 +247,17 @@ final class AppState: ObservableObject {
     }
 
     private func setLatestVentoyVersion(_ v: String) {
-        self.latestVentoyVersion = v
+        if self.latestVentoyVersion != v {
+            self.latestVentoyVersion = v
+        }
     }
 
     private func setAvailableVentoyVersions(_ versions: [String]) {
-        self.availableVentoyVersions = versions
-        if self.latestVentoyVersion == nil {
-            self.latestVentoyVersion = versions.first
+        if self.availableVentoyVersions != versions {
+            self.availableVentoyVersions = versions
+        }
+        if self.latestVentoyVersion == nil, let first = versions.first {
+            self.latestVentoyVersion = first
         }
         // If the persisted selection no longer exists in the list, snap to latest.
         if !useCustomVentoyVersion,
@@ -277,10 +302,14 @@ final class AppState: ObservableObject {
     }
 
     func run() async {
-        guard canRun, let target = selectedDisk else { return }
+        guard canRun, let target = selectedDisk else {
+            Self.log.warning("run() called when canRun=false or no disk selected")
+            return
+        }
 
         log = []
         status = .preparing("Preparing install plan...")
+        Self.log.info("run() begin: mode=\(self.mode.rawValue, privacy: .public) target=/dev/\(target.bsdName, privacy: .public)")
 
         let source: InstallSource
         let driver: DriverID
@@ -347,7 +376,7 @@ final class AppState: ObservableObject {
                 plan: plan,
                 onUpdate: { [weak self] update in
                     guard let self else { return }
-                    self.log.append(update)
+                    self.appendBoundedLog(update)
                     // Only treat progress updates as running status. A
                     // terminal `.failed` or `.done` update means the
                     // daemon is about to exit — the real outcome is
@@ -362,17 +391,23 @@ final class AppState: ObservableObject {
                 }
             )
             status = .success("Install complete")
+            Self.log.info("run() success")
         } catch let err as HelperInvoker.HelperError where isFullDiskAccessError(err) {
             // TCC is blocking raw-disk access from the daemon. Users have
             // to grant Full Disk Access to Mactoy.app; TCC propagates
             // that grant to the daemon via AssociatedBundleIdentifiers.
             showFullDiskAccessSheet = true
             status = .failed("Full Disk Access is required — see the popup.")
+            Self.log.error("run() failed: TCC blocked raw disk access (Full Disk Access required)")
         } catch let err as HelperInvoker.HelperError where isLookupFailure(err) {
             // BTM says the toggle is on but launchd has no registration
             // (happens after `sudo launchctl bootout` or a stale
             // BTM entry). Try to re-submit the daemon plist to launchd
             // and retry the install automatically.
+            // .private redacts in shared log output (e.g. when a user
+            // pastes `log show` into a public GitHub issue) but stays
+            // visible to the local user running `log show` themselves.
+            Self.log.error("run() XPC lookup failure — retrying after re-register: \(err.localizedDescription, privacy: .private)")
             status = .preparing("Helper daemon lost — re-registering…")
             do {
                 try? await HelperLifecycle.unregister()
@@ -382,8 +417,12 @@ final class AppState: ObservableObject {
                 try await HelperInvoker.run(
                     plan: plan,
                     onUpdate: { [weak self] update in
-                        self?.log.append(update)
-                        self?.status = .running(update)
+                        guard let self else { return }
+                        self.appendBoundedLog(update)
+                        switch update.phase {
+                        case .failed, .done: return
+                        default: self.status = .running(update)
+                        }
                     }
                 )
                 status = .success("Install complete")
@@ -392,6 +431,10 @@ final class AppState: ObservableObject {
             }
         } catch {
             status = .failed(error.localizedDescription)
+            // Error descriptions can include the user's home-dir paths
+            // (e.g. when flashing from ~/Downloads). Redact in shared
+            // `log show` output; full text is still visible locally.
+            Self.log.error("run() failed: \(error.localizedDescription, privacy: .private)")
         }
 
         // Honour the "remove helper after this run" checkbox. We do this
@@ -407,5 +450,27 @@ final class AppState: ObservableObject {
     func reset() {
         status = .idle
         log = []
+    }
+
+    /// Append a progress update to `log`, capping total entries at
+    /// `maxLogEntries`. Drops the oldest entries when over the cap. The
+    /// log is not currently rendered in any view, but a future
+    /// "diagnostics export" feature will consume it; we keep the most
+    /// recent updates because terminal failures are usually the most
+    /// useful for triage.
+    ///
+    /// Note for future readers: the bulk-drop strategy (drop 25% in one
+    /// shot, then resume appending) trades amortized O(1) appends for a
+    /// single 125-element shift every 125 appends. If a future view
+    /// renders `log` via `ForEach`, the bulk drop will visually jump 125
+    /// rows at a time. If that becomes a problem, switch to a circular
+    /// buffer (or `Deque` from swift-collections) and adapt the export
+    /// path accordingly.
+    private func appendBoundedLog(_ update: ProgressUpdate) {
+        if log.count >= Self.maxLogEntries {
+            let dropCount = Self.maxLogEntries / 4
+            log.removeFirst(dropCount)
+        }
+        log.append(update)
     }
 }

@@ -1,5 +1,8 @@
 import Foundation
 import MactoyKit
+import os
+
+private let daemonLog = Logger(subsystem: "com.mactoy", category: "mactoyd")
 
 /// mactoyd — privileged helper daemon.
 ///
@@ -19,9 +22,11 @@ let expectedClientIdentifier = "com.mactoy.Mactoy"
 final class DaemonListenerDelegate: NSObject, NSXPCListenerDelegate {
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
         guard authorize(connection: newConnection) else {
+            daemonLog.error("rejected unauthorized XPC client (signing-requirement check failed)")
             fputs("mactoyd: rejected unauthorized XPC client\n", stderr)
             return false
         }
+        daemonLog.info("accepted XPC client connection")
         newConnection.exportedInterface = NSXPCInterface(with: MactoydProtocol.self)
         newConnection.exportedObject = MactoydService(connection: newConnection)
         newConnection.remoteObjectInterface = NSXPCInterface(with: MactoyClientProtocol.self)
@@ -31,10 +36,12 @@ final class DaemonListenerDelegate: NSObject, NSXPCListenerDelegate {
         // long-lived RunLoop keeps an old mactoyd binary live across
         // rebuilds / upgrades — the user ends up talking to stale code.
         newConnection.invalidationHandler = {
+            daemonLog.info("XPC connection closed, exiting for clean re-spawn")
             fputs("mactoyd: XPC connection closed, exiting for clean re-spawn\n", stderr)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { exit(0) }
         }
         newConnection.interruptionHandler = {
+            daemonLog.error("XPC connection interrupted, exiting")
             fputs("mactoyd: XPC connection interrupted, exiting\n", stderr)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { exit(0) }
         }
@@ -123,6 +130,7 @@ final class MactoydService: NSObject, MactoydProtocol {
 
             do {
                 let plan = try decoder.decode(InstallPlan.self, from: planData)
+                daemonLog.info("executePlan: driver=\(plan.driver.rawValue, privacy: .public) target=/dev/\(plan.target.bsdName, privacy: .public)")
 
                 let driver: any InstallDriver
                 switch plan.driver {
@@ -132,9 +140,14 @@ final class MactoydService: NSObject, MactoydProtocol {
 
                 sink.report(.init(phase: .preparing, message: "mactoyd started, plan received"))
                 try await driver.execute(plan: plan, progress: sink)
+                daemonLog.info("executePlan: complete")
                 sink.report(.init(phase: .done, message: "Install complete"))
                 replyBox.call(true, nil)
             } catch {
+                // .private — error descriptions can include filesystem
+                // paths or other user-identifiable detail. Visible to
+                // the local user; redacted in shared `log show` output.
+                daemonLog.error("executePlan failed: \(error.localizedDescription, privacy: .private)")
                 sink.report(.init(phase: .failed, message: "\(error)"))
                 replyBox.call(false, "\(error)")
             }
@@ -173,9 +186,12 @@ final class ClientProxyBox: @unchecked Sendable {
 
 // Entry point
 guard getuid() == 0 else {
+    daemonLog.fault("must be run as root (EUID 0); exiting")
     fputs("mactoyd: must be run as root (EUID 0)\n", stderr)
     exit(77)
 }
+
+daemonLog.info("mactoyd starting (version \(mactoydVersion, privacy: .public)) — listening on \(mactoydMachServiceName, privacy: .public)")
 
 let listener = NSXPCListener(machServiceName: mactoydMachServiceName)
 let delegate = DaemonListenerDelegate()
