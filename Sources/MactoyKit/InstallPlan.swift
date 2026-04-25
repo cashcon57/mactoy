@@ -21,7 +21,7 @@ public struct DiskVolumeInfo: Codable, Sendable, Hashable {
     }
 }
 
-public struct DiskTarget: Codable, Sendable {
+public struct DiskTarget: Codable, Sendable, Equatable {
     public let bsdName: String
     public let sizeInBytes: UInt64
     public let isExternal: Bool

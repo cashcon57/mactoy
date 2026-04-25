@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.1] — 2026-04-25
+
+Hotfix release. v0.2.0 shipped four memory + responsiveness regressions caused by the @Observable → ObservableObject migration in v0.2.0. A user on a MacBook Air M4 reported runaway memory pressure during a flash that froze other apps, followed by repeated crashes on relaunch. This release addresses the verifiable causes of that pressure and adds `os.Logger` instrumentation so future incidents come with a usable diagnostic trail.
+
+### Fixed
+
+- **`ProgressForwarder` now throttles XPC progress callbacks to ~30 Hz.** v0.2.0 spawned a `Task { @MainActor in onUpdate(update) }` for every progress update received from the daemon. On a multi-GB image this was hundreds of tasks per second, each one writing twice to `@Published` properties (`log.append` + `status = .running`) and re-rendering every `@EnvironmentObject` subscriber. The throttle preserves all phase transitions and terminal `.done` / `.failed` events; only intra-phase progress ticks are coalesced. Lives in `Sources/Mactoy/HelperInvoker.swift`.
+- **`AppState.log` is now bounded to the most recent 500 entries.** v0.2.0 appended every `ProgressUpdate` to `log` indefinitely with no consumer. A long install accumulated thousands of entries and pinned them in memory. The new `appendBoundedLog` helper drops the oldest 25% in one shot rather than `removeFirst()` per append.
+- **Equality-guarded `@Published` assigns in the disk-enumeration loop, the version fetch, the helper-status poll, and `refreshHelperStatus`.** Combine's `@Published` fires `objectWillChange` on every assignment regardless of whether the value actually changed — and v0.2.0 was reassigning identical disk lists every 2 seconds and identical helper statuses every 1 second. Each assignment invalidated every view subscribed via `@EnvironmentObject`. Now we only assign when the new value differs. (`@Observable`, which we used in v0.1.x, did this comparison automatically — `@Published` does not, and that gap was the regression.) Side effect of the `refreshHelperStatus` guard: the **"remove the helper after this install"** checkbox no longer resets to its default on every status refresh. Users who manually toggle it now keep their choice across status changes — matches v0.1.x behaviour, which v0.2.0 had unintentionally regressed by re-deriving the value on every poll.
+- **`ProgressForwarder` flushes the last throttled-out update before delivering a phase transition or terminal `.done`/`.failed`.** Without this, a fast NVMe stick that hits "writing 99.9%" within 33 ms of "done" would have its 99.9% frame silently dropped — the user would see the bar freeze around 95% and then jump to "Install complete." Now the throttle keeps the most recent dropped update buffered and flushes it as soon as the next non-throttled update arrives.
+- **`UTType(filenameExtension:)!` force-unwraps in the file picker.** Replaced four force-unwraps with a `compactMap` so a degraded CoreServices type registry can no longer crash the Flash Image picker.
+
+### Added
+
+- **`os.Logger` instrumentation across the launch path, helper lifecycle, `run()` state transitions, and the daemon.** Subsystem `com.mactoy`, categories `lifecycle`, `appstate`, `xpc.progress`, `mactoyd`. Users hitting future bugs can now attach output from `log show --predicate 'subsystem == "com.mactoy"' --last 1h --info --debug > mactoy.log` to a GitHub issue. Documented in README under "Reporting bugs".
+- **`DiskTarget` now conforms to `Equatable`** in `MactoyKit`, so the disk-enumeration equality guard can compare full structs instead of approximating via `bsdName`.
+
+### Pulled
+
+- **v0.2.0 was retroactively marked as a prerelease on GitHub.** The "latest" tag now resolves to v0.1.4 until v0.2.1 ships. v0.2.0 is still downloadable for forensic reasons but new users get directed to a stable build.
+
 ## [0.2.0] — 2026-04-23
 
 Mactoy drops down to **macOS 13.5 Ventura** and ships as a **universal (arm64 + x86_64) binary**, so the same `Mactoy-0.2.0.dmg` runs on Intel Macs, older Apple Silicon, and OCLP-patched hardware — not just macOS 26 Tahoe. Liquid Glass stays on Tahoe; older macOS gets an automatic `regularMaterial` fallback that reads as translucent cards without the real glass.

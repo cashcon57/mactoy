@@ -1,6 +1,9 @@
 import SwiftUI
 import MactoyKit
 import UniformTypeIdentifiers
+import os
+
+private let pickerLog = Logger(subsystem: "com.mactoy", category: "ui.picker")
 
 struct FlashImagePanel: View {
     @EnvironmentObject private var state: AppState
@@ -98,12 +101,17 @@ private struct DropZone: View {
 
     func pickFile() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [
-            UTType(filenameExtension: "iso")!,
-            UTType(filenameExtension: "img")!,
-            UTType(filenameExtension: "xz")!,
-            UTType(filenameExtension: "gz")!
-        ]
+        // Safe-unwrap UTType lookups — `UTType(filenameExtension:)`
+        // returns nil if the system's CoreServices type registry is in
+        // an unusual state. Don't crash the app over a missing type;
+        // just leave the corresponding extension out of the filter and
+        // log a warning so the degraded state is visible in os.Logger.
+        let extensions = ["iso", "img", "xz", "gz"]
+        let types = extensions.compactMap { UTType(filenameExtension: $0) }
+        if types.count < extensions.count {
+            pickerLog.warning("UTType lookup returned \(types.count)/\(extensions.count) — CoreServices type registry may be degraded")
+        }
+        panel.allowedContentTypes = types
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         if panel.runModal() == .OK, let url = panel.url {

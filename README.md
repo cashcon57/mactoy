@@ -138,6 +138,30 @@ Either one alone isn't enough. Once both are granted, installs run without any f
 2. Switch to the **Manage Disk** tab.
 3. Add new ISOs or remove old ones without needing Finder.
 
+## Reporting bugs
+
+If something goes wrong — a crash on launch, the helper not registering, the progress bar lying, a flash that never finishes — please open a GitHub issue with the unified-log output attached. Mactoy and `mactoyd` log to Apple's `os.Logger` under the `com.mactoy` subsystem (categories: `lifecycle`, `appstate`, `xpc.progress`, `mactoyd`, `ui.picker`).
+
+To capture and attach a log:
+
+```sh
+# Capture the last hour of Mactoy + daemon log entries to a file.
+log show --predicate 'subsystem == "com.mactoy"' --last 1h --info --debug > mactoy-log.txt
+
+# Open it to confirm there's nothing in there you'd rather not share.
+open mactoy-log.txt
+```
+
+`error.localizedDescription` strings are logged with `privacy: .private`, so any home-directory paths are redacted (`<private>`) when the log is shared. Disk BSD names (`disk8`), modes, version strings, and helper-status transitions are public — those are the values most useful for triage.
+
+If the app is crashing repeatedly on launch and the unified log doesn't have enough context, also grab the system crash report:
+
+```sh
+ls -t ~/Library/Logs/DiagnosticReports/Mactoy-*.ips | head -1
+```
+
+Attach the most recent `.ips` file to the issue.
+
 ## Architecture
 
 ```text
