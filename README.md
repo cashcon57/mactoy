@@ -140,27 +140,47 @@ Either one alone isn't enough. Once both are granted, installs run without any f
 
 ## Reporting bugs
 
-If something goes wrong — a crash on launch, the helper not registering, the progress bar lying, a flash that never finishes — please open a GitHub issue with the unified-log output attached. Mactoy and `mactoyd` log to Apple's `os.Logger` under the `com.mactoy` subsystem (categories: `lifecycle`, `appstate`, `xpc.progress`, `mactoyd`, `ui.picker`).
+If something goes wrong — a crash on launch, the helper not registering, the progress bar lying, a flash that never finishes — please open a GitHub issue. The fastest triage comes from one of two attachments below; **no Terminal required for either**.
 
-To capture and attach a log:
+### If Mactoy crashed
+
+macOS auto-writes a crash report every time a signed app crashes. To grab it:
+
+1. Open Finder.
+2. Press `⇧⌘G` (Go to Folder…).
+3. Paste `~/Library/Logs/DiagnosticReports/` and press Return.
+4. Sort by Date Modified. Find the most recent file whose name starts with `Mactoy-` and ends in `.ips`.
+
+Then either:
+
+- **Drag the `.ips` file straight into the GitHub issue** (cleanest — GitHub attaches it as a download).
+- Or **double-click it to open in TextEdit** (the file is plain JSON, opens in any text editor) and paste the contents into the issue body. The file is usually 50–200 KB.
+
+That report contains the exact stack trace, register state, macOS version, and Mactoy build — everything needed to diagnose a launch failure. The only personal information in it is your macOS username (it appears in some file paths in the loaded-libraries list). If you want to scrub that, search for your `/Users/<username>/` and replace with `/Users/<user>/` before posting.
+
+### If Mactoy is misbehaving but not crashing
+
+(Progress bar wrong, helper not registering, drive not detected, etc.)
+
+1. Open the built-in **Console** app (Spotlight → "Console", or `/Applications/Utilities/Console.app`).
+2. Type `mactoy` in the search bar at the top right.
+3. Set the time range (top of the window) to **Last Hour** or whatever covers your repro.
+4. **File → Save Selected Messages As…** → save as `mactoy-log.txt`.
+5. Drag the saved `.txt` into the GitHub issue.
+
+Mactoy and `mactoyd` log to Apple's `os.Logger` under subsystem `com.mactoy` (categories: `lifecycle`, `appstate`, `xpc.progress`, `mactoyd`, `ui.picker`). Console.app is a stock macOS app — no install required.
+
+### Privacy
+
+`error.localizedDescription` strings are logged with `privacy: .private`, so any home-directory paths are redacted (e.g. `<private>`) before the log leaves your machine. Disk BSD names (`disk8`), app mode, version strings, and helper-status transitions are logged with `privacy: .public` — those are the values most useful for triage and contain no PII.
+
+### Advanced (Terminal)
+
+Same content the Console.app export gives you, in one command:
 
 ```sh
-# Capture the last hour of Mactoy + daemon log entries to a file.
 log show --predicate 'subsystem == "com.mactoy"' --last 1h --info --debug > mactoy-log.txt
-
-# Open it to confirm there's nothing in there you'd rather not share.
-open mactoy-log.txt
 ```
-
-`error.localizedDescription` strings are logged with `privacy: .private`, so any home-directory paths are redacted (`<private>`) when the log is shared. Disk BSD names (`disk8`), modes, version strings, and helper-status transitions are public — those are the values most useful for triage.
-
-If the app is crashing repeatedly on launch and the unified log doesn't have enough context, also grab the system crash report:
-
-```sh
-ls -t ~/Library/Logs/DiagnosticReports/Mactoy-*.ips | head -1
-```
-
-Attach the most recent `.ips` file to the issue.
 
 ## Architecture
 
