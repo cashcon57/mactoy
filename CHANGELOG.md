@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.3.0] — 2026-04-27
+
+Adds **Update Ventoy** — a fourth top-level mode that updates an existing Ventoy install to a new version *without* erasing the user's ISOs or `/ventoy/` config. Mactoy is now the first non-official-Ventoy-team port of the in-place update flow.
+
+### Added
+
+- **Update Ventoy mode.** New tab in the sidebar, alongside Install Ventoy / Flash Image / Manage Disk. Adapts to the disk you've selected:
+  - Disk has Ventoy and a newer release exists → "Update available — installed v1.0.99, latest v1.1.05" with a single-click update CTA.
+  - Disk is up to date → "Already up to date" with a hint that the Install Ventoy tab can wipe-and-reinstall if desired.
+  - Disk has the partition geometry of a damaged Ventoy install → "Repair via fresh install (erases ISOs)" hint pointing at the Install Ventoy tab.
+  - Disk doesn't have Ventoy → "no Ventoy detected" with a pointer to the Install Ventoy tab.
+- **`VentoyVersionProbe` + `FAT16Reader` (`Sources/MactoyKit/`).** Pure-Swift FAT16 read-only parser, plus a Ventoy-specific probe layer that locates partition 2, validates the layout (`partition 1 starts at sector 2048`, `partition 2 size == 65536 sectors`, partition 2 is FAT16 with `VTOYEFI` label), reads `/grub/grub.cfg`, and extracts the `set VENTOY_VERSION="X"` string. Future-compat: makes no assumptions about specific Ventoy versions, so a hypothetical 2.0 or 1.2.0-rc1 release is detected automatically as long as it preserves the on-disk layout (which has been stable since Ventoy 1.0.0).
+- **`VentoyDriver.update(plan:progress:)`.** Byte-level update flow that mirrors `Ventoy2Disk.sh --update`: preserve the Ventoy disk UUID (16 bytes at LBA 0 offset 384) + the 8 reserved sectors at LBA 2040 + the user's secure-boot toggle (offsets 92, 17908) → rewrite MBR boot code (bytes 0–439) → restore UUID → write GRUB2 core image at LBA 34 (GPT) or LBA 1 (MBR) → restore secure-boot bytes → overwrite the entire 32 MiB VTOYEFI partition with the new disk image → restore reserved sectors. Partition 1 is **never** written — by design, not by transactional magic.
+- **`probeVentoy` XPC method on `mactoyd`.** Read-only; safe to call as the user changes their disk selection. The Mactoy app debounces probe RPCs at 300 ms so rapid sidebar selection changes don't pile up XPC round trips.
+- **`VentoyOperation` field on `InstallPlan`** (`.freshInstall` | `.updateInPlace`). Backwards-compatible decode: v0.2.x plans without the field decode as `.freshInstall`, so a daemon during a rolling upgrade can still execute legacy plans.
+- **14 new unit tests** covering `parseVentoyVersion` regex (single/double/un-quoted, whitespace tolerance, future-format-tolerant 4-component and alphanumeric suffixes), `VentoyProbeResult` codable round-trip, and `InstallPlan` v1→v2 backwards-compat decode.
+
+### Changed
+
+- **`AppMode` gained `.updateVentoy`** → 4 sidebar tabs instead of 3. Symbol: `arrow.triangle.2.circlepath`. Display name: "Update Ventoy".
+- **`EraseConfirmationSheet`** adapts to the operation: for an update it shows non-destructive copy ("ISOs and `/ventoy/` config will be preserved … don't unplug — interruption requires re-running but your data stays safe"), an accent-colored Update button instead of a red Erase button, and hides the "volumes that will be erased" list (nothing's being erased).
+- **`ActionBar`'s primary button** picks up "Update Ventoy" copy + accent tint when in update mode, distinguishing it visually from the destructive Install/Flash actions.
+- **`mactoydVersion`** bumped 0.2.1 → 0.3.0.
+
+### Known limitations
+
+- **No transactional rollback during update.** Power loss or USB unplug mid-update (~5 seconds total) leaves the bootloader in a half-written state — re-run update to recover. Partition 1 (your ISOs) is never at risk because the update flow doesn't write there.
+- **No real-hardware Intel smoke test for the update flow.** Static + parser-level testing only. Real-world validation will come from user reports.
+
 ## [0.2.1] — 2026-04-25
 
 Hotfix release. v0.2.0 shipped four memory + responsiveness regressions caused by the @Observable → ObservableObject migration in v0.2.0. A user on a MacBook Air M4 reported runaway memory pressure during a flash that froze other apps, followed by repeated crashes on relaunch. This release addresses the verifiable causes of that pressure and adds `os.Logger` instrumentation so future incidents come with a usable diagnostic trail.

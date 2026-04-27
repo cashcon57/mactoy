@@ -72,6 +72,20 @@ public enum InstallSource: Codable, Sendable {
     case localImage(path: String)
 }
 
+/// What flavor of Ventoy operation an install plan represents.
+/// Only meaningful when `driver == .ventoy`.
+public enum VentoyOperation: String, Codable, Sendable {
+    /// Wipe the disk and write a fresh GPT + Ventoy layout. The current
+    /// behaviour for v0.1.x and v0.2.x.
+    case freshInstall
+
+    /// Update the bootloader (MBR boot code, GRUB2 core, partition 2)
+    /// in-place on a disk that already has a valid Ventoy install.
+    /// Partition 1 — including all ISOs and `/ventoy/` config — is
+    /// preserved.
+    case updateInPlace
+}
+
 public struct InstallPlan: Codable, Sendable {
     public let driver: DriverID
     public let target: DiskTarget
@@ -79,20 +93,43 @@ public struct InstallPlan: Codable, Sendable {
     public let filesystem: FilesystemType
     public let workDir: String
     public let planVersion: Int
+    /// Only meaningful when `driver == .ventoy`. Defaults to
+    /// `.freshInstall` for backwards compatibility with v0.2.x plans.
+    public let ventoyOperation: VentoyOperation
 
     public init(
         driver: DriverID,
         target: DiskTarget,
         source: InstallSource,
         filesystem: FilesystemType = .exfat,
-        workDir: String
+        workDir: String,
+        ventoyOperation: VentoyOperation = .freshInstall
     ) {
         self.driver = driver
         self.target = target
         self.source = source
         self.filesystem = filesystem
         self.workDir = workDir
-        self.planVersion = 1
+        self.planVersion = 2
+        self.ventoyOperation = ventoyOperation
+    }
+
+    // Backwards-compat decoder: v0.2.x plans (planVersion == 1) didn't
+    // carry `ventoyOperation`. Decode them as `.freshInstall` so the
+    // daemon can still execute legacy plans during a rolling upgrade.
+    enum CodingKeys: String, CodingKey {
+        case driver, target, source, filesystem, workDir, planVersion, ventoyOperation
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.driver = try c.decode(DriverID.self, forKey: .driver)
+        self.target = try c.decode(DiskTarget.self, forKey: .target)
+        self.source = try c.decode(InstallSource.self, forKey: .source)
+        self.filesystem = try c.decode(FilesystemType.self, forKey: .filesystem)
+        self.workDir = try c.decode(String.self, forKey: .workDir)
+        self.planVersion = try c.decode(Int.self, forKey: .planVersion)
+        self.ventoyOperation = try c.decodeIfPresent(VentoyOperation.self, forKey: .ventoyOperation) ?? .freshInstall
     }
 }
 

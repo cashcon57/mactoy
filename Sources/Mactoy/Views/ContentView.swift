@@ -48,6 +48,7 @@ struct DetailPane: View {
                 Group {
                     switch state.mode {
                     case .installVentoy: InstallVentoyPanel()
+                    case .updateVentoy:  UpdateVentoyPanel()
                     case .flashImage:    FlashImagePanel()
                     case .manageDisk:    ManageDiskPanel()
                     }

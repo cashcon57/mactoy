@@ -21,6 +21,38 @@ enum HelperInvoker {
         }
     }
 
+    /// Cheap read-only probe of a USB drive. Returns the parsed
+    /// `VentoyProbeResult`, or throws if the daemon is unreachable.
+    /// **Always** returns a result (never nil); a non-Ventoy disk
+    /// surfaces as `isVentoyDisk == false` rather than as an error.
+    static func probeVentoy(bsdName: String) async throws -> VentoyProbeResult {
+        let connection = NSXPCConnection(machServiceName: mactoydMachServiceName, options: .privileged)
+        connection.remoteObjectInterface = NSXPCInterface(with: MactoydProtocol.self)
+        connection.resume()
+        defer { connection.invalidate() }
+
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<VentoyProbeResult, Error>) in
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ err in
+                cont.resume(throwing: HelperError.xpcUnreachable("\(err)"))
+            }) as? MactoydProtocol else {
+                cont.resume(throwing: HelperError.xpcUnreachable("proxy unavailable"))
+                return
+            }
+            proxy.probeVentoy(bsdName) { resultData, errMsg in
+                if let resultData {
+                    do {
+                        let decoded = try JSONDecoder().decode(VentoyProbeResult.self, from: resultData)
+                        cont.resume(returning: decoded)
+                    } catch {
+                        cont.resume(throwing: HelperError.executionFailed("probe decode failed: \(error)"))
+                    }
+                } else {
+                    cont.resume(throwing: HelperError.executionFailed(errMsg ?? "probe failed with no detail"))
+                }
+            }
+        }
+    }
+
     static func run(
         plan: InstallPlan,
         onUpdate: @escaping @MainActor (ProgressUpdate) -> Void

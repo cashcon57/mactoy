@@ -13,6 +13,15 @@ import Foundation
     /// `false` with a human-readable `errorMessage` on failure.
     func executePlan(_ planData: Data, reply: @escaping (_ success: Bool, _ errorMessage: String?) -> Void)
 
+    /// Probe `bsdName` (e.g. `disk6`) to see whether it has a Ventoy
+    /// install. Returns a JSON-encoded `VentoyProbeResult`. Cheap and
+    /// read-only; safe to call frequently as the user changes their
+    /// disk selection. Always succeeds (an unreadable disk returns a
+    /// `VentoyProbeResult` with `isVentoyDisk == false` and a layout
+    /// issue describing the failure) — the `errorMessage` reply slot
+    /// is reserved for daemon-side encoding failures only.
+    func probeVentoy(_ bsdName: String, reply: @escaping (_ resultData: Data?, _ errorMessage: String?) -> Void)
+
     /// Health-check. Returns the daemon's version string. Cheap way to
     /// confirm the daemon is reachable and the XPC contract matches.
     func ping(reply: @escaping (_ version: String) -> Void)
@@ -31,5 +40,5 @@ import Foundation
 /// `Contents/Library/LaunchDaemons/com.mactoy.mactoyd.plist`.
 public let mactoydMachServiceName = "com.mactoy.mactoyd"
 
-public let mactoydVersion = "0.2.1"
+public let mactoydVersion = "0.3.0"
 

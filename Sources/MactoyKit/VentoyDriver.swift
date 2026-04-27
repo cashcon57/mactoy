@@ -7,6 +7,15 @@ public struct VentoyDriver: InstallDriver {
     public init() {}
 
     public func execute(plan: InstallPlan, progress: ProgressSink) async throws {
+        switch plan.ventoyOperation {
+        case .freshInstall:
+            try await executeFreshInstall(plan: plan, progress: progress)
+        case .updateInPlace:
+            try await executeUpdate(plan: plan, progress: progress)
+        }
+    }
+
+    private func executeFreshInstall(plan: InstallPlan, progress: ProgressSink) async throws {
         try plan.validate()
         guard case .ventoyVersion(let version) = plan.source else {
             throw DriverError.unsupportedSource("VentoyDriver requires .ventoyVersion source")
@@ -221,5 +230,155 @@ public struct VentoyDriver: InstallDriver {
             "and replugging the USB drive, then run Manage Disk to verify — " +
             "the GPT and boot images are already on the drive."
         )
+    }
+
+    // MARK: - Update-in-place
+
+    /// Update an existing Ventoy install to a new bootloader version
+    /// **without** wiping partition 1 (so the user's ISOs and
+    /// `/ventoy/` config survive).
+    ///
+    /// The byte-level operation mirrors `Ventoy2Disk.sh --update`:
+    /// rewrite the MBR boot code, the GRUB2 core image in the GPT-gap
+    /// reserved sectors, and the entire 32 MiB VTOYEFI partition.
+    /// Preserve the existing Ventoy disk UUID (bytes 384–399 of LBA 0)
+    /// and the 8 reserved sectors at LBA 2040 across the operation;
+    /// also preserve the user's secure-boot toggle choice.
+    ///
+    /// Failure modes: this operation is not transactional. If it's
+    /// interrupted (USB unplugged, power loss) mid-write, the
+    /// bootloader is left in an inconsistent state and the user will
+    /// need to re-run update. Their ISOs are never at risk because
+    /// partition 1 is never written here.
+    private func executeUpdate(plan: InstallPlan, progress: ProgressSink) async throws {
+        try plan.validate()
+        guard case .ventoyVersion(let version) = plan.source else {
+            throw DriverError.unsupportedSource("VentoyDriver requires .ventoyVersion source")
+        }
+
+        // 1. Probe to validate this is genuinely a Ventoy disk + capture
+        //    the partition-2 start sector + secure-boot state.
+        progress.report(.init(phase: .preparing, message: "Validating existing Ventoy install..."))
+        let probe = VentoyVersionProbe.probe(bsdName: plan.target.bsdName)
+        guard probe.isVentoyDisk else {
+            let issues = probe.layoutIssues.joined(separator: "; ")
+            throw DriverError.validation(
+                "Refusing to update: \(plan.target.devicePath) does not have a valid Ventoy install (\(issues)). " +
+                "Use 'Reinstall (erase everything)' to put a fresh Ventoy on this disk."
+            )
+        }
+
+        // 2. Fetch + extract the new Ventoy tarball.
+        let workDir = URL(fileURLWithPath: plan.workDir, isDirectory: true)
+        try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+        progress.report(.init(phase: .preparing, message: "Ventoy \(version)"))
+        let downloader = VentoyDownloader()
+        let tarball = try await downloader.downloadTarball(version: version, workDir: workDir, progress: progress)
+        let ventoyDir = try downloader.extractTarball(tarball, workDir: workDir, progress: progress)
+
+        progress.report(.init(phase: .extracting, message: "Decompressing boot images..."))
+        let boot = try VentoyBootImages.load(fromVentoyDir: ventoyDir)
+
+        // 3. Unmount + open raw device.
+        progress.report(.init(phase: .unmounting, message: "Unmounting \(plan.target.devicePath)..."))
+        try DiskInfo.unmount(bsdName: plan.target.bsdName)
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+
+        progress.report(.init(phase: .writing, message: "Opening \(plan.target.rawDevicePath)..."))
+        let writer = try DiskWriter(rawPath: plan.target.rawDevicePath)
+
+        // 4. Preserve bytes that must survive the update:
+        //    a. The Ventoy disk UUID at bytes 384..399 of LBA 0.
+        //    b. The 8 reserved sectors at LBA 2040..2047.
+        //    c. The secure-boot toggle (probe captured this).
+        progress.report(.init(phase: .preparing, message: "Preserving disk UUID + reserved sectors..."))
+        let savedUUID = try writer.readBytes(at: 384, count: 16)
+        let savedReserved = try writer.readBytes(at: 2040 * SECTOR_SIZE, count: 8 * Int(SECTOR_SIZE))
+
+        // 5. Write new boot.img bytes 0..439 (preserve everything beyond
+        //    that — disk UUID at 384, MBR partition table at 446, etc.).
+        //    `boot.img` from the tarball is exactly 512 bytes; we take
+        //    the first 440 bytes (the boot-loader code) and patch in
+        //    place to leave the partition table + UUID untouched.
+        progress.report(.init(phase: .writing, message: "Writing Ventoy boot.img..."))
+        let bootCode = boot.bootImg.prefix(440)
+        try writer.patchSector(lba: 0, offset: 0, bytes: Data(bootCode))
+
+        // 6. Restore the saved disk UUID — boot.img.prefix(440) didn't
+        //    touch bytes 384..399 of the on-disk sector (the patch is
+        //    bytes 0..439), but defense in depth: a future boot.img
+        //    layout change could shift the UUID position. Writing it
+        //    back is cheap.
+        try writer.patchSector(lba: 0, offset: 384, bytes: savedUUID)
+
+        // 7. Write the new GRUB2 core image. Position depends on
+        //    partition style. Truncate-then-pad order matches the
+        //    fresh-install path (`executeFreshInstall`) — the inverse
+        //    order would zero out the trailing 0..511 bytes if
+        //    coreImg exceeded the cap and wasn't sector-aligned, which
+        //    Ventoy's current core.img isn't but defensive code wins.
+        progress.report(.init(phase: .writing, message: "Writing core.img..."))
+        let coreStartLBA: UInt64
+        let coreMaxSectors: Int
+        switch probe.partitionStyle {
+        case .gpt:
+            coreStartLBA = 34
+            coreMaxSectors = 2014  // up to LBA 2047 inclusive
+        case .mbr:
+            coreStartLBA = 1
+            coreMaxSectors = 2047
+        case .unknown:
+            throw DriverError.diskIO("Update: partition style is unknown (probe was successful but didn't determine MBR/GPT)")
+        }
+        let coreCapBytes = coreMaxSectors * Int(SECTOR_SIZE)
+        var core = Data(boot.coreImg.prefix(coreCapBytes))
+        if core.count % Int(SECTOR_SIZE) != 0 {
+            let pad = Int(SECTOR_SIZE) - (core.count % Int(SECTOR_SIZE))
+            core.append(Data(repeating: 0, count: pad))
+        }
+        try writer.writeAt(offset: coreStartLBA * SECTOR_SIZE, core)
+
+        // 8. Restore secure-boot toggle. Bytes 92 and 17908 inside the
+        //    legacy-BIOS gap are the toggle markers — Ventoy stamps
+        //    0x22/0x23 for secure-boot, 0x20/0x21 otherwise. We just
+        //    overwrote the surrounding region with `core.img`, so we
+        //    re-write the byte to whichever value matches the
+        //    pre-existing secure-boot state.
+        let sbA: UInt8 = probe.secureBootEnabled ? 0x22 : 0x20
+        let sbB: UInt8 = probe.secureBootEnabled ? 0x23 : 0x21
+        try writer.patchSector(
+            lba: UInt64(92 / Int(SECTOR_SIZE)),
+            offset: 92 % Int(SECTOR_SIZE),
+            bytes: Data([sbA])
+        )
+        try writer.patchSector(
+            lba: UInt64(17908 / Int(SECTOR_SIZE)),
+            offset: 17908 % Int(SECTOR_SIZE),
+            bytes: Data([sbB])
+        )
+
+        // 9. Overwrite partition 2 (VTOYEFI) wholesale with the new
+        //    32 MiB disk image. This is the bulk of the write — about
+        //    32 MiB on USB 2.0 takes 3-5 seconds.
+        progress.report(.init(phase: .writing, message: "Updating VTOYEFI partition (32 MiB)..."))
+        try writer.writeAt(offset: probe.partition2StartSector * SECTOR_SIZE, boot.diskImg)
+
+        // 10. Restore reserved sectors at LBA 2040..2047. These were
+        //     read at step 4 *before* the boot.img + core.img writes,
+        //     so they survive intact.
+        try writer.writeAt(offset: 2040 * SECTOR_SIZE, savedReserved)
+
+        try writer.fsync()
+        writer.close()
+        progress.report(.init(phase: .writing, message: "All writes complete, fsync'd."))
+
+        // 11. Ask macOS to re-read the partition table so it picks up
+        //     any metadata changes in partition 2.
+        progress.report(.init(phase: .formatting, message: "Reloading disk..."))
+        _ = try? Subprocess.run("/usr/sbin/diskutil", ["reloadDisk", "/dev/\(plan.target.bsdName)"])
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try DiskInfo.remount(bsdName: plan.target.bsdName)
+
+        progress.report(.init(phase: .done, message: "Ventoy updated to \(version) on \(plan.target.devicePath). ISOs and config preserved."))
     }
 }

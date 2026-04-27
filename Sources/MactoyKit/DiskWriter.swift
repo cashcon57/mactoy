@@ -88,6 +88,36 @@ public final class DiskWriter {
 
     public func readSector(lba: UInt64) throws -> Data {
         try seek(to: lba * SECTOR_SIZE)
+        return try readSectorAtCurrentPosition()
+    }
+
+    /// Read exactly `count` bytes starting at byte offset `offset`. Built
+    /// on top of full-sector reads (macOS `/dev/rdisk*` requires
+    /// sector-aligned, sector-sized I/O at the syscall level), but
+    /// transparently handles sub-sector starts and lengths by reading
+    /// the bracketing sectors and slicing.
+    ///
+    /// Used by `FAT16Reader` / `VentoyVersionProbe` for partition-2
+    /// reads where directory entries and FAT entries can land
+    /// off-sector-boundaries.
+    public func readBytes(at offset: UInt64, count: Int) throws -> Data {
+        let secSize = Int(SECTOR_SIZE)
+        let firstSector = offset / SECTOR_SIZE
+        let firstSectorOffset = Int(offset % SECTOR_SIZE)
+        let lastByteExclusive = offset + UInt64(count)
+        let lastSectorExclusive = (lastByteExclusive + SECTOR_SIZE - 1) / SECTOR_SIZE
+        let sectorsToRead = Int(lastSectorExclusive - firstSector)
+
+        try seek(to: firstSector * SECTOR_SIZE)
+        var buf = Data()
+        buf.reserveCapacity(sectorsToRead * secSize)
+        for _ in 0..<sectorsToRead {
+            buf.append(try readSectorAtCurrentPosition())
+        }
+        return buf.subdata(in: firstSectorOffset..<(firstSectorOffset + count))
+    }
+
+    private func readSectorAtCurrentPosition() throws -> Data {
         var buf = Data(count: Int(SECTOR_SIZE))
         try buf.withUnsafeMutableBytes { raw in
             guard let base = raw.baseAddress else {

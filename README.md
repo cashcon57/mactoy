@@ -48,10 +48,11 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 
 ---
 
-## Status — v0.2.0 alpha
+## Status — v0.3.0 alpha
 
 - [x] GPT + boot-image math ported from the Python proof-of-concept (cross-validated: Swift and Python produce bit-identical layouts for the same disk).
 - [x] Ventoy install flow end-to-end (download → extract → partition → write → format).
+- [x] **Update Ventoy in-place** (v0.3.0). Updates the bootloader on a drive that already has Ventoy without erasing your ISOs or `/ventoy/` config. Mactoy is the first non-official-Ventoy-team port of this flow on macOS.
 - [x] Raw image flashing with `.xz` and `.gz` decompression.
 - [x] Liquid Glass SwiftUI interface on macOS 26 Tahoe; automatic `regularMaterial` fallback on macOS 13–15 so the same binary runs on Ventura, Sonoma, Sequoia, and Tahoe — Apple Silicon *and* Intel.
 - [x] Unit tests for partition layout, GPT header/entry/CRC, MBR, plan validation, version-string allowlist.
@@ -68,7 +69,7 @@ Grab `Mactoy-<version>.dmg` from the [Releases page](https://github.com/cashcon5
 
 ### Open it
 
-1. Open `Mactoy-0.2.0.dmg`.
+1. Open `Mactoy-0.3.0.dmg`.
 2. Drag `Mactoy.app` into `/Applications`.
 3. Launch from Launchpad or `/Applications`. Opens normally — no right-click dance needed. The DMG is Apple-notarized, so Gatekeeper sees it as a known-good Developer ID build.
 
@@ -241,7 +242,7 @@ swift test
 
 # Build the signed release bundle + DMG (requires a Developer ID cert in Keychain)
 ./scripts/build-app.sh release devid
-./scripts/build-dmg.sh 0.2.0 devid
+./scripts/build-dmg.sh 0.3.0 devid
 
 # Build a universal (arm64 + x86_64) app bundle — ship this if you
 # want one binary that runs on both Apple Silicon and Intel Macs.
@@ -272,11 +273,12 @@ Mactoy/
 | Version | Feature                                                                                            |
 | ------- | -------------------------------------------------------------------------------------------------- |
 | v0.1    | Ventoy install + raw flash + ISO library, signed + notarized, version picker, SMAppService helper  |
-| v0.2    | Universal binary (arm64 + x86_64), macOS 13.5+ support, Liquid Glass fallback (**this release**)   |
-| v0.3    | Homebrew cask, first-party hardware CI, SHA256 verification UI                                     |
-| v0.4    | NTFS option, per-disk exFAT label override, Sparkle auto-update                                    |
-| v0.5    | Ventoy update-in-place (preserve data), plugin (JSON) editor                                       |
-| v1.0    | Persistence `.dat` creator, stability pass, real-hardware Intel CI                                 |
+| v0.2    | Universal binary (arm64 + x86_64), macOS 13.5+ support, Liquid Glass fallback                      |
+| v0.3    | Ventoy update-in-place (preserve ISOs), os.Logger diagnostics (**this release**)                   |
+| v0.4    | Homebrew cask, first-party hardware CI, SHA256 verification UI                                     |
+| v0.5    | NTFS option, per-disk exFAT label override, Sparkle auto-update                                    |
+| v0.6    | Plugin (JSON) editor, persistence `.dat` creator                                                   |
+| v1.0    | Stability pass, real-hardware Intel CI, plugin schema validation                                   |
 | v1.1+   | Windows ISO driver, macOS installer USB driver                                                     |
 
 ## License

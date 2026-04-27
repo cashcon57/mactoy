@@ -5,12 +5,14 @@ import os
 
 enum AppMode: String, CaseIterable, Hashable {
     case installVentoy
+    case updateVentoy
     case flashImage
     case manageDisk
 
     var displayName: String {
         switch self {
         case .installVentoy: return "Install Ventoy"
+        case .updateVentoy:  return "Update Ventoy"
         case .flashImage:    return "Flash Image"
         case .manageDisk:    return "Manage Disk"
         }
@@ -19,6 +21,7 @@ enum AppMode: String, CaseIterable, Hashable {
     var symbol: String {
         switch self {
         case .installVentoy: return "externaldrive.badge.plus"
+        case .updateVentoy:  return "arrow.triangle.2.circlepath"
         case .flashImage:    return "bolt.horizontal.circle"
         case .manageDisk:    return "folder.badge.gearshape"
         }
@@ -85,6 +88,19 @@ final class AppState: ObservableObject {
     @Published var status: InstallStatus = .idle
     @Published var log: [ProgressUpdate] = []
 
+    // Ventoy probe — populated whenever the selected disk changes (and
+    // the helper is reachable). Drives the Update Ventoy panel: shows
+    // an Update CTA when `isVentoyDisk == true`, a Repair-via-fresh-
+    // install CTA when `looksLikeBrokenVentoy == true`, or the "no
+    // Ventoy here" empty state otherwise.
+    @Published var detectedVentoy: VentoyProbeResult?
+    /// Non-nil when the most recent probe attempt for the currently-
+    /// selected disk failed (XPC unreachable, decode error, daemon not
+    /// approved). Drives the UpdateVentoyPanel's "probe-failed" hint
+    /// state. Cleared whenever a fresh probe is fired or succeeds.
+    @Published var probeError: String?
+    private var probeTask: Task<Void, Never>?
+
     var selectedDisk: DiskTarget? {
         guard let b = selectedDiskBSD else { return nil }
         return disks.first { $0.bsdName == b }
@@ -95,6 +111,7 @@ final class AppState: ObservableObject {
         guard selectedDisk != nil else { return false }
         switch mode {
         case .installVentoy: return true
+        case .updateVentoy:  return detectedVentoy?.isVentoyDisk == true
         case .flashImage:    return selectedImagePath != nil
         case .manageDisk:    return false
         }
@@ -238,12 +255,80 @@ final class AppState: ObservableObject {
         if self.disks != disks {
             self.disks = disks
         }
+        let prevSelection = selectedDiskBSD
         if let sel = selectedDiskBSD, !disks.contains(where: { $0.bsdName == sel }) {
             selectedDiskBSD = nil
         }
         if selectedDiskBSD == nil, let first = disks.first {
             selectedDiskBSD = first.bsdName
         }
+        // Re-probe when the selection actually changed. The probe runs
+        // off-MainActor; the UI updates when it returns.
+        if selectedDiskBSD != prevSelection {
+            triggerVentoyProbe()
+        }
+    }
+
+    /// Kick off (or restart) the Ventoy probe for the currently-
+    /// selected disk. Cancels any in-flight probe so rapid selection
+    /// changes don't pile up XPC round trips. Debounced 300 ms so a
+    /// keyboard-arrowing user who flips through 5 disks in 100 ms only
+    /// triggers one probe at the end.
+    func triggerVentoyProbe() {
+        probeTask?.cancel()
+        let bsd = selectedDiskBSD
+        // Clear stale result immediately — UI shouldn't show last
+        // disk's probe data while the new probe is in flight.
+        detectedVentoy = nil
+        probeError = nil
+        guard let bsd else { return }
+        probeTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            if Task.isCancelled { return }
+            do {
+                let result = try await HelperInvoker.probeVentoy(bsdName: bsd)
+                if Task.isCancelled { return }
+                await MainActor.run {
+                    guard let self else { return }
+                    // Confirm the selection is still the disk we
+                    // probed; user may have moved on while we waited.
+                    if self.selectedDiskBSD == bsd {
+                        self.detectedVentoy = result
+                        self.probeError = nil
+                    }
+                }
+            } catch {
+                // Probe failure (helper not registered, XPC failure,
+                // disk vanished). Surface to UI so the user sees a
+                // diagnostic hint instead of a perpetual spinner.
+                Self.log.info("Ventoy probe failed for \(bsd, privacy: .public): \(error.localizedDescription, privacy: .private)")
+                if Task.isCancelled { return }
+                let message = Self.probeErrorMessage(for: error)
+                await MainActor.run {
+                    guard let self else { return }
+                    if self.selectedDiskBSD == bsd {
+                        self.probeError = message
+                    }
+                }
+            }
+        }
+    }
+
+    /// Translate a probe error into user-facing copy. The most likely
+    /// cause for a clean install is "helper not approved yet" (no
+    /// daemon listening on the mach service). We surface that as the
+    /// default message and let the user know they can resolve it via
+    /// the Install Ventoy flow which kicks off helper registration.
+    private static func probeErrorMessage(for error: Error) -> String {
+        if let helperErr = error as? HelperInvoker.HelperError {
+            switch helperErr {
+            case .xpcUnreachable:
+                return "Couldn't reach the Mactoy helper to probe this disk. The helper may not be approved yet — try a fresh install on the **Install Ventoy** tab once to register it, then come back here."
+            case .executionFailed(let m):
+                return "Probe failed: \(m)"
+            }
+        }
+        return "Probe failed: \(error.localizedDescription)"
     }
 
     private func setLatestVentoyVersion(_ v: String) {
@@ -313,13 +398,21 @@ final class AppState: ObservableObject {
 
         let source: InstallSource
         let driver: DriverID
+        let ventoyOperation: VentoyOperation
         switch mode {
         case .installVentoy:
             driver = .ventoy
+            ventoyOperation = .freshInstall
+            let v = effectiveVentoyVersion
+            source = .ventoyVersion(v.isEmpty ? (latestVentoyVersion ?? "") : v)
+        case .updateVentoy:
+            driver = .ventoy
+            ventoyOperation = .updateInPlace
             let v = effectiveVentoyVersion
             source = .ventoyVersion(v.isEmpty ? (latestVentoyVersion ?? "") : v)
         case .flashImage:
             driver = .rawImage
+            ventoyOperation = .freshInstall  // unused for raw image
             guard let p = selectedImagePath else { return }
             source = .localImage(path: p)
         case .manageDisk:
@@ -334,7 +427,8 @@ final class AppState: ObservableObject {
             target: target,
             source: source,
             filesystem: .exfat,
-            workDir: workDir.path
+            workDir: workDir.path,
+            ventoyOperation: ventoyOperation
         )
 
         do {
@@ -353,7 +447,8 @@ final class AppState: ObservableObject {
                     target: plan.target,
                     source: .ventoyVersion(latest),
                     filesystem: plan.filesystem,
-                    workDir: plan.workDir
+                    workDir: plan.workDir,
+                    ventoyOperation: plan.ventoyOperation
                 )
             } catch {
                 status = .failed("Failed to resolve latest Ventoy version: \(error)")

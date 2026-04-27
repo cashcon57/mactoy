@@ -19,35 +19,88 @@ private let daemonLog = Logger(subsystem: "com.mactoy", category: "mactoyd")
 let signingTeamIdentifier = "MUQ3H79Y4N"
 let expectedClientIdentifier = "com.mactoy.Mactoy"
 
-final class DaemonListenerDelegate: NSObject, NSXPCListenerDelegate {
+final class DaemonListenerDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
+    /// Connection-lifecycle bookkeeping. The daemon exits 0.5 s after
+    /// the LAST connection closes so launchd can respawn us fresh on
+    /// the next install (which makes upgrades pick up the new
+    /// `mactoyd` binary instead of leaving a stale RunLoop alive).
+    /// Pre-v0.3.0 the only XPC traffic was `executePlan`, so the
+    /// per-connection auto-exit pattern was safe. v0.3.0 added
+    /// `probeVentoy`, which the app fires on every disk-selection
+    /// change — without the cancellation logic below, the queued
+    /// `exit(0)` from a probe disconnect could fire DURING a
+    /// subsequent install and corrupt the bootloader mid-write.
+    ///
+    /// The bookkeeping: track active-connection count + a pending
+    /// `DispatchWorkItem`. When a new connection arrives, cancel
+    /// the pending exit. Only schedule a new exit when active count
+    /// drops to zero.
+    private let lock = NSLock()
+    private var activeConnections = 0
+    private var pendingExit: DispatchWorkItem?
+
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
         guard authorize(connection: newConnection) else {
             daemonLog.error("rejected unauthorized XPC client (signing-requirement check failed)")
             fputs("mactoyd: rejected unauthorized XPC client\n", stderr)
             return false
         }
-        daemonLog.info("accepted XPC client connection")
+
+        // Cancel any pending shutdown — a new client just connected.
+        // This is the v0.3.0 fix for the probe→install race.
+        lock.lock()
+        if let pending = pendingExit {
+            pending.cancel()
+            pendingExit = nil
+            daemonLog.info("cancelled pending exit — new connection arrived in time")
+        }
+        activeConnections += 1
+        let activeAfter = activeConnections
+        lock.unlock()
+
+        daemonLog.info("accepted XPC client connection (active=\(activeAfter, privacy: .public))")
         newConnection.exportedInterface = NSXPCInterface(with: MactoydProtocol.self)
         newConnection.exportedObject = MactoydService(connection: newConnection)
         newConnection.remoteObjectInterface = NSXPCInterface(with: MactoyClientProtocol.self)
 
-        // When the client disconnects, schedule process exit so launchd
-        // re-spawns us fresh on the next connection. Without this, a
-        // long-lived RunLoop keeps an old mactoyd binary live across
-        // rebuilds / upgrades — the user ends up talking to stale code.
-        newConnection.invalidationHandler = {
-            daemonLog.info("XPC connection closed, exiting for clean re-spawn")
-            fputs("mactoyd: XPC connection closed, exiting for clean re-spawn\n", stderr)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { exit(0) }
+        newConnection.invalidationHandler = { [weak self] in
+            self?.scheduleShutdownIfIdle(reason: "closed")
         }
-        newConnection.interruptionHandler = {
-            daemonLog.error("XPC connection interrupted, exiting")
-            fputs("mactoyd: XPC connection interrupted, exiting\n", stderr)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { exit(0) }
+        newConnection.interruptionHandler = { [weak self] in
+            self?.scheduleShutdownIfIdle(reason: "interrupted")
         }
 
         newConnection.resume()
         return true
+    }
+
+    /// Called from a connection's invalidation/interruption handler.
+    /// Decrements the active-connection counter and, if it hits zero,
+    /// schedules a delayed `exit(0)` that the next-arriving connection
+    /// can cancel before it fires.
+    private func scheduleShutdownIfIdle(reason: String) {
+        lock.lock()
+        activeConnections = max(0, activeConnections - 1)
+        let active = activeConnections
+        // If another connection is already in flight (e.g. install
+        // started while a probe was being torn down), don't schedule
+        // an exit at all.
+        guard active == 0 else {
+            lock.unlock()
+            daemonLog.info("connection \(reason, privacy: .public); other connections still active (count=\(active, privacy: .public)) — not scheduling exit")
+            return
+        }
+        // Cancel any prior pending exit (defensive — shouldn't happen
+        // since acceptNewConnection cancels it, but harmless).
+        pendingExit?.cancel()
+        let item = DispatchWorkItem {
+            daemonLog.info("XPC idle timeout, exiting for clean re-spawn (\(reason, privacy: .public))")
+            fputs("mactoyd: XPC idle timeout, exiting for clean re-spawn\n", stderr)
+            exit(0)
+        }
+        pendingExit = item
+        lock.unlock()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
     }
 
     /// Verify the connecting process is signed by our team identifier and
@@ -108,6 +161,28 @@ final class MactoydService: NSObject, MactoydProtocol {
         reply(mactoydVersion)
     }
 
+    func probeVentoy(_ bsdName: String, reply: @escaping (Data?, String?) -> Void) {
+        // Ventoy probe is read-only and synchronous (a few sector reads
+        // off `/dev/rdisk*`). We still hop to a detached task so we
+        // don't tie up the XPC delivery queue if the disk is slow to
+        // respond. The reply closure isn't Sendable, so wrap it in an
+        // unchecked-Sendable shim like `executePlan` does.
+        let replyBox = ProbeReplyBox(reply)
+        Task.detached {
+            daemonLog.info("probeVentoy: bsd=\(bsdName, privacy: .public)")
+            let result = VentoyVersionProbe.probe(bsdName: bsdName)
+            do {
+                let encoder = JSONEncoder()
+                let data = try encoder.encode(result)
+                daemonLog.info("probeVentoy: bsd=\(bsdName, privacy: .public) isVentoy=\(result.isVentoyDisk, privacy: .public) version=\(result.detectedVersion ?? "n/a", privacy: .public)")
+                replyBox.call(data, nil)
+            } catch {
+                daemonLog.error("probeVentoy: encode failed: \(error.localizedDescription, privacy: .private)")
+                replyBox.call(nil, "encoding failed: \(error)")
+            }
+        }
+    }
+
     func executePlan(_ planData: Data, reply: @escaping (Bool, String?) -> Void) {
         // Proxy + reply callbacks are not Sendable. Wrap both in unchecked
         // shims so they can be captured into the detached task. Safe in
@@ -162,6 +237,14 @@ final class ReplyBox: @unchecked Sendable {
     private let reply: (Bool, String?) -> Void
     init(_ reply: @escaping (Bool, String?) -> Void) { self.reply = reply }
     func call(_ success: Bool, _ err: String?) { reply(success, err) }
+}
+
+/// Same shape as ReplyBox, but for the probe reply block whose first
+/// argument is `Data?` (encoded `VentoyProbeResult`) instead of `Bool`.
+final class ProbeReplyBox: @unchecked Sendable {
+    private let reply: (Data?, String?) -> Void
+    init(_ reply: @escaping (Data?, String?) -> Void) { self.reply = reply }
+    func call(_ data: Data?, _ err: String?) { reply(data, err) }
 }
 
 /// Wrapper to hand the client proxy into a @Sendable async closure.

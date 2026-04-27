@@ -121,6 +121,7 @@ private struct PrimaryButton: View {
     private var primaryLabel: String {
         switch state.mode {
         case .installVentoy: return "Install Ventoy"
+        case .updateVentoy:  return "Update Ventoy"
         case .flashImage:    return "Flash Image"
         case .manageDisk:    return "—"
         }
@@ -129,6 +130,8 @@ private struct PrimaryButton: View {
     private var tint: Color {
         switch state.mode {
         case .installVentoy, .flashImage: return .red
+        // Update is non-destructive — accent (blue) signals safe.
+        case .updateVentoy:               return .accentColor
         case .manageDisk:                 return .accentColor
         }
     }

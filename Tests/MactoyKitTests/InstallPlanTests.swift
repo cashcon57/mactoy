@@ -89,4 +89,53 @@ struct InstallPlanValidateTests {
             Issue.record("expected .ventoyVersion source")
         }
     }
+
+    @Test("ventoyOperation defaults to .freshInstall")
+    func ventoyOperationDefault() {
+        let p = plan(target())
+        #expect(p.ventoyOperation == .freshInstall)
+        #expect(p.planVersion == 2)
+    }
+
+    @Test("ventoyOperation explicit .updateInPlace round-trip")
+    func ventoyOperationUpdate() throws {
+        let p = InstallPlan(
+            driver: .ventoy,
+            target: target(),
+            source: .ventoyVersion("1.1.11"),
+            workDir: "/tmp/ventoy",
+            ventoyOperation: .updateInPlace
+        )
+        let data = try JSONEncoder().encode(p)
+        let decoded = try JSONDecoder().decode(InstallPlan.self, from: data)
+        #expect(decoded.ventoyOperation == .updateInPlace)
+    }
+
+    @Test("v0.2.x plan (planVersion=1, no ventoyOperation field) decodes as .freshInstall")
+    func backwardsCompat() throws {
+        // Hand-craft a JSON blob in the v1 schema (no ventoyOperation
+        // key). Daemon during a rolling upgrade would receive this from
+        // a v0.2.x app — legacy plans must still execute as fresh
+        // installs.
+        let legacyJSON = """
+        {
+            "driver": "ventoy",
+            "target": {
+                "bsdName": "disk6",
+                "sizeInBytes": 133143986176,
+                "isExternal": true,
+                "isRemovable": true,
+                "mediaName": "USB Drive",
+                "volumes": []
+            },
+            "source": { "ventoyVersion": { "_0": "1.1.11" } },
+            "filesystem": "exfat",
+            "workDir": "/tmp/ventoy",
+            "planVersion": 1
+        }
+        """
+        let decoded = try JSONDecoder().decode(InstallPlan.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.ventoyOperation == .freshInstall)
+        #expect(decoded.planVersion == 1)
+    }
 }
