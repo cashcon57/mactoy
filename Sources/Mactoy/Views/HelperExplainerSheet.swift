@@ -25,8 +25,8 @@ struct HelperExplainerSheet: View {
                        body: "macOS blocks ordinary apps from writing directly to USB drives. To install Ventoy (which requires raw disk writes), Mactoy has to go through a privileged helper registered with the system.")
 
                 bullet(icon: "bolt.slash.fill",
-                       title: "It does not run in the background",
-                       body: "The helper (`mactoyd`) only starts when Mactoy asks it to — during an install or flash — and exits when the job is done. It doesn't run at login, doesn't poll, and doesn't use resources when idle. macOS still files it under 'Allow in the Background' because that's where the toggle lives.")
+                       title: "Mactoy will not auto-launch at login",
+                       body: "Despite the **\(SystemSettingsStrings.loginItemsPane)** label, this toggle does **not** make Mactoy open at login. It only allows the privileged helper (`mactoyd`) to start when Mactoy asks for it — during an install, update, or flash. The helper exits a moment after each job and does not run while idle. Mactoy.app itself stays closed until you open it.")
 
                 bullet(icon: "hand.raised.fill",
                        title: "Approval is a one-time click",
