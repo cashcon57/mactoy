@@ -101,6 +101,16 @@ final class AppState: ObservableObject {
     @Published var probeError: String?
     private var probeTask: Task<Void, Never>?
 
+    /// Captured target + mode from the user's most recent confirmation,
+    /// preserved across the helper-approval gap. The first run() call
+    /// returns early if the helper isn't enabled; the helper-poll task
+    /// re-invokes run() once the toggle flips. Both invocations must
+    /// use the SAME captured disk — never re-derive from
+    /// `selectedDisk`. Cleared on successful start, cancellation, or
+    /// terminal failure.
+    private var pendingRunTarget: DiskTarget?
+    private var pendingRunMode: AppMode?
+
     var selectedDisk: DiskTarget? {
         guard let b = selectedDiskBSD else { return nil }
         return disks.first { $0.bsdName == b }
@@ -213,8 +223,19 @@ final class AppState: ObservableObject {
                         self.isAwaitingHelperApproval = false
                         self.helperPollTask = nil
                         // If the user was waiting to run an install after
-                        // approval, kick it off now.
-                        Task { @MainActor in await self.run() }
+                        // approval, kick it off now — using the SAME
+                        // captured target/mode they confirmed before
+                        // the helper-approval detour. NEVER re-derive
+                        // from selectedDisk here; that re-derivation is
+                        // exactly the bug that caused the wrong-disk
+                        // wipe in v0.3.0.
+                        if let target = self.pendingRunTarget, let mode = self.pendingRunMode {
+                            Task { @MainActor in
+                                await self.run(confirmedTarget: target, confirmedMode: mode)
+                            }
+                        } else {
+                            Self.log.warning("helper poll: helperStatus=enabled but no pending run captured")
+                        }
                     }
                 }
                 if await MainActor.run(body: { self.helperStatus == .enabled }) { return }
@@ -226,6 +247,12 @@ final class AppState: ObservableObject {
         helperPollTask?.cancel()
         helperPollTask = nil
         isAwaitingHelperApproval = false
+        // Clear the captured target/mode — if the user cancelled the
+        // approval flow, they are not opting into an install on the
+        // disk they confirmed earlier. Don't let a future helper-poll
+        // resume fire on stale state.
+        pendingRunTarget = nil
+        pendingRunMode = nil
     }
 
     func startDiskEnumeration() {
@@ -255,6 +282,19 @@ final class AppState: ObservableObject {
         if self.disks != disks {
             self.disks = disks
         }
+
+        // **Iron-clad targeting defense (issue #1, v0.3.1).**
+        // While the user has a confirmation sheet open, do NOT mutate
+        // `selectedDiskBSD` — even if the originally-selected disk
+        // momentarily drops off the bus. The user has already
+        // committed to a specific disk via `requestRun()`; sneakily
+        // re-targeting them mid-confirmation caused Mactoy to wipe
+        // disk6 after the user confirmed disk5. The captured disk is
+        // authoritative until they confirm or cancel.
+        if pendingEraseConfirmation != nil {
+            return
+        }
+
         let prevSelection = selectedDiskBSD
         if let sel = selectedDiskBSD, !disks.contains(where: { $0.bsdName == sel }) {
             selectedDiskBSD = nil
@@ -378,28 +418,92 @@ final class AppState: ObservableObject {
 
     func cancelRun() {
         pendingEraseConfirmation = nil
+        // Also clear the captured target/mode so a stale helper-poll
+        // resume can't fire an install the user has since cancelled.
+        pendingRunTarget = nil
+        pendingRunMode = nil
     }
 
     func confirmRun() {
-        guard pendingEraseConfirmation != nil else { return }
+        guard let confirmation = pendingEraseConfirmation else { return }
         pendingEraseConfirmation = nil
-        Task { @MainActor in await self.run() }
+        // **Iron-clad targeting (Layer 3, issue #1):** pass the
+        // captured `EraseConfirmation` through to `run()` explicitly.
+        // `run()` MUST NOT re-read `selectedDisk` from here on — that
+        // re-read is what allowed Mactoy to wipe disk6 after the user
+        // confirmed disk5 in v0.3.0. We also store the captured pair
+        // in `pendingRunTarget/pendingRunMode` so the helper-poll auto-
+        // resume path uses the same target across the approval gap.
+        let capturedTarget = confirmation.disk
+        let capturedMode = confirmation.mode
+        pendingRunTarget = capturedTarget
+        pendingRunMode = capturedMode
+        Task { @MainActor in await self.run(confirmedTarget: capturedTarget, confirmedMode: capturedMode) }
     }
 
-    func run() async {
-        guard canRun, let target = selectedDisk else {
-            Self.log.warning("run() called when canRun=false or no disk selected")
+    /// Execute the install / update / flash that the user confirmed.
+    ///
+    /// **Targeting safety (v0.3.1, issue #1):** `confirmedTarget` is
+    /// the disk the user explicitly approved in the confirmation sheet.
+    /// This function does NOT re-derive the target from
+    /// `selectedDiskBSD` / `selectedDisk` — those are presentation-
+    /// layer state that can drift between confirmation and execution
+    /// (USB hub hiccups, sleep/wake, the disk poll snapping the
+    /// selection to a different disk). Re-deriving the target here is
+    /// what caused the wrong-disk wipe in v0.3.0; we now require the
+    /// caller to thread the captured target through explicitly.
+    func run(confirmedTarget: DiskTarget, confirmedMode: AppMode) async {
+        let target = confirmedTarget
+
+        // Layer 6 (BSD-name guard): even if the rest of the
+        // fingerprint coincidentally matches a different live disk
+        // with the same `bsdName`, refuse if the captured BSD name
+        // differs from what the disk list currently believes is
+        // selected. The selection-freeze in `applyDiskList` should
+        // already prevent drift, but defense-in-depth wins here.
+        if let liveSelection = selectedDiskBSD, liveSelection != target.bsdName {
+            status = .failed(
+                "Refusing to run: the selected disk changed between confirmation and execution. " +
+                "Confirmed /dev/\(target.bsdName), but the sidebar now shows /dev/\(liveSelection) selected. " +
+                "This usually means a USB drive was plugged or unplugged during the confirmation. Please re-select the disk and try again."
+            )
+            Self.log.error("run() aborted: selection drifted (confirmed=\(target.bsdName, privacy: .public), live=\(liveSelection, privacy: .public))")
             return
         }
 
         log = []
         status = .preparing("Preparing install plan...")
-        Self.log.info("run() begin: mode=\(self.mode.rawValue, privacy: .public) target=/dev/\(target.bsdName, privacy: .public)")
+        Self.log.info("run() begin: mode=\(confirmedMode.rawValue, privacy: .public) target=/dev/\(target.bsdName, privacy: .public)")
+
+        // Layer 4 (app-side re-verification): probe the live disk and
+        // assert its identity matches what the user confirmed.
+        // Anything mismatched (size, mediaName, external/removable
+        // flags, BSD name) means the disk that's at /dev/<bsd> right
+        // now is NOT the disk the user confirmed. Abort hard — better
+        // a clear error than a silent wrong-disk write.
+        do {
+            let live = try DiskInfo.probe(bsdName: target.bsdName)
+            if let mismatch = target.fingerprintMismatch(against: live) {
+                status = .failed(
+                    "Refusing to run: the disk at /dev/\(target.bsdName) is not the same disk you confirmed. \(mismatch). " +
+                    "This typically means a USB device was unplugged or replugged after you clicked the confirm button. Please re-select your target disk and try again."
+                )
+                Self.log.error("run() aborted: fingerprint mismatch — \(mismatch, privacy: .public)")
+                return
+            }
+        } catch {
+            status = .failed(
+                "Refusing to run: could not re-verify /dev/\(target.bsdName) before writing. \(error.localizedDescription) " +
+                "Please re-select the disk and try again."
+            )
+            Self.log.error("run() aborted: probe failed — \(error.localizedDescription, privacy: .private)")
+            return
+        }
 
         let source: InstallSource
         let driver: DriverID
         let ventoyOperation: VentoyOperation
-        switch mode {
+        switch confirmedMode {
         case .installVentoy:
             driver = .ventoy
             ventoyOperation = .freshInstall
@@ -540,6 +644,13 @@ final class AppState: ObservableObject {
             try? await HelperLifecycle.unregister()
             helperStatus = HelperLifecycle.status
         }
+
+        // Clear the captured target/mode now that this run reached a
+        // terminal outcome. They survived the helper-approval gap if
+        // needed (handled by the helper-poll resume path); they are
+        // not allowed to survive a completed run.
+        pendingRunTarget = nil
+        pendingRunMode = nil
     }
 
     func reset() {

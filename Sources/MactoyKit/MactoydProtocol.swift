@@ -40,5 +40,5 @@ import Foundation
 /// `Contents/Library/LaunchDaemons/com.mactoy.mactoyd.plist`.
 public let mactoydMachServiceName = "com.mactoy.mactoyd"
 
-public let mactoydVersion = "0.3.0"
+public let mactoydVersion = "0.3.1"
 

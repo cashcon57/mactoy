@@ -44,17 +44,28 @@ struct DetailPane: View {
 
             Divider()
 
-            ScrollView {
-                Group {
-                    switch state.mode {
-                    case .installVentoy: InstallVentoyPanel()
-                    case .updateVentoy:  UpdateVentoyPanel()
-                    case .flashImage:    FlashImagePanel()
-                    case .manageDisk:    ManageDiskPanel()
-                    }
+            // **Manage Disk skips the outer ScrollView (issue #1, v0.3.1).**
+            // ManageDiskPanel renders a `List`, and `List` inside
+            // `ScrollView` crashes SwiftUI on macOS 26 (Sequoia/Tahoe)
+            // — multiple users reported `swift_release` /
+            // `swift_arrayDestroy` crashes in `HVStack.updateCache`
+            // when clicking the Manage Disk tab. The List manages its
+            // own vertical overflow, so wrapping it in a ScrollView
+            // gives nothing but the crash. The other panels are
+            // ScrollView-safe (no inner List).
+            Group {
+                switch state.mode {
+                case .installVentoy:
+                    ScrollView { InstallVentoyPanel().padding(20) }
+                case .updateVentoy:
+                    ScrollView { UpdateVentoyPanel().padding(20) }
+                case .flashImage:
+                    ScrollView { FlashImagePanel().padding(20) }
+                case .manageDisk:
+                    ManageDiskPanel().padding(20)
                 }
-                .padding(20)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
 

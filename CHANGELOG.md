@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.3.1] — 2026-04-28
+
+**P0 safety release.** A user reported that v0.3.0 wiped the wrong external disk: they had two USB drives plugged in, selected disk5, confirmed disk5, and Mactoy wrote disk6 ([issue #1](https://github.com/cashcon57/mactoy/issues/1)). The bug existed in every shipped version (v0.1.0 through v0.3.0) — all of those have been retroactively marked as prereleases on GitHub. v0.3.1 is the first release that's safe to install.
+
+Also fixes a SwiftUI crash on macOS 26 when clicking the Manage Disk tab (multiple users on M4 Studio / MBP M4 / Air M4).
+
+### Fixed
+
+- **Wrong-disk wipe (P0).** `run()` previously re-read `selectedDisk` after the user confirmed the target. If the disk-enumeration poll fired during the confirmation window AND the originally-selected disk momentarily dropped off the bus (USB-C hub hiccup, sleep/wake), `applyDiskList` would clear `selectedDiskBSD` and snap it to `disks.first?.bsdName` — which was a different disk. The install then targeted that different disk. v0.3.1 implements a six-layer iron-clad targeting defense:
+
+  1. **Confirmation captures full disk fingerprint** — bsdName, sizeInBytes, mediaName, isExternal, isRemovable. Already implicit in the `EraseConfirmation.disk: DiskTarget` field; now treated as authoritative.
+  2. **Selection frozen during confirmation.** `applyDiskList` refuses to mutate `selectedDiskBSD` while `pendingEraseConfirmation != nil`. The disks list still updates; the selection does not.
+  3. **`run()` takes the captured target as an explicit parameter.** No more re-reading `selectedDisk` from inside `run()`. `confirmRun()` threads the captured pair through; the helper-poll auto-resume path uses a stored `pendingRunTarget` to survive the helper-approval gap.
+  4. **App-side re-verification.** `run()` calls `DiskInfo.probe(bsdName:)` immediately before handing the plan to the daemon. If the live disk's fingerprint differs from the captured one (size, mediaName, etc.), the install aborts with a clear error sheet and no XPC call is made.
+  5. **Daemon-side re-verification.** `VentoyDriver.executeFreshInstall`, `VentoyDriver.executeUpdate`, and `RawImageDriver.execute` ALL re-probe the disk via `DiskInfo.probe` before opening `/dev/rdisk*`. The daemon is the last line of defense; it does not trust the app to have got the targeting right.
+  6. **BSD-name guard at execution.** Even if the rest of the fingerprint coincidentally matches a different disk that happened to land at the same `disk<N>` slot, the captured BSD name must match the current `selectedDiskBSD` or `run()` refuses.
+
+  All six layers must pass for any byte to hit `/dev/rdisk*`. New `DiskTarget.fingerprintMismatch(against:)` helper centralises the comparison; covered by 8 unit tests in `DiskTargetFingerprintTests.swift`.
+
+- **Manage Disk crash on macOS 26 (Sequoia/Tahoe).** `ContentView` previously wrapped every panel in a `ScrollView`. `ManageDiskPanel` renders a `List`, and `List` inside `ScrollView` is a known SwiftUI footgun that surfaces as a `swift_release` / `swift_arrayDestroy` crash inside `HVStack.updateCache` on macOS 26 — three users in [issue #1](https://github.com/cashcon57/mactoy/issues/1) hit this. v0.3.1 branches the wrapper so Manage Disk renders without the outer ScrollView (the inner List manages its own vertical overflow); the other panels keep their ScrollView wrappers.
+
+### Verified
+
+- `swift build -c release` clean for both products.
+- `swift test` — 38/38 (8 new fingerprint tests).
+- Independent code review of the diff before tagging.
+
+### Known limitations
+
+- The wrong-disk bug was reported; the new layered defense is verified by static analysis and parser-level tests. Reproducing the original race in an automated test would require simulated disk-arbitration churn — that test rig is on the v0.4 roadmap.
+
 ## [0.3.0] — 2026-04-27
 
 Adds **Update Ventoy** — a fourth top-level mode that updates an existing Ventoy install to a new version *without* erasing the user's ISOs or `/ventoy/` config. Mactoy is now the first non-official-Ventoy-team port of the in-place update flow.

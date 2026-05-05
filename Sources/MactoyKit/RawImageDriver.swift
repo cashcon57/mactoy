@@ -18,6 +18,17 @@ public struct RawImageDriver: InstallDriver {
         // on our own. A spoofed plan targeting an internal volume is
         // rejected here, not just at the app layer.
         let live = try DiskInfo.probe(bsdName: plan.target.bsdName)
+        // Layer 5 of the iron-clad targeting defense (v0.3.1, issue #1):
+        // verify the live disk's fingerprint matches the captured
+        // target. If a USB hub re-enumerated between confirmation and
+        // execution and /dev/<bsd> now points at a different physical
+        // drive, refuse to write rather than silently flash the wrong
+        // device.
+        if let mismatch = plan.target.fingerprintMismatch(against: live) {
+            throw DriverError.validation(
+                "Refusing to flash \(plan.target.devicePath): the live disk does not match the disk you confirmed. \(mismatch)"
+            )
+        }
         guard live.isExternal || live.isRemovable else {
             throw PlanValidationError.nonexternalDisk
         }
@@ -29,6 +40,10 @@ public struct RawImageDriver: InstallDriver {
 
         // Probe + unmount
         progress.report(.init(phase: .preparing, message: "Preparing \(plan.target.devicePath)..."))
+        // Just-in-time fingerprint re-check immediately before unmount
+        // (v0.3.1 issue #1). Cheap, closes the small window between
+        // the early probe at the top of execute() and the unmount/open.
+        try plan.target.reverifyFingerprintNow()
         try DiskInfo.unmount(bsdName: plan.target.bsdName)
         try await Task.sleep(nanoseconds: 1_000_000_000)
 
@@ -54,6 +69,15 @@ public struct RawImageDriver: InstallDriver {
         guard total <= plan.target.sizeInBytes else {
             throw DriverError.validation("Image (\(total) bytes) larger than target disk (\(plan.target.sizeInBytes) bytes)")
         }
+
+        // **Final fingerprint re-check immediately before the write
+        // loop (v0.3.1 issue #1).** Decompression of a multi-GB
+        // .xz/.gz can take tens of seconds; that's the longest TOCTOU
+        // window in the install pipeline. If a USB-hub reshuffle
+        // landed a different drive at /dev/<bsdName> while we were
+        // decompressing, abort here rather than write the user's
+        // bytes to the wrong device.
+        try plan.target.reverifyFingerprintNow()
 
         // Stream write in 4MB chunks with progress
         let chunkSize = 4 * 1024 * 1024

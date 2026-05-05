@@ -65,6 +65,59 @@ public struct DiskTarget: Codable, Sendable, Equatable {
         }
         return bsdName
     }
+
+    /// Iron-clad TOCTOU defense: verify that this captured DiskTarget
+    /// still describes the same physical disk as `fresh` (typically a
+    /// `DiskInfo.probe(bsdName:)` result taken right before any write).
+    /// Returns `nil` when everything matches; otherwise a human-readable
+    /// description of the FIRST mismatch encountered.
+    ///
+    /// Why this exists: a user's report (issue #1, 2026-04-25) showed
+    /// Mactoy wiping disk6 after the user explicitly confirmed disk5,
+    /// because the disk-enumeration poll fired during the confirmation
+    /// window and snapped `selectedDiskBSD` to a different disk. The
+    /// drivers and AppState now call `fingerprintMismatch` and refuse
+    /// to write if the live disk doesn't match what the user confirmed.
+    /// `volumes` is intentionally NOT compared — partition layouts are
+    /// expected to change during a fresh install and we'd be comparing
+    /// against a captured snapshot that's already stale by design.
+    /// Just-in-time re-verification: probe the live disk via `DiskInfo`
+    /// and assert its fingerprint still matches `self`. Throws
+    /// `DriverError.validation` on any mismatch. Drivers must call this
+    /// **immediately before unmount/write** — not just at the start of
+    /// the execute flow — because the gap between an early probe and
+    /// the actual write can be tens of seconds (Ventoy tarball
+    /// download, raw-image xz decompression). A USB hub
+    /// re-enumeration during that gap could put a different drive
+    /// behind the same `/dev/disk<N>` slot. v0.3.1 issue #1.
+    func reverifyFingerprintNow() throws {
+        let live = try DiskInfo.probe(bsdName: bsdName)
+        if let mismatch = fingerprintMismatch(against: live) {
+            throw DriverError.validation(
+                "Refusing to write \(devicePath): the live disk does not match the disk you confirmed. \(mismatch). " +
+                "Re-select the target disk and try again."
+            )
+        }
+    }
+
+    public func fingerprintMismatch(against fresh: DiskTarget) -> String? {
+        if self.bsdName != fresh.bsdName {
+            return "BSD name changed: confirmed \(self.bsdName), live \(fresh.bsdName)"
+        }
+        if self.sizeInBytes != fresh.sizeInBytes {
+            return "Size changed: confirmed \(self.sizeInBytes) bytes, live \(fresh.sizeInBytes) bytes"
+        }
+        if self.isExternal != fresh.isExternal {
+            return "External flag changed: confirmed \(self.isExternal), live \(fresh.isExternal)"
+        }
+        if self.isRemovable != fresh.isRemovable {
+            return "Removable flag changed: confirmed \(self.isRemovable), live \(fresh.isRemovable)"
+        }
+        if self.mediaName != fresh.mediaName {
+            return "Media name changed: confirmed \(self.mediaName ?? "nil"), live \(fresh.mediaName ?? "nil")"
+        }
+        return nil
+    }
 }
 
 public enum InstallSource: Codable, Sendable {

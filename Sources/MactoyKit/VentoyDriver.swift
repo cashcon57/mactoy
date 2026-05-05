@@ -33,8 +33,18 @@ public struct VentoyDriver: InstallDriver {
         progress.report(.init(phase: .extracting, message: "Decompressing boot images..."))
         let boot = try VentoyBootImages.load(fromVentoyDir: ventoyDir)
 
-        // 2. Probe disk
+        // 2. Probe disk + verify the live disk still matches the
+        //    captured target (Layer 5 of the iron-clad targeting
+        //    defense added in v0.3.1; see issue #1). If the user
+        //    confirmed disk5 (mediaName "RTL9210B-CG", 476.9 GB) but
+        //    the live /dev/disk5 is now a different drive (USB hub
+        //    re-enumerated, sleep/wake), we refuse to write.
         let probed = try DiskInfo.probe(bsdName: plan.target.bsdName)
+        if let mismatch = plan.target.fingerprintMismatch(against: probed) {
+            throw DriverError.validation(
+                "Refusing to write \(plan.target.devicePath): the live disk does not match the disk you confirmed. \(mismatch)"
+            )
+        }
         guard probed.isExternal || probed.isRemovable else {
             throw DriverError.validation("Target disk \(plan.target.devicePath) is not external/removable")
         }
@@ -51,6 +61,15 @@ public struct VentoyDriver: InstallDriver {
         let built = GPT.build(diskSectors: diskSectors, layout: layout)
 
         // 5. Unmount + write raw device
+        // **Just-in-time fingerprint re-verification (v0.3.1 issue #1).**
+        // The fingerprint check at step 2 happened BEFORE the Ventoy
+        // tarball download and decompression — that gap can be many
+        // seconds. Re-probe the live disk one more time immediately
+        // before unmounting so any USB-hub reshuffle that happened
+        // during the download window is caught here, not after we've
+        // started writing bytes to /dev/rdisk*.
+        try plan.target.reverifyFingerprintNow()
+
         progress.report(.init(phase: .unmounting, message: "Unmounting \(plan.target.devicePath)..."))
         try DiskInfo.unmount(bsdName: plan.target.bsdName)
         try await Task.sleep(nanoseconds: 1_500_000_000)
@@ -256,8 +275,21 @@ public struct VentoyDriver: InstallDriver {
             throw DriverError.unsupportedSource("VentoyDriver requires .ventoyVersion source")
         }
 
-        // 1. Probe to validate this is genuinely a Ventoy disk + capture
-        //    the partition-2 start sector + secure-boot state.
+        // 1a. Re-verify the live disk's fingerprint matches the
+        //     captured target. Layer 5 of the iron-clad targeting
+        //     defense (v0.3.1, issue #1). The Ventoy probe below also
+        //     reads the disk, but it doesn't compare against the
+        //     captured fingerprint — that comparison happens here.
+        progress.report(.init(phase: .preparing, message: "Verifying disk identity..."))
+        let probedDisk = try DiskInfo.probe(bsdName: plan.target.bsdName)
+        if let mismatch = plan.target.fingerprintMismatch(against: probedDisk) {
+            throw DriverError.validation(
+                "Refusing to update \(plan.target.devicePath): the live disk does not match the disk you confirmed. \(mismatch)"
+            )
+        }
+
+        // 1b. Probe to validate this is genuinely a Ventoy disk +
+        //     capture the partition-2 start sector + secure-boot state.
         progress.report(.init(phase: .preparing, message: "Validating existing Ventoy install..."))
         let probe = VentoyVersionProbe.probe(bsdName: plan.target.bsdName)
         guard probe.isVentoyDisk else {
@@ -280,6 +312,13 @@ public struct VentoyDriver: InstallDriver {
         let boot = try VentoyBootImages.load(fromVentoyDir: ventoyDir)
 
         // 3. Unmount + open raw device.
+        // **Just-in-time fingerprint re-verification (v0.3.1 issue #1).**
+        // The fingerprint check at step 1a happened BEFORE the Ventoy
+        // tarball download and decompression — that gap can be many
+        // seconds. Re-verify here so a USB-hub reshuffle during the
+        // download window can't cause us to write to the wrong disk.
+        try plan.target.reverifyFingerprintNow()
+
         progress.report(.init(phase: .unmounting, message: "Unmounting \(plan.target.devicePath)..."))
         try DiskInfo.unmount(bsdName: plan.target.bsdName)
         try await Task.sleep(nanoseconds: 1_500_000_000)
