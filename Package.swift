@@ -46,6 +46,16 @@ let package = Package(
             resources: [
                 .copy("Fixtures")
             ]
+        ),
+        // Tests for the app target (AppState targeting logic etc).
+        // Added in v0.3.2 to close the test-coverage gap on Layer 2
+        // (selection freeze) and Layer 6 (BSD-name guard) of the
+        // iron-clad targeting defense — gaps the v0.3.1 post-mortem
+        // explicitly named.
+        .testTarget(
+            name: "MactoyTests",
+            dependencies: ["Mactoy", "MactoyKit"],
+            path: "Tests/MactoyTests"
         )
     ]
 )

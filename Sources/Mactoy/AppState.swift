@@ -274,7 +274,10 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func applyDiskList(_ disks: [DiskTarget]) {
+    // Internal (not private) so MactoyTests can drive this directly to
+    // verify Layer 2 of the iron-clad targeting defense (the selection
+    // freeze while a confirmation is pending). v0.3.1 issue #1.
+    func applyDiskList(_ disks: [DiskTarget]) {
         // Skip the assign when nothing changed — every @Published write
         // fires `objectWillChange` regardless of equality, invalidating
         // every @EnvironmentObject subscriber. The disk poll runs every
