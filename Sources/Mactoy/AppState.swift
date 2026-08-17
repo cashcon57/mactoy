@@ -648,17 +648,58 @@ final class AppState: ObservableObject {
             helperStatus = HelperLifecycle.status
         }
 
-        // Clear the captured target/mode now that this run reached a
-        // terminal outcome. They survived the helper-approval gap if
-        // needed (handled by the helper-poll resume path); they are
-        // not allowed to survive a completed run.
-        pendingRunTarget = nil
-        pendingRunMode = nil
+        // Clear the captured target/mode now — with one exception.
+        // On terminal .failed we KEEP them so the "Retry" button in
+        // the failure banner (v0.3.2, issue #5) can re-invoke run()
+        // against the SAME captured disk without going through the
+        // confirmation sheet again. Layers 4/5/6 of the iron-clad
+        // targeting defense still verify the disk hasn't drifted at
+        // retry time, so this doesn't reopen the wrong-disk race —
+        // it just spares the user another confirmation click after
+        // a hardware-level failure.
+        //
+        // On .success and .idle (helper-not-enabled early-return),
+        // we do NOT clear here either: helper-approval resume needs
+        // the pair, and success is followed by reset() which does
+        // the clear.
+        if case .failed = status {
+            // keep pendingRunTarget/pendingRunMode for retry
+        } else if case .success = status {
+            pendingRunTarget = nil
+            pendingRunMode = nil
+        }
+        // .idle (helper-not-enabled) leaves them alone — the helper-
+        // poll resume path needs them.
     }
 
     func reset() {
         status = .idle
         log = []
+        pendingRunTarget = nil
+        pendingRunMode = nil
+    }
+
+    /// True when a failed run has a captured target we can retry
+    /// against. Used by the ActionBar's failure state to decide
+    /// whether to show the Retry button next to Done.
+    var canRetryRun: Bool {
+        if case .failed = status {
+            return pendingRunTarget != nil && pendingRunMode != nil
+        }
+        return false
+    }
+
+    /// Re-invoke the last failed run against the same captured target
+    /// and mode. Does NOT re-derive from `selectedDisk` — same iron-
+    /// clad targeting rules as `confirmRun()`. Layers 4/5/6 in run()
+    /// still verify the disk's fingerprint hasn't drifted.
+    func retryRun() async {
+        guard let target = pendingRunTarget, let mode = pendingRunMode else {
+            Self.log.warning("retryRun called with no captured target — ignoring")
+            return
+        }
+        Self.log.info("retryRun: re-invoking run() with captured target /dev/\(target.bsdName, privacy: .public)")
+        await run(confirmedTarget: target, confirmedMode: mode)
     }
 
     /// Append a progress update to `log`, capping total entries at

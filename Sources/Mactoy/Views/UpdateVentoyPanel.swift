@@ -45,8 +45,37 @@ struct UpdateVentoyPanel: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .mactoyGlass(cornerRadius: 16)
 
+            // Pre-flight quirky-enclosure warning (issue #4). Same
+            // banner InstallVentoyPanel shows — non-blocking, points
+            // at the known-workaround for known-bad USB bridges.
+            if let disk = state.selectedDisk,
+               let quirk = QuirkyEnclosureRegistry.lookup(mediaName: disk.mediaName) {
+                QuirkyEnclosureBanner(quirk: quirk, mediaName: disk.mediaName ?? disk.bsdName)
+            }
+
             // Adaptive content based on probe state.
             stateView
+
+            // Always-visible "Re-check disk" affordance (issue #6,
+            // v0.3.2). Even when the probe already returned a clean
+            // result, the user should be able to force a re-probe —
+            // useful for diagnosing why a disk they *just* installed
+            // Ventoy on is now reporting as "not Ventoy" (see issue
+            // #5). Only meaningful when a disk is selected.
+            if state.selectedDisk != nil {
+                HStack {
+                    Button {
+                        state.triggerVentoyProbe()
+                    } label: {
+                        Label("Re-check disk", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Re-run the Ventoy detection probe on the currently-selected disk.")
+                    Spacer()
+                }
+                .padding(.top, 4)
+            }
 
             Spacer()
         }

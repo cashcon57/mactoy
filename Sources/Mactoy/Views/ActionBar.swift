@@ -99,7 +99,31 @@ private struct PrimaryButton: View {
             .buttonStyle(.plain)
             .mactoyGlass()
             .disabled(true)
-        case .success, .failed:
+        case .failed:
+            // On failure, offer both Retry (if we still have the
+            // captured target from the failed run — v0.3.2, issue #5)
+            // and Done. Retry re-runs against the SAME captured disk;
+            // it does NOT re-derive from selectedDisk (Layers 4/5/6
+            // of the iron-clad targeting defense still apply).
+            HStack(spacing: 8) {
+                if state.canRetryRun {
+                    Button(action: { Task { @MainActor in await state.retryRun() } }) {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.plain)
+                    .mactoyGlass(interactive: true)
+                }
+                Button(action: { Task { @MainActor in state.reset() } }) {
+                    Label("Done", systemImage: "checkmark")
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+                .mactoyGlass(interactive: true)
+            }
+        case .success:
             Button(action: { Task { @MainActor in state.reset() } }) {
                 Label("Done", systemImage: "checkmark")
                     .padding(.horizontal, 16)

@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.2] — 2026-08-17
+
+Small hardening + docs release. Three code fixes came from user reports on the issue tracker; thanks to [@dewet22](https://github.com/dewet22) (#4) and [@dmurvihill](https://github.com/dmurvihill) (#1 followup, #5, #6) for the detailed writeups.
+
+### Added
+
+- **Pre-flight quirky-enclosure warning banner.** New `QuirkyEnclosureRegistry` (in `MactoyKit`) matches `DiskTarget.mediaName` against a curated list of USB bridges/enclosures known to misbehave under sustained raw writes on Apple silicon. First seed entry: **Realtek RTL9210 / RTL9210B**, per [#4](https://github.com/cashcon57/mactoy/issues/4). Banner appears in both Install Ventoy and Update Ventoy panels above the danger banner; non-blocking, offers the known workaround (USB 2.0-only cable/port forces BOT instead of UAS and avoids the stall). PRs adding entries welcome — public constant, one comment block explaining criteria.
+- **"Re-check disk" button always visible** in the Update Ventoy panel, per [#6](https://github.com/cashcon57/mactoy/issues/6). Previously the "Try again" affordance only appeared on probe failure; users diagnosing weird post-install states (see #5) needed a way to force a re-probe unconditionally.
+- **"Retry install" button on the failure banner**, per [#5](https://github.com/cashcon57/mactoy/issues/5). When `run()` ends in `.failed`, the captured target/mode from the confirmation are preserved so retry re-runs against the *same* disk without going through the confirmation sheet again. Layers 4/5/6 of the iron-clad targeting defense still verify the disk hasn't drifted at retry time — the safety guarantee is unchanged.
+- **Post-install verification.** Both `executeFreshInstall` and `executeUpdate` now run `VentoyVersionProbe.probe` after the final remount and throw `DriverError.validation` if the freshly-written disk doesn't parse back as a valid Ventoy install. Root cause of this scenario is usually a hardware fault on the USB stick (Ventoy2Disk.exe on Windows fails on the same drives with a similar "read-back doesn't match write" error). Better to surface as a failure than report success on a silently-broken install. Fixes [#5](https://github.com/cashcon57/mactoy/issues/5).
+
+### Fixed
+
+- **ENXIO ("Device not configured") mid-write now surfaces a targeted error** instead of the generic disk-I/O message, per [#4](https://github.com/cashcon57/mactoy/issues/4). Explains what actually happened (USB device disconnected — commonly a bridge-firmware × Apple XHCI interaction), suggests the USB 2.0 workaround, tells the user the disk is in an incomplete state and to re-run Install Ventoy. Root cause of the stall is bridge firmware (Realtek RTL9210B, some JMicron bridges); Mactoy can't fix that, but the error surface is now actionable.
+- **README references to v0.3.0 corrected to v0.3.1.** Docs housekeeping from [#1 comment](https://github.com/cashcon57/mactoy/issues/1#issuecomment-4382109064) — four locations (status header, Update Ventoy feature line, install instructions, build-dmg command example).
+
+### Verified
+
+- `swift build -c release` clean on both products.
+- 50/50 tests pass (6 new — `QuirkyEnclosureTests`).
+- Independent code review of the diff before tagging.
+
 ## [0.3.1] — 2026-04-28
 
 **P0 safety release.** A user reported that v0.3.0 wiped the wrong external disk: they had two USB drives plugged in, selected disk5, confirmed disk5, and Mactoy wrote disk6 ([issue #1](https://github.com/cashcon57/mactoy/issues/1)). The bug existed in every shipped version (v0.1.0 through v0.3.0) — all of those have been retroactively marked as prereleases on GitHub. v0.3.1 is the first release that's safe to install.

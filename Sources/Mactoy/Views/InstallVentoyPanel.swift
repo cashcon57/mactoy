@@ -88,6 +88,13 @@ struct InstallVentoyPanel: View {
             }
 
             if let disk = state.selectedDisk {
+                // Pre-flight quirky-enclosure warning (issue #4). Non-
+                // blocking — user can proceed if they want to. Shown
+                // above the danger banner because it's actionable
+                // (workaround suggestion) rather than terminal.
+                if let quirk = QuirkyEnclosureRegistry.lookup(mediaName: disk.mediaName) {
+                    QuirkyEnclosureBanner(quirk: quirk, mediaName: disk.mediaName ?? disk.bsdName)
+                }
                 DangerBanner(disk: disk)
             } else {
                 Text("Select a disk in the sidebar to continue.")

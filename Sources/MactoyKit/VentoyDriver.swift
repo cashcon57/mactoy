@@ -182,6 +182,27 @@ public struct VentoyDriver: InstallDriver {
         // 7. Remount + verify
         try await Task.sleep(nanoseconds: 1_500_000_000)
         try DiskInfo.remount(bsdName: plan.target.bsdName)
+
+        // 8. Post-install verification (v0.3.2, issue #5). Run the
+        // Ventoy version probe against the freshly-installed disk. If
+        // the probe says the disk isn't a valid Ventoy install, the
+        // write "succeeded" (no ENXIO, no diskutil failure) but the
+        // bytes on disk aren't bootable. Root cause is usually a
+        // hardware fault on the USB stick — Ventoy2Disk on Windows
+        // fails on the same drives with a similar "read-back doesn't
+        // match write" error. Rather than reporting success on a
+        // silently-broken install, surface it as a failure so the
+        // user knows to try a different stick.
+        try await Task.sleep(nanoseconds: 500_000_000)  // let partition 2 settle
+        let postInstallProbe = VentoyVersionProbe.probe(bsdName: plan.target.bsdName)
+        if !postInstallProbe.isVentoyDisk {
+            let issues = postInstallProbe.layoutIssues.joined(separator: "; ")
+            throw DriverError.validation(
+                "Install wrote successfully but post-install verification failed: \(issues). " +
+                "The disk was written without errors, but reading it back doesn't produce a valid Ventoy layout. This usually means the USB drive has a hardware fault — try a different stick. (Cheap USB drives sometimes fail to reliably read back what was just written, and Ventoy2Disk on Windows fails on the same drives with a similar error.)"
+            )
+        }
+
         progress.report(.init(phase: .done, message: "Ventoy \(version) installed to \(plan.target.devicePath)"))
     }
 
@@ -417,6 +438,21 @@ public struct VentoyDriver: InstallDriver {
         _ = try? Subprocess.run("/usr/sbin/diskutil", ["reloadDisk", "/dev/\(plan.target.bsdName)"])
         try await Task.sleep(nanoseconds: 1_500_000_000)
         try DiskInfo.remount(bsdName: plan.target.bsdName)
+
+        // 12. Post-update verification (v0.3.2, issue #5). Same
+        // check as executeFreshInstall: probe the disk after the
+        // update and confirm the new bootloader parses back as a
+        // valid Ventoy install. If not, the write "succeeded" but
+        // the disk isn't bootable — usually a bad USB stick.
+        try await Task.sleep(nanoseconds: 500_000_000)
+        let postUpdateProbe = VentoyVersionProbe.probe(bsdName: plan.target.bsdName)
+        if !postUpdateProbe.isVentoyDisk {
+            let issues = postUpdateProbe.layoutIssues.joined(separator: "; ")
+            throw DriverError.validation(
+                "Update wrote successfully but post-update verification failed: \(issues). " +
+                "The disk was written without errors, but reading it back doesn't produce a valid Ventoy layout. Your ISOs on partition 1 are untouched, but the bootloader is in an inconsistent state — try the update again, or use Install Ventoy to reformat the drive."
+            )
+        }
 
         progress.report(.init(phase: .done, message: "Ventoy updated to \(version) on \(plan.target.devicePath). ISOs and config preserved."))
     }

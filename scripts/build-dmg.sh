@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${1:-0.3.1}"
+VERSION="${1:-0.3.2}"
 APP="$ROOT/build/Mactoy.app"
 DMG="$ROOT/build/Mactoy-$VERSION.dmg"
 

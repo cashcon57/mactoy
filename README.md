@@ -48,11 +48,12 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 
 ---
 
-## Status — v0.3.0 alpha
+## Status — v0.3.2 alpha
 
 - [x] GPT + boot-image math ported from the Python proof-of-concept (cross-validated: Swift and Python produce bit-identical layouts for the same disk).
 - [x] Ventoy install flow end-to-end (download → extract → partition → write → format).
-- [x] **Update Ventoy in-place** (v0.3.0). Updates the bootloader on a drive that already has Ventoy without erasing your ISOs or `/ventoy/` config. Mactoy is the first non-official-Ventoy-team port of this flow on macOS.
+- [x] **Update Ventoy in-place** (v0.3.0, hardened in v0.3.1). Updates the bootloader on a drive that already has Ventoy without erasing your ISOs or `/ventoy/` config. Mactoy is the first non-official-Ventoy-team port of this flow on macOS.
+- [x] **Iron-clad targeting defense** (v0.3.1). Six-layer defense against wrong-disk wipes: fingerprint capture at confirmation, selection freeze while sheet is open, captured-target threading through run(), app-side + daemon-side re-verification (with re-verify immediately before write to bracket long-running download/decompress), and BSD-name guard.
 - [x] Raw image flashing with `.xz` and `.gz` decompression.
 - [x] Liquid Glass SwiftUI interface on macOS 26 Tahoe; automatic `regularMaterial` fallback on macOS 13–15 so the same binary runs on Ventura, Sonoma, Sequoia, and Tahoe — Apple Silicon *and* Intel.
 - [x] Unit tests for partition layout, GPT header/entry/CRC, MBR, plan validation, version-string allowlist.
@@ -69,7 +70,7 @@ Grab `Mactoy-<version>.dmg` from the [Releases page](https://github.com/cashcon5
 
 ### Open it
 
-1. Open `Mactoy-0.3.0.dmg`.
+1. Open `Mactoy-0.3.2.dmg` (or whichever `Mactoy-*.dmg` is on the latest release page).
 2. Drag `Mactoy.app` into `/Applications`.
 3. Launch from Launchpad or `/Applications`. Opens normally — no right-click dance needed. The DMG is Apple-notarized, so Gatekeeper sees it as a known-good Developer ID build.
 
@@ -244,7 +245,7 @@ swift test
 
 # Build the signed release bundle + DMG (requires a Developer ID cert in Keychain)
 ./scripts/build-app.sh release devid
-./scripts/build-dmg.sh 0.3.0 devid
+./scripts/build-dmg.sh 0.3.2 devid
 
 # Build a universal (arm64 + x86_64) app bundle — ship this if you
 # want one binary that runs on both Apple Silicon and Intel Macs.

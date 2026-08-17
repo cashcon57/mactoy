@@ -68,7 +68,31 @@ public final class DiskWriter {
                 let remaining = data.count - written
                 let n = Darwin.write(fd, base.advanced(by: written), remaining)
                 if n < 0 {
-                    throw DriverError.diskIO("write: \(String(cString: strerror(errno)))")
+                    let code = errno
+                    // Special-case ENXIO ("Device not configured") —
+                    // this typically means the USB device disappeared
+                    // mid-write, which on Apple silicon is a known
+                    // symptom of high-speed USB bridge firmware
+                    // (Realtek RTL9210B, some JMicron bridges, etc.)
+                    // stalling under sustained raw writes and forcing
+                    // macOS to reset the entire XHCI controller. Full
+                    // forensics + workaround per issue #4.
+                    if code == ENXIO {
+                        throw DriverError.diskIO("""
+                            Write to \(rawPath) failed: the USB device disconnected during the write (ENXIO / \"Device not configured\").
+
+                            On Apple silicon this is commonly caused by high-speed USB bridge firmware (Realtek RTL9210/9210B, some JMicron bridges) stalling under sustained raw writes. macOS then resets the XHCI controller and every attached USB device re-enumerates — the raw fd we held is now dead.
+
+                            Workarounds to try:
+                              • Connect the drive with a USB 2.0-only cable or port (forces slower Bulk-Only Transport, avoids the UAS stall). The write is slower but reliable.
+                              • Try a different USB port on a different controller.
+                              • Update the enclosure's firmware if the vendor provides an updater.
+
+                            The disk is now in an incomplete state — re-run Install Ventoy to start over.
+                            """
+                        )
+                    }
+                    throw DriverError.diskIO("write: \(String(cString: strerror(code)))")
                 }
                 written += n
             }
