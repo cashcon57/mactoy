@@ -1,0 +1,5 @@
+.build/
+*.img
+*.png
+*.log
+*.iso

@@ -73,6 +73,22 @@ enum HelperInvoker {
         connection.resume()
         defer { connection.invalidate() }
 
+        // Version handshake (v0.4.0). launchd can be holding a
+        // registration for a *different copy* of Mactoy than the one
+        // that's running — e.g. this build opened from the DMG while
+        // an older one in /Applications owns the daemon. An older
+        // daemon decodes a v3 plan without complaint and ignores what
+        // it doesn't know: it would write the shim layout regardless of
+        // `secureBoot`, and still has the v0.3.x MBR update bug.
+        let daemonVersion = try await Self.ping(connection)
+        guard daemonVersion == mactoydVersion else {
+            throw HelperError.executionFailed(
+                "The installed Mactoy helper is version \(daemonVersion), but this is Mactoy \(mactoydVersion). " +
+                "Nothing was written. Quit any other copy of Mactoy, then in System Settings → General → " +
+                "\(SystemSettingsStrings.loginItemsPane) turn the Mactoy toggle off and back on, and try again."
+            )
+        }
+
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let planData = try encoder.encode(plan)
@@ -94,6 +110,21 @@ enum HelperInvoker {
                     cont.resume(throwing: HelperError.executionFailed(errMsg ?? "mactoyd reported failure with no detail"))
                 }
             }
+        }
+    }
+}
+
+extension HelperInvoker {
+    /// Ask the daemon on `connection` for its version string.
+    fileprivate static func ping(_ connection: NSXPCConnection) async throws -> String {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ err in
+                cont.resume(throwing: HelperError.xpcUnreachable("\(err)"))
+            }) as? MactoydProtocol else {
+                cont.resume(throwing: HelperError.xpcUnreachable("proxy unavailable"))
+                return
+            }
+            proxy.ping { version in cont.resume(returning: version) }
         }
     }
 }

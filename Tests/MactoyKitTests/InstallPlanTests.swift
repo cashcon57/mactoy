@@ -94,7 +94,21 @@ struct InstallPlanValidateTests {
     func ventoyOperationDefault() {
         let p = plan(target())
         #expect(p.ventoyOperation == .freshInstall)
-        #expect(p.planVersion == 2)
+        #expect(p.planVersion == 3)
+    }
+
+    @Test("secureBoot defaults to true and round-trips when false")
+    func secureBootRoundTrip() throws {
+        #expect(plan(target()).secureBoot == true)
+        let p = InstallPlan(
+            driver: .ventoy,
+            target: target(),
+            source: .ventoyVersion("1.1.11"),
+            workDir: "/tmp/ventoy",
+            secureBoot: false
+        )
+        let decoded = try JSONDecoder().decode(InstallPlan.self, from: JSONEncoder().encode(p))
+        #expect(decoded.secureBoot == false)
     }
 
     @Test("ventoyOperation explicit .updateInPlace round-trip")
@@ -137,5 +151,7 @@ struct InstallPlanValidateTests {
         let decoded = try JSONDecoder().decode(InstallPlan.self, from: Data(legacyJSON.utf8))
         #expect(decoded.ventoyOperation == .freshInstall)
         #expect(decoded.planVersion == 1)
+        // No secureBoot key either: pre-v0.4.0 always wrote the shim layout.
+        #expect(decoded.secureBoot == true)
     }
 }

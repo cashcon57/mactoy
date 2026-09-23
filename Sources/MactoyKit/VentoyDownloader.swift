@@ -63,8 +63,79 @@ public struct VentoyDownloader: Sendable {
             .filter(Self.isValidVersion)
     }
 
+    // MARK: - On-disk locations
+
+    /// Where downloaded tarballs persist between runs (issue #8).
+    ///
+    /// As root (the daemon) this is under `/Library/Application Support`,
+    /// which only root can create entries in. `/Library/Caches` would be
+    /// the conventional spot but it's world-writable, so any local user
+    /// could pre-create our directory and own what root later writes
+    /// into. Unprivileged callers (tests, debugging) get the per-user
+    /// caches directory.
+    public static func cacheRoot() -> URL {
+        if geteuid() == 0 {
+            return URL(fileURLWithPath: "/Library/Application Support/Mactoy/Cache", isDirectory: true)
+        }
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("com.mactoy.Mactoy/Ventoy", isDirectory: true)
+    }
+
+    /// Create (if needed) and return the tarball cache directory.
+    /// Refuses a pre-existing path that is a symlink, isn't ours, or is
+    /// writable by anyone else — a cache we can't trust is worse than
+    /// re-downloading 20 MB, so callers fall back to a run directory.
+    public static func prepareCacheDirectory(at root: URL = cacheRoot()) throws -> URL {
+        let fm = FileManager.default
+        try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        var st = stat()
+        guard lstat(root.path, &st) == 0 else {
+            throw DriverError.diskIO("cache: lstat(\(root.path)) failed: \(String(cString: strerror(errno)))")
+        }
+        guard (st.st_mode & S_IFMT) == S_IFDIR, st.st_uid == geteuid(), (st.st_mode & 0o022) == 0 else {
+            throw DriverError.validation("cache: \(root.path) has unexpected ownership or permissions; not using it")
+        }
+        return root
+    }
+
+    /// A fresh private directory for one run's extracted files, inside
+    /// the (verified) cache root. The caller deletes it when the run
+    /// ends. Leftovers from runs that died before cleaning up are swept
+    /// here once they're a day old. Throws rather than falling back to
+    /// a shared temp location if the cache root can't be trusted.
+    public static func makeRunDirectory(in root: URL = cacheRoot()) throws -> URL {
+        let fm = FileManager.default
+        let parent = try prepareCacheDirectory(at: root)
+        let cutoff = Date().addingTimeInterval(-86_400)
+        for name in (try? fm.contentsOfDirectory(atPath: parent.path)) ?? [] where name.hasPrefix(runDirectoryPrefix) {
+            let url = parent.appendingPathComponent(name)
+            if let modified = try? fm.attributesOfItem(atPath: url.path)[.modificationDate] as? Date, modified < cutoff {
+                try? fm.removeItem(at: url)
+            }
+        }
+        let dir = parent.appendingPathComponent(runDirectoryPrefix + UUID().uuidString, isDirectory: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        return dir
+    }
+
+    private static let runDirectoryPrefix = "mactoy-run-"
+
+    /// Delete every cached Ventoy tarball in `directory` except `keep`.
+    /// One version is all an install needs; without this the cache
+    /// grows by ~20 MB per Ventoy release forever.
+    public static func pruneTarballs(in directory: URL, keeping keep: URL) {
+        let fm = FileManager.default
+        for name in (try? fm.contentsOfDirectory(atPath: directory.path)) ?? []
+        where name.hasPrefix("ventoy-") && name.hasSuffix("-linux.tar.gz") && name != keep.lastPathComponent {
+            try? fm.removeItem(at: directory.appendingPathComponent(name))
+        }
+    }
+
     /// Download the `ventoy-<version>-linux.tar.gz` tarball to `workDir`,
-    /// emitting progress. Returns the URL of the downloaded file.
+    /// emitting progress. Returns the URL of the downloaded file. If
+    /// `workDir` already holds a copy whose SHA-256 matches the
+    /// release's published `sha256.txt`, that copy is returned instead.
     public func downloadTarball(
         version: String,
         workDir: URL,

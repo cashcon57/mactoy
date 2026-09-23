@@ -149,6 +149,12 @@ public struct InstallPlan: Codable, Sendable {
     /// Only meaningful when `driver == .ventoy`. Defaults to
     /// `.freshInstall` for backwards compatibility with v0.2.x plans.
     public let ventoyOperation: VentoyOperation
+    /// Only meaningful when `driver == .ventoy`. `true` writes VTOYEFI
+    /// as shipped (shim + MokManager, Ventoy2Disk's `-s`); `false`
+    /// converts it to the plain layout first (`-S`). Applies to both
+    /// fresh installs and updates. Defaults to `true`, which is both
+    /// upstream's default and what every pre-v0.4.0 plan produced.
+    public let secureBoot: Bool
 
     public init(
         driver: DriverID,
@@ -156,22 +162,26 @@ public struct InstallPlan: Codable, Sendable {
         source: InstallSource,
         filesystem: FilesystemType = .exfat,
         workDir: String,
-        ventoyOperation: VentoyOperation = .freshInstall
+        ventoyOperation: VentoyOperation = .freshInstall,
+        secureBoot: Bool = true
     ) {
         self.driver = driver
         self.target = target
         self.source = source
         self.filesystem = filesystem
         self.workDir = workDir
-        self.planVersion = 2
+        self.planVersion = 3
         self.ventoyOperation = ventoyOperation
+        self.secureBoot = secureBoot
     }
 
     // Backwards-compat decoder: v0.2.x plans (planVersion == 1) didn't
-    // carry `ventoyOperation`. Decode them as `.freshInstall` so the
-    // daemon can still execute legacy plans during a rolling upgrade.
+    // carry `ventoyOperation`, and v0.3.x plans (planVersion == 2)
+    // didn't carry `secureBoot`. Decode the gaps as the behaviour those
+    // versions had, so the daemon can still execute legacy plans during
+    // a rolling upgrade.
     enum CodingKeys: String, CodingKey {
-        case driver, target, source, filesystem, workDir, planVersion, ventoyOperation
+        case driver, target, source, filesystem, workDir, planVersion, ventoyOperation, secureBoot
     }
 
     public init(from decoder: Decoder) throws {
@@ -183,6 +193,7 @@ public struct InstallPlan: Codable, Sendable {
         self.workDir = try c.decode(String.self, forKey: .workDir)
         self.planVersion = try c.decode(Int.self, forKey: .planVersion)
         self.ventoyOperation = try c.decodeIfPresent(VentoyOperation.self, forKey: .ventoyOperation) ?? .freshInstall
+        self.secureBoot = try c.decodeIfPresent(Bool.self, forKey: .secureBoot) ?? true
     }
 }
 

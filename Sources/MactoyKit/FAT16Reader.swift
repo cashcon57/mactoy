@@ -8,13 +8,14 @@ import Foundation
 ///   - **FAT16 only.** Not FAT12, not FAT32, not exFAT. Ventoy's VTOYEFI
 ///     partition is always FAT16 32 MiB; there's no need to handle the
 ///     others.
-///   - **8.3 short filenames only.** Long File Name (LFN) entries
-///     (attribute byte `0x0F`) are skipped during directory walking;
-///     they're never *interpreted*. Every file Mactoy looks up
-///     (`/grub/grub.cfg`, `/EFI/BOOT/...`) fits cleanly in 8.3.
-///   - **Read only.** This type never writes back to FAT structures. The
-///     update flow rewrites partition 2 wholesale — there's no in-place
-///     edit path.
+///   - **Short and long filenames.** Long File Name (LFN) entries
+///     (attribute byte `0x0F`) are decoded and attached to the short
+///     entry that follows them, so lookups work by either name. v0.4.0
+///     needs this because `grubx64_real.efi` doesn't fit in 8.3 and its
+///     generated short alias (`GRUBX6~1.EFI`) isn't stable.
+///   - **Read only.** This type never writes back to FAT structures.
+///     `VentoyESP` layers in-memory edits on top of the offsets this
+///     type exposes; nothing here touches a disk.
 ///
 /// Caller responsibility: provide a closure that reads bytes
 /// **partition-relative** (i.e. offset 0 = first byte of the FAT16
@@ -41,19 +42,26 @@ public struct FAT16Reader {
         public let volumeLabel: String
     }
 
-    /// One directory entry (8.3 short-name only — LFN entries are
-    /// transparently skipped during enumeration).
+    /// One directory entry. `name` is always the 8.3 short name;
+    /// `longName` is set when LFN entries preceded it.
     public struct DirEntry: Sendable {
         public let name: String          // "GRUB.CFG" / "GRUB" — uppercase 8.3
+        public let longName: String?     // "grubx64_real.efi" — case preserved
         public let isDirectory: Bool
         public let firstCluster: UInt16
         public let fileSize: UInt32
+        /// 32-byte slot indices this entry occupies inside its
+        /// directory: any LFN slots first, the short entry last.
+        let slots: Range<Int>
     }
 
     public let bpb: BPB
     public let firstFATSector: UInt32
     public let firstRootDirSector: UInt32
     public let firstDataSector: UInt32
+    /// Number of data clusters. Valid cluster numbers are
+    /// `2...(clusterCount + 1)`.
+    public let clusterCount: UInt32
     private let dataReader: DataReader
 
     /// Parse the BPB and compute sector layout. Throws if the partition
@@ -73,6 +81,30 @@ public struct FAT16Reader {
         self.firstFATSector = reserved
         self.firstRootDirSector = reserved + fatTotal
         self.firstDataSector = reserved + fatTotal + rootSectors
+
+        // The FAT type is defined by the cluster count, not by any
+        // label (FAT spec 1.03, "FAT Type Determination"). Below 4085
+        // this is FAT12, whose 12-bit entries we'd misread as garbage.
+        guard bpb.totalSectors > firstDataSector else {
+            throw DriverError.diskIO("FAT16: no data region (totalSectors \(bpb.totalSectors))")
+        }
+        let clusterCount = (bpb.totalSectors - firstDataSector) / UInt32(bpb.sectorsPerCluster)
+        guard clusterCount >= 4085, clusterCount < 65525 else {
+            throw DriverError.diskIO("FAT16: \(clusterCount) clusters is outside the FAT16 range")
+        }
+        guard UInt32(bpb.fatSizeSectors) * UInt32(bpb.bytesPerSector) >= (clusterCount + 2) * 2 else {
+            throw DriverError.diskIO("FAT16: FAT too small for \(clusterCount) clusters")
+        }
+        self.clusterCount = clusterCount
+    }
+
+    /// A chain entry pointing outside the volume means a corrupt FAT.
+    /// Following it would read — or, for `VentoyESP`, write — outside
+    /// the structures it's meant to address.
+    private func checkInRange(_ cluster: UInt16) throws {
+        guard UInt32(cluster) <= clusterCount + 1 else {
+            throw DriverError.diskIO("FAT16: cluster \(cluster) is past the end of the volume (\(clusterCount) clusters)")
+        }
     }
 
     private static func parseBPB(_ data: Data) throws -> BPB {
@@ -142,9 +174,9 @@ public struct FAT16Reader {
         )
     }
 
-    /// Read a file by 8.3 path. Path components are case-insensitive on
-    /// the matching side (FAT directory entries are stored uppercase).
-    /// Leading slashes are tolerated.
+    /// Read a file by path. Components match case-insensitively against
+    /// either the 8.3 short name or the long name. Leading slashes are
+    /// tolerated.
     public func readFile(at path: String) throws -> Data {
         let components = Self.splitPath(path)
         guard !components.isEmpty else {
@@ -173,7 +205,21 @@ public struct FAT16Reader {
         throw DriverError.diskIO("FAT16: unreachable in readFile()")
     }
 
-    /// List directory entries by 8.3 path. Pass an empty string or "/" for the root.
+    /// True when `path` resolves to a regular file. A missing parent
+    /// directory is "no"; a read error is thrown, not folded into "no".
+    public func fileExists(at path: String) throws -> Bool {
+        var entries = try readRootDirectory()
+        let components = Self.splitPath(path)
+        for (i, component) in components.enumerated() {
+            guard let match = entries.first(where: { $0.matches(name83: component) }) else { return false }
+            if i == components.count - 1 { return !match.isDirectory }
+            guard match.isDirectory else { return false }
+            entries = try readDirectory(firstCluster: match.firstCluster)
+        }
+        return false
+    }
+
+    /// List directory entries by path. Pass an empty string or "/" for the root.
     public func listDirectory(at path: String) throws -> [DirEntry] {
         let components = Self.splitPath(path)
         if components.isEmpty {
@@ -244,6 +290,7 @@ public struct FAT16Reader {
         let maxHops = 65536
 
         while cluster >= 2 && cluster < 0xFFF8 && hops < maxHops {
+            try checkInRange(cluster)
             let dataSectorOffset = (UInt32(cluster) - 2) * UInt32(bpb.sectorsPerCluster)
             let absSector = firstDataSector + dataSectorOffset
             let byteOffset = UInt64(absSector) * UInt64(bpb.bytesPerSector)
@@ -262,6 +309,55 @@ public struct FAT16Reader {
         return result
     }
 
+    /// Partition-relative byte ranges that hold the directory at
+    /// `path`, in order. Slot `i` of the directory lives at byte `i * 32`
+    /// of the concatenation of these ranges.
+    func directoryByteRanges(at path: String) throws -> [Range<Int>] {
+        var firstCluster: UInt16?
+        var currentEntries = try readRootDirectory()
+        for component in Self.splitPath(path) {
+            guard let match = currentEntries.first(where: { $0.matches(name83: component) }) else {
+                throw DriverError.diskIO("FAT16: '\(component)' not found")
+            }
+            guard match.isDirectory else {
+                throw DriverError.diskIO("FAT16: '\(component)' is a file, expected directory")
+            }
+            firstCluster = match.firstCluster
+            currentEntries = try readDirectory(firstCluster: match.firstCluster)
+        }
+        guard let firstCluster else {
+            let start = Int(firstRootDirSector) * Int(bpb.bytesPerSector)
+            return [start..<(start + Int(bpb.rootEntCnt) * 32)]
+        }
+        let bytesPerCluster = Int(bpb.sectorsPerCluster) * Int(bpb.bytesPerSector)
+        return try clusterChain(from: firstCluster).map { cluster in
+            let start = (Int(firstDataSector) + (Int(cluster) - 2) * Int(bpb.sectorsPerCluster)) * Int(bpb.bytesPerSector)
+            return start..<(start + bytesPerCluster)
+        }
+    }
+
+    /// Every cluster in the chain starting at `firstCluster`.
+    func clusterChain(from firstCluster: UInt16) throws -> [UInt16] {
+        var chain: [UInt16] = []
+        var cluster = firstCluster
+        while cluster >= 2 && cluster < 0xFFF8 {
+            guard chain.count < 65536 else {
+                throw DriverError.diskIO("FAT16: cluster chain exceeds 65536 hops (corrupt FAT)")
+            }
+            try checkInRange(cluster)
+            chain.append(cluster)
+            cluster = try readFATEntry(cluster: cluster)
+        }
+        return chain
+    }
+
+    /// Partition-relative byte offset of `cluster`'s entry in each FAT copy.
+    func fatEntryByteOffsets(cluster: UInt16) -> [Int] {
+        (0..<Int(bpb.numFATs)).map { copy in
+            (Int(firstFATSector) + copy * Int(bpb.fatSizeSectors)) * Int(bpb.bytesPerSector) + Int(cluster) * 2
+        }
+    }
+
     /// Read a single FAT16 entry. Each entry is 2 bytes little-endian.
     private func readFATEntry(cluster: UInt16) throws -> UInt16 {
         let byteOffset = UInt64(firstFATSector) * UInt64(bpb.bytesPerSector) + UInt64(cluster) * 2
@@ -269,26 +365,50 @@ public struct FAT16Reader {
         return bytes.readLE16(at: 0)
     }
 
-    /// Parse a raw directory blob into a list of 8.3 entries. LFN
-    /// entries (attribute byte `0x0F`) are skipped without
-    /// interpretation. Volume-label entries (`0x08`) are also skipped.
+    /// Parse a raw directory blob. LFN entries (attribute byte `0x0F`)
+    /// are decoded and attached to the short entry they precede.
+    /// Volume-label entries (`0x08`) are skipped.
     private static func parseDirEntries(_ data: Data) -> [DirEntry] {
         var out: [DirEntry] = []
         let entrySize = 32
         let count = data.count / entrySize
+        // LFN slots seen since the last short entry: sequence number →
+        // UTF-16 code units. They sit physically before their short
+        // entry, highest sequence number first.
+        var lfnParts: [Int: [UInt16]] = [:]
+        var lfnFirstSlot: Int?
+        var lfnChecksum: UInt8 = 0
+
         for i in 0..<count {
             let base = i * entrySize
             let firstByte = data[base]
             // 0x00 → no further entries in this directory
             if firstByte == 0x00 { break }
             // 0xE5 → entry deleted; skip
-            if firstByte == 0xE5 { continue }
+            if firstByte == 0xE5 {
+                lfnParts = [:]; lfnFirstSlot = nil
+                continue
+            }
 
             let attr = data[base + 11]
-            // 0x0F → long file name; we don't interpret these
-            if attr == 0x0F { continue }
+            if attr == 0x0F {
+                if lfnFirstSlot == nil || (firstByte & 0x40) != 0 {
+                    lfnParts = [:]
+                    lfnFirstSlot = i
+                    lfnChecksum = data[base + 13]
+                }
+                var units: [UInt16] = []
+                for off in [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30] {
+                    units.append(data.readLE16(at: base + off))
+                }
+                lfnParts[Int(firstByte & 0x1F)] = units
+                continue
+            }
             // 0x08 → volume label entry in root dir; skip
-            if (attr & 0x08) != 0 { continue }
+            if (attr & 0x08) != 0 {
+                lfnParts = [:]; lfnFirstSlot = nil
+                continue
+            }
 
             let nameRaw = data.subdata(in: (base + 0)..<(base + 8))
             let extRaw = data.subdata(in: (base + 8)..<(base + 11))
@@ -307,27 +427,56 @@ public struct FAT16Reader {
             }
             let combined = ext.isEmpty ? trueName : "\(trueName).\(ext)"
 
+            // Attach the pending long name only if its checksum matches
+            // this short entry — otherwise the LFN slots are orphans
+            // left behind by a non-LFN-aware tool.
+            var longName: String?
+            var firstSlot = i
+            if let start = lfnFirstSlot,
+               lfnChecksum == shortNameChecksum(data.subdata(in: base..<(base + 11))) {
+                var units: [UInt16] = []
+                for seq in lfnParts.keys.sorted() { units.append(contentsOf: lfnParts[seq]!) }
+                if let end = units.firstIndex(of: 0x0000) { units.removeSubrange(end...) }
+                longName = String(decoding: units, as: UTF16.self)
+                firstSlot = start
+            }
+            lfnParts = [:]; lfnFirstSlot = nil
+
             let firstCluster = data.readLE16(at: base + 26)
             let fileSize = data.readLE32(at: base + 28)
             let isDirectory = (attr & 0x10) != 0
 
             out.append(DirEntry(
                 name: combined.uppercased(),
+                longName: longName,
                 isDirectory: isDirectory,
                 firstCluster: firstCluster,
-                fileSize: fileSize
+                fileSize: fileSize,
+                slots: firstSlot..<(i + 1)
             ))
         }
         return out
     }
+
+    /// Checksum of an 11-byte short name, as stored in byte 13 of each
+    /// LFN slot that belongs to it (FAT spec 1.03, "Long Directory
+    /// Entries").
+    private static func shortNameChecksum(_ shortName: Data) -> UInt8 {
+        var sum: UInt8 = 0
+        for byte in shortName {
+            sum = ((sum & 1) << 7) &+ (sum >> 1) &+ byte
+        }
+        return sum
+    }
 }
 
 extension FAT16Reader.DirEntry {
-    /// Case-insensitive 8.3 match. Compares the entry's "NAME.EXT" form
-    /// (always uppercase, period included only when the extension is
-    /// non-empty) against the queried path component.
+    /// Case-insensitive match of a path component against the entry's
+    /// "NAME.EXT" short form (always uppercase, period included only
+    /// when the extension is non-empty) or its long name.
     func matches(name83 query: String) -> Bool {
-        return name == query.uppercased()
+        let q = query.uppercased()
+        return name == q || longName?.uppercased() == q
     }
 }
 

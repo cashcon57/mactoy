@@ -87,6 +87,8 @@ struct InstallVentoyPanel: View {
                 }
             }
 
+            SecureBootCard(isOn: $state.installSecureBoot)
+
             if let disk = state.selectedDisk {
                 // Pre-flight quirky-enclosure warning (issue #4). Non-
                 // blocking — user can proceed if they want to. Shown

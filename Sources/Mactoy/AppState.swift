@@ -45,6 +45,10 @@ struct EraseConfirmation: Identifiable {
     let disk: DiskTarget
     let usedBytes: UInt64?   // nil = couldn't measure (no mounted volumes)
     let totalBytes: UInt64
+    /// Secure Boot support as the toggle stood when the user clicked
+    /// the action button. Captured for the same reason `disk` is: what
+    /// the sheet describes must be what runs. Ignored for Flash Image.
+    var secureBoot: Bool = true
 }
 
 @MainActor
@@ -70,6 +74,13 @@ final class AppState: ObservableObject {
     @Published var availableVentoyVersions: [String] = []
     @Published var useCustomVentoyVersion: Bool = false
     @Published var customVentoyVersion: String = ""
+    /// Secure Boot support for a fresh install (issue #9). On matches
+    /// Ventoy2Disk's default.
+    @Published var installSecureBoot: Bool = true
+    /// Secure Boot support for an in-place update. Re-seeded from the
+    /// drive's current layout every time a probe lands, so an update
+    /// keeps what the stick has unless the user flips it.
+    @Published var updateSecureBoot: Bool = true
 
     // flash mode
     @Published var selectedImagePath: String?
@@ -100,6 +111,11 @@ final class AppState: ObservableObject {
     /// state. Cleared whenever a fresh probe is fired or succeeds.
     @Published var probeError: String?
     private var probeTask: Task<Void, Never>?
+    /// Seam for tests: selection changes fire a probe, and the real one
+    /// is an XPC call to the root daemon.
+    var ventoyProber: @Sendable (String) async throws -> VentoyProbeResult = { bsd in
+        try await HelperInvoker.probeVentoy(bsdName: bsd)
+    }
 
     /// Captured target + mode from the user's most recent confirmation,
     /// preserved across the helper-approval gap. The first run() call
@@ -110,6 +126,11 @@ final class AppState: ObservableObject {
     /// terminal failure.
     private var pendingRunTarget: DiskTarget?
     private var pendingRunMode: AppMode?
+    /// Travels with the pair above. Without it, a failed update could
+    /// re-enumerate the stick → re-probe → re-seed `updateSecureBoot`
+    /// from the drive, and Retry would write the layout the user had
+    /// just switched away from.
+    private var pendingRunSecureBoot: Bool = true
 
     var selectedDisk: DiskTarget? {
         guard let b = selectedDiskBSD else { return nil }
@@ -230,8 +251,9 @@ final class AppState: ObservableObject {
                         // exactly the bug that caused the wrong-disk
                         // wipe in v0.3.0.
                         if let target = self.pendingRunTarget, let mode = self.pendingRunMode {
+                            let secureBoot = self.pendingRunSecureBoot
                             Task { @MainActor in
-                                await self.run(confirmedTarget: target, confirmedMode: mode)
+                                await self.run(confirmedTarget: target, confirmedMode: mode, confirmedSecureBoot: secureBoot)
                             }
                         } else {
                             Self.log.warning("helper poll: helperStatus=enabled but no pending run captured")
@@ -272,6 +294,19 @@ final class AppState: ObservableObject {
                 await self?.setLatestVentoyVersion(v)
             }
         }
+    }
+
+    /// User picked a disk in the sidebar. Goes through here rather than
+    /// writing `selectedDiskBSD` directly so the Ventoy probe follows
+    /// the selection — before v0.4.0 a click left the Update tab
+    /// showing the previously-selected disk's probe result (issue #7).
+    func selectDisk(_ bsdName: String) {
+        // Same freeze `applyDiskList` honours (Layer 2). The sheet is
+        // modal so a click can't get here today; don't depend on that.
+        guard pendingEraseConfirmation == nil else { return }
+        guard selectedDiskBSD != bsdName, disks.contains(where: { $0.bsdName == bsdName }) else { return }
+        selectedDiskBSD = bsdName
+        triggerVentoyProbe()
     }
 
     // Internal (not private) so MactoyTests can drive this directly to
@@ -329,15 +364,15 @@ final class AppState: ObservableObject {
             try? await Task.sleep(nanoseconds: 300_000_000)
             if Task.isCancelled { return }
             do {
-                let result = try await HelperInvoker.probeVentoy(bsdName: bsd)
+                guard let prober = self?.ventoyProber else { return }
+                let result = try await prober(bsd)
                 if Task.isCancelled { return }
                 await MainActor.run {
                     guard let self else { return }
                     // Confirm the selection is still the disk we
                     // probed; user may have moved on while we waited.
                     if self.selectedDiskBSD == bsd {
-                        self.detectedVentoy = result
-                        self.probeError = nil
+                        self.applyProbeResult(result)
                     }
                 }
             } catch {
@@ -354,6 +389,19 @@ final class AppState: ObservableObject {
                     }
                 }
             }
+        }
+    }
+
+    // Internal (not private) so MactoyTests can drive it without XPC.
+    func applyProbeResult(_ result: VentoyProbeResult) {
+        detectedVentoy = result
+        probeError = nil
+        // Don't re-seed under a captured run (awaiting helper approval,
+        // or failed and offering Retry): the stick re-enumerating after
+        // a write re-probes it, and the toggle on screen should keep
+        // showing what that run was asked to do.
+        if result.isVentoyDisk, pendingRunTarget == nil {
+            updateSecureBoot = result.secureBootEnabled
         }
     }
 
@@ -415,7 +463,8 @@ final class AppState: ObservableObject {
             mode: mode,
             disk: target,
             usedBytes: DiskInfo.estimatedUsedBytes(bsdName: target.bsdName),
-            totalBytes: target.sizeInBytes
+            totalBytes: target.sizeInBytes,
+            secureBoot: mode == .updateVentoy ? updateSecureBoot : installSecureBoot
         )
     }
 
@@ -439,9 +488,13 @@ final class AppState: ObservableObject {
         // resume path uses the same target across the approval gap.
         let capturedTarget = confirmation.disk
         let capturedMode = confirmation.mode
+        let capturedSecureBoot = confirmation.secureBoot
         pendingRunTarget = capturedTarget
         pendingRunMode = capturedMode
-        Task { @MainActor in await self.run(confirmedTarget: capturedTarget, confirmedMode: capturedMode) }
+        pendingRunSecureBoot = capturedSecureBoot
+        Task { @MainActor in
+            await self.run(confirmedTarget: capturedTarget, confirmedMode: capturedMode, confirmedSecureBoot: capturedSecureBoot)
+        }
     }
 
     /// Execute the install / update / flash that the user confirmed.
@@ -455,7 +508,11 @@ final class AppState: ObservableObject {
     /// selection to a different disk). Re-deriving the target here is
     /// what caused the wrong-disk wipe in v0.3.0; we now require the
     /// caller to thread the captured target through explicitly.
-    func run(confirmedTarget: DiskTarget, confirmedMode: AppMode) async {
+    ///
+    /// `confirmedSecureBoot` is threaded the same way, for the same
+    /// reason: the live toggles are presentation state (the update one
+    /// is re-seeded by every probe).
+    func run(confirmedTarget: DiskTarget, confirmedMode: AppMode, confirmedSecureBoot: Bool) async {
         let target = confirmedTarget
 
         // Layer 6 (BSD-name guard): even if the rest of the
@@ -506,6 +563,7 @@ final class AppState: ObservableObject {
         let source: InstallSource
         let driver: DriverID
         let ventoyOperation: VentoyOperation
+        let secureBoot = confirmedSecureBoot
         switch confirmedMode {
         case .installVentoy:
             driver = .ventoy
@@ -526,6 +584,10 @@ final class AppState: ObservableObject {
             return
         }
 
+        // Vestigial since v0.4.0: the daemon keeps its own tarball cache
+        // and scratch space (issue #8) and ignores this. Still sent
+        // because `InstallPlan.workDir` is a required key for any
+        // older daemon that's still registered.
         let workDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("mactoy-\(UUID().uuidString.prefix(8))")
 
@@ -535,7 +597,8 @@ final class AppState: ObservableObject {
             source: source,
             filesystem: .exfat,
             workDir: workDir.path,
-            ventoyOperation: ventoyOperation
+            ventoyOperation: ventoyOperation,
+            secureBoot: secureBoot
         )
 
         do {
@@ -555,7 +618,8 @@ final class AppState: ObservableObject {
                     source: .ventoyVersion(latest),
                     filesystem: plan.filesystem,
                     workDir: plan.workDir,
-                    ventoyOperation: plan.ventoyOperation
+                    ventoyOperation: plan.ventoyOperation,
+                    secureBoot: plan.secureBoot
                 )
             } catch {
                 status = .failed("Failed to resolve latest Ventoy version: \(error)")
@@ -699,7 +763,7 @@ final class AppState: ObservableObject {
             return
         }
         Self.log.info("retryRun: re-invoking run() with captured target /dev/\(target.bsdName, privacy: .public)")
-        await run(confirmedTarget: target, confirmedMode: mode)
+        await run(confirmedTarget: target, confirmedMode: mode, confirmedSecureBoot: pendingRunSecureBoot)
     }
 
     /// Append a progress update to `log`, capping total entries at

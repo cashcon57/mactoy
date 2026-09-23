@@ -127,18 +127,8 @@ struct UpdateVentoyPanel: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            if probe.secureBootEnabled {
-                HStack(spacing: 8) {
-                    Image(systemName: "lock.shield")
-                        .foregroundStyle(.secondary)
-                    Text("Secure boot is enabled on this drive — your setting will be preserved across the update.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
             if isUpToDate {
-                Text("If you want to refresh the bootloader anyway, switch to the **Install Ventoy** tab to reinstall (this erases your ISOs).")
+                Text("You can still run the update to rewrite the bootloader — to change Secure Boot support below, or to repair a drive that stopped booting. Your ISOs aren't touched.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -156,6 +146,10 @@ struct UpdateVentoyPanel: View {
         // "Latest" so user can just click Update; advanced users can
         // pin a specific version.
         VersionPicker()
+
+        // Seeded from the probe (AppState.applyProbeResult), so leaving
+        // it alone keeps the drive's current layout.
+        SecureBootCard(isOn: $state.updateSecureBoot, currentlyOnDrive: probe.secureBootEnabled)
     }
 }
 

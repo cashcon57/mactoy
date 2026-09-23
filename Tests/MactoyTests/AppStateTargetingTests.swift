@@ -119,7 +119,7 @@ struct AppStateTargetingTests {
         state.disks = [d5, disk("disk6")]
         state.selectedDiskBSD = "disk6"  // drifted
 
-        await state.run(confirmedTarget: d5, confirmedMode: .installVentoy)
+        await state.run(confirmedTarget: d5, confirmedMode: .installVentoy, confirmedSecureBoot: true)
 
         // Status should be .failed with a "selection drifted" message.
         // No DiskInfo.probe is called because the guard returns before
@@ -147,7 +147,7 @@ struct AppStateTargetingTests {
         state.disks = [d5]
         state.selectedDiskBSD = "disk5"
 
-        await state.run(confirmedTarget: d5, confirmedMode: .installVentoy)
+        await state.run(confirmedTarget: d5, confirmedMode: .installVentoy, confirmedSecureBoot: true)
 
         // Whatever the failure mode is, it should NOT be the "selection
         // changed between confirmation and execution" one — that's the

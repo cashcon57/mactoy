@@ -26,7 +26,7 @@ struct DiskSidebar: View {
                                 DiskCard(
                                     disk: disk,
                                     isSelected: state.selectedDiskBSD == disk.bsdName,
-                                    onTap: { state.selectedDiskBSD = disk.bsdName }
+                                    onTap: { state.selectDisk(disk.bsdName) }
                                 )
                             }
                         }
@@ -95,6 +95,11 @@ private struct DiskCard: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // A `.plain` button only hit-tests its label's opaque
+            // content — without this, the icon and the text frames took
+            // clicks and the rest of the card (most of it) did nothing,
+            // which read as "this drive can't be selected" (issue #7).
+            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
         .mactoyGlass(

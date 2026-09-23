@@ -93,8 +93,6 @@ public enum VentoyVersionProbe {
     private static let expectedPart1StartSector: UInt64 = 2048
     private static let expectedPart2SizeSectors: UInt64 = 65536  // 32 MiB / 512 B
     private static let expectedPart2Label = "VTOYEFI"
-    private static let secureBootByteOffsetA = 92
-    private static let secureBootByteOffsetB = 17908
 
     /// Probe the disk identified by `bsdName` (e.g. `disk6`). Reads only;
     /// safe to call against a mounted disk (the raw read sees whatever
@@ -207,20 +205,19 @@ public enum VentoyVersionProbe {
             layoutIssues.append("could not read /grub/grub.cfg from partition 2: \(error)")
         }
 
-        // 7. Secure-boot flag: read the two single bytes Ventoy stamps
-        //    into the legacy-BIOS gap. Values 0x22/0x23 = secure-boot
-        //    enabled, 0x20/0x21 = standard.
-        var secureBootEnabled = false
-        do {
-            let sbA = try sectorByte(reader: reader, byteOffset: secureBootByteOffsetA)
-            let sbB = try sectorByte(reader: reader, byteOffset: secureBootByteOffsetB)
-            // Either pair stamped → secure boot. Be lenient: detect
-            // 0x22 OR 0x23 individually rather than requiring both,
-            // since older Ventoy versions only used offset 92.
-            secureBootEnabled = (sbA == 0x22 || sbB == 0x23)
-        } catch {
-            // Non-fatal: just leave secureBootEnabled at false.
-        }
+        // 7. Secure-boot layout: decided by what's on VTOYEFI, the way
+        //    Ventoy2Disk's own `check_disk_secure_boot` does it.
+        //
+        //    v0.3.x read bytes 92 and 17908 of the disk here, taking
+        //    0x22/0x23 to mean "secure boot on". They aren't a toggle:
+        //    they're GRUB's pointers to core.img (LBA 34, then 35) that
+        //    Ventoy patches in on GPT disks only. Every GPT stick read
+        //    as secure-boot-on and every MBR stick as off.
+        //
+        //    If the directory can't be read, report the shipped layout
+        //    (on): that's what an update wrote before v0.4.0, and the
+        //    grub.cfg read above will have flagged the drive already.
+        let secureBootEnabled = (try? VentoyESP.isSecureBootLayout(fatReader)) ?? true
 
         let isVentoyDisk = layoutIssues.isEmpty && detectedVersion != nil
 
@@ -238,11 +235,6 @@ public enum VentoyVersionProbe {
     }
 
     // MARK: - Internals
-
-    private static func sectorByte(reader: DiskWriter, byteOffset: Int) throws -> UInt8 {
-        let bytes = try reader.readBytes(at: UInt64(byteOffset), count: 1)
-        return bytes[0]
-    }
 
     /// Heuristic: does this look like a partial-match Ventoy disk?
     /// Triggers if EITHER partition-1 start OR partition-2 size matches

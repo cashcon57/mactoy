@@ -41,7 +41,11 @@ let package = Package(
         ),
         .testTarget(
             name: "MactoyKitTests",
-            dependencies: ["MactoyKit"],
+            dependencies: [
+                "MactoyKit",
+                // Fixtures/vtoyefi-mini.img.gz is gunzipped in-test.
+                .product(name: "SWCompression", package: "SWCompression")
+            ],
             path: "Tests/MactoyKitTests",
             resources: [
                 .copy("Fixtures")

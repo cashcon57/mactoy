@@ -115,11 +115,11 @@ struct EraseConfirmationSheet: View {
         switch info.mode {
         case .installVentoy:
             if let used = info.usedBytes {
-                return "Installing Ventoy will wipe the entire \(total) drive. Right now about \(sizeString(used)) of data is on it. Every partition below will be destroyed and replaced with a fresh Ventoy layout."
+                return "Installing Ventoy will wipe the entire \(total) drive. Right now about \(sizeString(used)) of data is on it. Every partition below will be destroyed and replaced with a fresh Ventoy layout. \(secureBootSentence)"
             }
-            return "Installing Ventoy will wipe the entire \(total) drive. Every partition on it will be destroyed and replaced with a fresh Ventoy layout."
+            return "Installing Ventoy will wipe the entire \(total) drive. Every partition on it will be destroyed and replaced with a fresh Ventoy layout. \(secureBootSentence)"
         case .updateVentoy:
-            return "Update the Ventoy bootloader on this drive in place. Your ISOs and `/ventoy/` configuration are preserved — only the bootloader (MBR boot code, GRUB2 core, and the 32 MB VTOYEFI partition) will be rewritten. Drive total size is \(total)."
+            return "Update the Ventoy bootloader on this drive in place. Your ISOs and `/ventoy/` configuration are preserved — only the bootloader (MBR boot code, GRUB2 core, and the 32 MB VTOYEFI partition) will be rewritten. Drive total size is \(total). \(secureBootSentence)"
         case .flashImage:
             if let used = info.usedBytes {
                 return "Flashing this image will overwrite the entire \(total) drive. Right now about \(sizeString(used)) of data is on it and will be lost."
@@ -128,6 +128,10 @@ struct EraseConfirmationSheet: View {
         case .manageDisk:
             return ""  // not reachable — Manage Disk doesn't trigger the confirm sheet
         }
+    }
+
+    private var secureBootSentence: String {
+        "Secure Boot support will be \(info.secureBoot ? "on" : "off")."
     }
 
     private var footnote: String {

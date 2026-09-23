@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.4.0] — 2026-09-21
+
+Three issues from the tracker, plus a bootloader-corruption bug in Update Ventoy that turned up while investigating one of them. Thanks to [@Bomret](https://github.com/Bomret) (#9), [@poshpaws](https://github.com/poshpaws) (#8) and [@d6v5nhcvzs-afk](https://github.com/d6v5nhcvzs-afk) (#7).
+
+**If you updated an MBR-style Ventoy stick with Mactoy v0.3.0–v0.3.2** (MBR is Ventoy2Disk's default partition style, so that's most sticks not created by Mactoy), run Update Ventoy on it again with this version. See the first item under *Fixed*.
+
+### Added
+
+- **Secure Boot support toggle** on Install Ventoy and Update Ventoy, per [#9](https://github.com/cashcon57/mactoy/issues/9). Equivalent to Ventoy2Disk's `-s` / `-S`. On (the default, and what every earlier Mactoy version wrote) leaves VTOYEFI as shipped: `BOOTX64.EFI` is the UEFI shim. Off converts it to the plain layout, where `BOOTX64.EFI` is GRUB itself and the shim, MokManager and enrolment certificate are removed — the layout to use for Macs and for firmware that hangs in the shim. On the Update tab the toggle starts at whatever the drive currently has, so an update preserves the layout unless you change it; flipping it and updating converts an existing stick without touching its ISOs.
+- **`VentoyESP`** (`Sources/MactoyKit/`). Performs the `-S` conversion on the decompressed 32 MiB image in memory, before anything is written — no mount, no window where the stick holds a half-converted ESP. Mirrors `secureboot_proc` in upstream's `vtoycli/partresize.c` file for file. Verified against the real Ventoy 1.1.17 image: `fsck_msdos` clean, and the resulting `BOOTX64.EFI` / `BOOTIA32.EFI` are byte-identical to the original `grubx64_real.efi` / `grubia32_real.efi` when read back through macOS's own FAT driver.
+- **Long-file-name support in `FAT16Reader`.** Needed to find `grubx64_real.efi`, which doesn't fit 8.3.
+- **Post-write check of the Secure Boot layout.** The existing post-install / post-update verification now also fails the run if the drive reads back in the opposite layout from the one requested.
+
+### Fixed
+
+- **Update Ventoy broke legacy-BIOS boot on MBR-style sticks.** v0.3.0 took bytes 92 and 17908 of the disk to be a "secure boot toggle" (`0x22`/`0x23` on, `0x20`/`0x21` off) and rewrote them after every update. They are GRUB's pointers to `core.img`, which Ventoy patches on GPT disks only (LBA 34 and 35); on MBR disks Ventoy2Disk leaves the stock values alone. On an MBR stick Mactoy stamped `0x20` into `boot.img`'s pointer (sending it to LBA 32 instead of LBA 1) and `0x21` over a byte in the middle of `core.img`. UEFI boot doesn't use either, so the damage only shows on legacy-BIOS machines. GPT sticks — including every stick *installed* by Mactoy — were unaffected, because the same misreading made them always come out as "on", which happens to be the right pair of values. The update path now writes the two bytes on GPT only, and re-running Update on an affected stick repairs it (both regions are rewritten in full). The v0.3.0 entry below describes these bytes incorrectly; it's left as written.
+- **Secure-boot detection was really partition-style detection.** Same root cause: `VentoyVersionProbe.secureBootEnabled` read those two bytes, so every GPT stick showed "Secure boot is enabled" and no MBR stick did. It now checks for `/EFI/BOOT/grubx64_real.efi` on VTOYEFI, as upstream's `check_secure_boot` does.
+- **Update Ventoy silently re-enabled Secure Boot support** on sticks created with `-S`, since it overwrites VTOYEFI wholesale with the shipped image. Covered by the toggle above.
+- **Second drive couldn't be selected in the sidebar** ([#7](https://github.com/cashcon57/mactoy/issues/7)). The drive cards are `.plain` buttons, which only hit-test their label's opaque content; a click-grid test on macOS 26 showed only the icon and the text lines responded — everything else on the card, most of its area, did nothing. The label now has a content shape covering the card.
+- **Clicking a drive didn't re-run Ventoy detection** (found while on #7). The Update tab kept showing the previously-selected drive's result. The daemon re-probes before writing, so this could mislead but not mis-target. Sidebar clicks now go through `AppState.selectDisk(_:)`.
+- **Ventoy was re-downloaded on every run** ([#8](https://github.com/cashcon57/mactoy/issues/8)). `VentoyDownloader` has always had a SHA-256-verified cache, but the app handed the daemon a new randomly-named work directory each run, so it never hit — and nothing deleted those directories, which cost ~43 MB of root-owned files in the user's temp folder per run until macOS purged them. The daemon now keeps the tarball in `/Library/Application Support/Mactoy/Cache/` (only the current version; still re-verified against `sha256.txt` on every use), extracts into a private per-run directory, and deletes that when the run ends.
+
+### Changed
+
+- `InstallPlan` gains `secureBoot` (`planVersion` 3). Plans without the key decode as `true`. `InstallPlan.workDir` is still encoded but the daemon no longer uses it.
+
+### Hardened (from pre-release code review)
+
+- **The Secure Boot choice is captured at confirmation**, alongside the target disk, and threaded through `run()`, Retry and the helper-approval resume. Without this, a failed update could re-enumerate the stick, re-probe it, re-seed the Update toggle from the drive, and have Retry write the layout the user had just switched away from. The confirmation sheet now states which layout will be written.
+- **App ↔ helper version handshake.** `HelperInvoker.run` pings the daemon first and refuses to send a plan to one reporting a different version. Covers the case where launchd's registration belongs to another copy of Mactoy (e.g. this build run from the DMG while an older one sits in /Applications): a pre-0.4.0 daemon would silently ignore `secureBoot` and still has the MBR update bug.
+- **`FAT16Reader` validates the cluster count** (must be in the FAT16 range, and the FAT must be large enough for it) and refuses to follow a chain entry that points outside the volume, so a corrupt image can't turn the conversion's FAT edits into writes elsewhere in the image.
+- **Post-write layout check compares against the image actually written**, not the requested setting, so a Ventoy release old enough to have no shim doesn't fail verification.
+
+### Verified
+
+- `swift build` and `swift build -c release` clean; 78 tests pass (28 new), plus 2 opt-in tests — real Ventoy 1.1.17 image conversion, and a live cache-hit check against GitHub — that pass when enabled.
+- New coverage: EFI-partition conversion against two FAT16 fixtures built with `newfs_msdos` (current and pre-1.1 file layouts), long-file-name parsing including orphaned LFN slots, corrupt-FAT and FAT12 rejection, the exact bytes Update writes on MBR vs GPT (run against a file standing in for the disk), cache and run-directory handling, sidebar selection, confirmation capture.
+- Independent code review of the diff; its findings are the *Hardened* section above.
+- **End-to-end in QEMU** (new harness, `scripts/e2e/`): the real `VentoyDriver` run against `hdiutil`-attached disk images — download, GPT, boot images, `newfs_exfat`, post-write verification — and the results booted as USB sticks under OVMF (UEFI) and SeaBIOS (legacy BIOS):
+  - Fresh install, Secure Boot support **on**: Ventoy menu under UEFI.
+  - Fresh install, Secure Boot support **off**: Ventoy menu under UEFI *and* BIOS; under UEFI, an Alpine ISO chain-loads through to its own bootloader starting the kernel.
+  - Update with the toggle flipped on → off on an existing stick: boots under UEFI and BIOS, ISO on partition 1 intact.
+  - **The MBR bug, reproduced and repaired.** A hand-built Ventoy2Disk-style MBR stick boots under BIOS; after the *released v0.3.2* update code runs on it, bytes 92/17908 read `0x20`/`0x21` and BIOS boot hangs at `VT_` (UEFI still boots); after the v0.4.0 update runs on the damaged stick, the first 1 MiB is byte-identical to the pristine stick and BIOS boot works again.
+- The Secure Boot card checked in the running app (window capture).
+- **Not verified, and not verifiable in an emulator:** behaviour on specific firmware — Apple EFI on the 2011 iMac from #9 in particular. OVMF is a spec-compliant UEFI; the claim for #9 rests on the reporter's own finding that GRUB boots there when started directly, which is what the off layout arranges.
+
 ## [0.3.2] — 2026-08-17
 
 Small hardening + docs release. Three code fixes came from user reports on the issue tracker; thanks to [@dewet22](https://github.com/dewet22) (#4) and [@dmurvihill](https://github.com/dmurvihill) (#1 followup, #5, #6) for the detailed writeups.
