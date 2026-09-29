@@ -18,16 +18,21 @@ struct ManageDiskPanel: View {
                 // when the user switches between disks, instead of
                 // keeping stale items from the previously-selected
                 // drive.
+                let imageDirectory = VentoyImageLibrary.imageDirectory(on: volumeURL)
+                Text("Images: \(imageDirectory.path)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
                 ISOList(volumeURL: volumeURL)
                     .id(volumeURL)
                     .frame(maxHeight: .infinity)
 
                 HStack {
                     Button("Open in Finder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([volumeURL])
+                        NSWorkspace.shared.activateFileViewerSelecting([imageDirectory])
                     }
                     Button("Add ISO…") {
-                        addISO(to: volumeURL)
+                        addISO(to: imageDirectory)
                     }
                     Spacer()
                 }
@@ -157,16 +162,7 @@ private struct ISOList: View {
     }
 
     private func refresh() {
-        let fm = FileManager.default
-        guard let contents = try? fm.contentsOfDirectory(
-            at: volumeURL,
-            includingPropertiesForKeys: [.fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else { return }
-        items = contents.filter { url in
-            let ext = url.pathExtension.lowercased()
-            return ["iso", "img", "wim", "efi", "vhd", "vhdx"].contains(ext)
-        }.sorted(by: { $0.lastPathComponent.lowercased() < $1.lastPathComponent.lowercased() })
+        items = VentoyImageLibrary.images(on: volumeURL)
     }
 
     private func sizeString(for url: URL) -> String {
