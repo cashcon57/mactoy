@@ -19,7 +19,8 @@ struct InstallPlanValidateTests {
             driver: .ventoy,
             target: t,
             source: .ventoyVersion("1.1.11"),
-            workDir: "/tmp/ventoy"
+            workDir: "/tmp/ventoy",
+            partitionStyle: .gpt
         )
     }
 
@@ -94,7 +95,7 @@ struct InstallPlanValidateTests {
     func ventoyOperationDefault() {
         let p = plan(target())
         #expect(p.ventoyOperation == .freshInstall)
-        #expect(p.planVersion == 3)
+        #expect(p.planVersion == 4)
     }
 
     @Test("secureBoot defaults to true and round-trips when false")
@@ -105,7 +106,8 @@ struct InstallPlanValidateTests {
             target: target(),
             source: .ventoyVersion("1.1.11"),
             workDir: "/tmp/ventoy",
-            secureBoot: false
+            secureBoot: false,
+            partitionStyle: .gpt
         )
         let decoded = try JSONDecoder().decode(InstallPlan.self, from: JSONEncoder().encode(p))
         #expect(decoded.secureBoot == false)
@@ -118,7 +120,8 @@ struct InstallPlanValidateTests {
             target: target(),
             source: .ventoyVersion("1.1.11"),
             workDir: "/tmp/ventoy",
-            ventoyOperation: .updateInPlace
+            ventoyOperation: .updateInPlace,
+            partitionStyle: .gpt
         )
         let data = try JSONEncoder().encode(p)
         let decoded = try JSONDecoder().decode(InstallPlan.self, from: data)
@@ -153,5 +156,32 @@ struct InstallPlanValidateTests {
         #expect(decoded.planVersion == 1)
         // No secureBoot key either: pre-v0.4.0 always wrote the shim layout.
         #expect(decoded.secureBoot == true)
+        // Nor partitionStyle: pre-v0.5.0 always installed GPT.
+        #expect(decoded.partitionStyle == .gpt)
+    }
+
+    @Test("partitionStyle round-trips")
+    func partitionStyleRoundTrip() throws {
+        let p = InstallPlan(driver: .ventoy, target: target(), source: .ventoyVersion("1.1.17"),
+                            workDir: "/tmp/ventoy", partitionStyle: .mbr)
+        let decoded = try JSONDecoder().decode(InstallPlan.self, from: JSONEncoder().encode(p))
+        #expect(decoded.partitionStyle == .mbr)
+    }
+
+    @Test("MBR fresh install on a disk past 2 TiB is refused by validate(); GPT and update are not")
+    func mbrSizeValidation() throws {
+        let big = target(size: 0x1_0000_0000 * 512)
+        let mbr = InstallPlan(driver: .ventoy, target: big, source: .ventoyVersion("1.1.17"),
+                              workDir: "/tmp/ventoy", partitionStyle: .mbr)
+        #expect(throws: PlanValidationError.self) { try mbr.validate() }
+        let gpt = InstallPlan(driver: .ventoy, target: big, source: .ventoyVersion("1.1.17"),
+                              workDir: "/tmp/ventoy", partitionStyle: .gpt)
+        try gpt.validate()
+        let update = InstallPlan(driver: .ventoy, target: big, source: .ventoyVersion("1.1.17"),
+                                 workDir: "/tmp/ventoy", ventoyOperation: .updateInPlace, partitionStyle: .mbr)
+        try update.validate()
+        let atLimit = InstallPlan(driver: .ventoy, target: target(size: 0xFFFF_FFFF * 512), source: .ventoyVersion("1.1.17"),
+                                  workDir: "/tmp/ventoy", partitionStyle: .mbr)
+        try atLimit.validate()
     }
 }

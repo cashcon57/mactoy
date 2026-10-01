@@ -115,9 +115,9 @@ struct EraseConfirmationSheet: View {
         switch info.mode {
         case .installVentoy:
             if let used = info.usedBytes {
-                return "Installing Ventoy will wipe the entire \(total) drive. Right now about \(sizeString(used)) of data is on it. Every partition below will be destroyed and replaced with a fresh Ventoy layout. \(secureBootSentence)"
+                return "Installing Ventoy will wipe the entire \(total) drive. Right now about \(sizeString(used)) of data is on it. Every partition below will be destroyed and replaced with a fresh Ventoy layout. \(secureBootSentence) \(partitionStyleSentence)"
             }
-            return "Installing Ventoy will wipe the entire \(total) drive. Every partition on it will be destroyed and replaced with a fresh Ventoy layout. \(secureBootSentence)"
+            return "Installing Ventoy will wipe the entire \(total) drive. Every partition on it will be destroyed and replaced with a fresh Ventoy layout. \(secureBootSentence) \(partitionStyleSentence)"
         case .updateVentoy:
             return "Update the Ventoy bootloader on this drive in place. Your ISOs and `/ventoy/` configuration are preserved — only the bootloader (MBR boot code, GRUB2 core, and the 32 MB VTOYEFI partition) will be rewritten. Drive total size is \(total). \(secureBootSentence)"
         case .flashImage:
@@ -128,6 +128,14 @@ struct EraseConfirmationSheet: View {
         case .manageDisk:
             return ""  // not reachable — Manage Disk doesn't trigger the confirm sheet
         }
+    }
+
+    private var partitionStyleSentence: String {
+        let style = "Partition style: \(info.partitionStyle.rawValue.uppercased())"
+        if info.partitionStyle == .gpt && !VentoyPartitionStyle.mbrCanAddress(diskBytes: info.disk.sizeInBytes) {
+            return style + " (required for drives larger than 2 TiB)."
+        }
+        return style + "."
     }
 
     private var secureBootSentence: String {

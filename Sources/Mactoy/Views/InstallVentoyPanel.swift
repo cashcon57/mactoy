@@ -19,7 +19,7 @@ struct InstallVentoyPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("What this does")
                     .font(.headline)
-                Text("Downloads Ventoy from the official GitHub release, wipes the selected disk, creates a Ventoy-compatible GPT layout, and formats the data partition as exFAT. After install, drop any ISO / IMG / WIM file onto the mounted `Ventoy` volume and it will appear in the Ventoy boot menu.")
+                Text("Downloads Ventoy from the official GitHub release, wipes the selected disk, partitions it the way Ventoy2Disk does (MBR or GPT, below), and formats the data partition as exFAT. After install, drop any ISO / IMG / WIM file onto the mounted `Ventoy` volume and it will appear in the Ventoy boot menu.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -86,6 +86,8 @@ struct InstallVentoyPanel: View {
                     Spacer()
                 }
             }
+
+            PartitionStyleCard(disk: state.selectedDisk)
 
             SecureBootCard(isOn: $state.installSecureBoot)
 

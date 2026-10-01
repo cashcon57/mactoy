@@ -24,11 +24,16 @@ struct VentoyUpdateWriteTests {
         return VentoyBootImages(bootImg: bootImg, coreImg: coreImg, diskImg: Data(repeating: 0xD0, count: 64 * 1024))
     }
 
-    /// A "disk" pre-filled with 0xEE so untouched regions are visible.
-    private func run(style: VentoyProbeResult.PartitionStyle) throws -> (before: Data, after: Data) {
+    /// A "disk" pre-filled with 0xEE so untouched regions are visible,
+    /// optionally with the MBR active flags of partitions 1 and 2 set.
+    private func run(
+        style: VentoyProbeResult.PartitionStyle,
+        activeFlags: (UInt8, UInt8)? = nil
+    ) throws -> (before: Data, after: Data) {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("mactoy-update-\(UUID().uuidString).img")
         defer { try? FileManager.default.removeItem(at: url) }
-        let before = Data(repeating: 0xEE, count: Self.diskBytes)
+        var before = Data(repeating: 0xEE, count: Self.diskBytes)
+        if let (p1, p2) = activeFlags { before[446] = p1; before[462] = p2 }
         try before.write(to: url)
 
         let writer = try DiskWriter(rawPath: url.path)
@@ -88,5 +93,27 @@ struct VentoyUpdateWriteTests {
     @Test("unknown partition style writes nothing")
     func unknownStyle() throws {
         #expect(throws: DriverError.self) { _ = try run(style: .unknown) }
+    }
+
+    @Test("MBR: partition 2 marked active instead of 1 is swapped back, as upstream does")
+    func mbrActiveFlagSwap() throws {
+        let (before, disk) = try run(style: .mbr, activeFlags: (0x00, 0x80))
+        #expect(disk[446] == 0x80 && disk[462] == 0x00)
+        // Nothing else in the table moves.
+        #expect(disk.subdata(in: 447..<462) == before.subdata(in: 447..<462))
+        #expect(disk.subdata(in: 463..<512) == before.subdata(in: 463..<512))
+    }
+
+    @Test("MBR: active flags left alone unless they're exactly 00/80",
+          arguments: [(UInt8(0x80), UInt8(0x00)), (0x00, 0x00), (0x80, 0x80)])
+    func mbrActiveFlagsUntouched(p1: UInt8, p2: UInt8) throws {
+        let (_, disk) = try run(style: .mbr, activeFlags: (p1, p2))
+        #expect(disk[446] == p1 && disk[462] == p2)
+    }
+
+    @Test("GPT: active flags never touched, even 00/80")
+    func gptActiveFlagsUntouched() throws {
+        let (_, disk) = try run(style: .gpt, activeFlags: (0x00, 0x80))
+        #expect(disk[446] == 0x00 && disk[462] == 0x80)
     }
 }

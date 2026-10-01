@@ -40,7 +40,7 @@ And the [Mac App Store sandbox forbids privilege escalation and raw block-device
 
 ## What it does
 
-1. **Install Ventoy** on a USB drive — download from GitHub releases, partition, write the bootloader, format the data partition as exFAT. Done from macOS, not a Linux VM.
+1. **Install Ventoy** on a USB drive — download from GitHub releases, partition (MBR or GPT, like Ventoy2Disk), write the bootloader, format the data partition as exFAT. Done from macOS, not a Linux VM.
 2. **Flash a raw image** (`.iso`, `.img`, `.img.xz`, `.img.gz`) — a one-shot `dd` replacement with a progress bar and drag-and-drop. Use this when you want a single-boot stick; use Install Ventoy when you want a multi-boot library.
 3. **Manage an existing Ventoy disk** — list, add, and remove ISOs on a mounted `Ventoy` volume without dropping to Finder.
 
@@ -54,6 +54,7 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 - [x] Ventoy install flow end-to-end (download → extract → partition → write → format).
 - [x] **Update Ventoy in-place** (v0.3.0, hardened in v0.3.1). Updates the bootloader on a drive that already has Ventoy without erasing your ISOs or `/ventoy/` config. Mactoy is the first non-official-Ventoy-team port of this flow on macOS.
 - [x] **Secure Boot support toggle** (v0.4.0). Same choice as Ventoy2Disk's `-s` / `-S`, on both Install and Update. Turn it off for sticks that need to boot Macs or firmware that hangs in the UEFI shim.
+- [x] **MBR or GPT partition style** (next release, issue #11). Install Ventoy defaults to MBR, Ventoy2Disk's default, which boots on legacy BIOS and UEFI; GPT is one click away, and drives over 2 TiB always get GPT.
 - [x] **Iron-clad targeting defense** (v0.3.1). Six-layer defense against wrong-disk wipes: fingerprint capture at confirmation, selection freeze while sheet is open, captured-target threading through run(), app-side + daemon-side re-verification (with re-verify immediately before write to bracket long-running download/decompress), and BSD-name guard.
 - [x] Raw image flashing with `.xz` and `.gz` decompression.
 - [x] Liquid Glass SwiftUI interface on macOS 26 Tahoe; automatic `regularMaterial` fallback on macOS 13–15 so the same binary runs on Ventura, Sonoma, Sequoia, and Tahoe — Apple Silicon *and* Intel.
@@ -203,7 +204,7 @@ log show --predicate 'subsystem == "com.mactoy"' --last 1h --info --debug > mact
 
 - **Mactoy** — SwiftUI app. Enumerates disks, downloads Ventoy from GitHub releases, drives the UI, opens an XPC connection to `mactoyd` for each install.
 - **mactoyd** — Swift CLI bundled at `Mactoy.app/Contents/MacOS/mactoyd`. Registered with `launchd` via `SMAppService` using the LaunchDaemon plist at `Mactoy.app/Contents/Library/LaunchDaemons/com.mactoy.mactoyd.plist`. Listens on the `com.mactoy.mactoyd` mach service. Verifies every connecting client's Developer ID + bundle identifier against a designated requirement before accepting an install plan. Exits after the XPC connection closes so launchd re-spawns a fresh process on the next install.
-- **MactoyKit** — Swift Package with all the install logic (GPT construction, Ventoy download + extract, driver protocol, raw image flasher, XPC protocol definitions). Linked by both the app and the helper.
+- **MactoyKit** — Swift Package with all the install logic (MBR and GPT construction, Ventoy download + extract, driver protocol, raw image flasher, XPC protocol definitions). Linked by both the app and the helper.
 
 ### Why not the Mac App Store?
 
@@ -262,10 +263,10 @@ open build/Mactoy.app
 Mactoy/
 ├── Package.swift
 ├── Sources/
-│   ├── MactoyKit/           shared library (GPT, drivers, plan)
+│   ├── MactoyKit/           shared library (MBR/GPT, drivers, plan)
 │   ├── mactoyd/             privileged helper CLI
 │   └── Mactoy/              SwiftUI app
-├── Tests/MactoyKitTests/    unit tests for GPT + plan
+├── Tests/MactoyKitTests/    unit tests for MBR/GPT, drivers, plan
 ├── app-support/             Info.plist (outside SPM resources)
 ├── scripts/                 build-app.sh, build-dmg.sh
 ├── docs/specs/              design specs

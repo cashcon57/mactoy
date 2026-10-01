@@ -13,9 +13,16 @@ public struct VentoyLayout: Sendable, Equatable {
     public var part1Sectors: UInt64 { part1End - part1Start + 1 }
     public var part2Sectors: UInt64 { part2End - part2Start + 1 }
 
-    public static func calculate(diskSectors: UInt64) -> VentoyLayout {
+    /// Partition geometry for a fresh install, as `ventoy_lib.sh`
+    /// computes it (`format_ventoy_disk_gpt` / `format_ventoy_disk_mbr`,
+    /// no reserved space). The only difference between the two styles is
+    /// the tail: GPT keeps the last 33 sectors free for the backup
+    /// header and entries; MBR lets partition 2 run to the last sector.
+    /// Either way partition 2 starts on a 4 KiB (8-sector) boundary.
+    public static func calculate(diskSectors: UInt64, style: VentoyPartitionStyle = .gpt) -> VentoyLayout {
         let part1Start: UInt64 = 2048
-        var part1End: UInt64 = diskSectors - VENTOY_EFI_SECTORS - 34
+        let tailReserve: UInt64 = style == .gpt ? 34 : 1
+        var part1End: UInt64 = diskSectors - VENTOY_EFI_SECTORS - tailReserve
         var part2Start: UInt64 = part1End + 1
 
         let mod = part2Start % 8

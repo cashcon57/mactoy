@@ -42,15 +42,21 @@ public struct VentoyDriver: InstallDriver {
         }
         let diskSectors = probed.sectorCount
 
-        // 3. Compute Ventoy layout
-        let layout = VentoyLayout.calculate(diskSectors: diskSectors)
+        // 3. Compute Ventoy layout for the requested partition style
+        //    (issue #11; GPT was the only option before v0.5.0).
+        let layout = VentoyLayout.calculate(diskSectors: diskSectors, style: plan.partitionStyle)
         progress.report(.init(
             phase: .preparing,
-            message: "Layout: part1 \(layout.part1Start)-\(layout.part1End), part2 \(layout.part2Start)-\(layout.part2End)"
+            message: "Layout (\(plan.partitionStyle.rawValue.uppercased())): part1 \(layout.part1Start)-\(layout.part1End), part2 \(layout.part2Start)-\(layout.part2End)"
         ))
 
-        // 4. Build GPT structures
-        let built = GPT.build(diskSectors: diskSectors, layout: layout)
+        // 4. Build the partition table before touching the disk, so a
+        //    disk too large for MBR fails here rather than mid-write.
+        let table: PartitionTable
+        switch plan.partitionStyle {
+        case .gpt: table = .gpt(GPT.build(diskSectors: diskSectors, layout: layout))
+        case .mbr: table = .mbr(try MBR.build(bootImg: boot.bootImg, layout: layout))
+        }
 
         // 5. Unmount + write raw device
         // **Just-in-time fingerprint re-verification (v0.3.1 issue #1).**
@@ -69,77 +75,14 @@ public struct VentoyDriver: InstallDriver {
         progress.report(.init(phase: .writing, message: "Opening \(plan.target.rawDevicePath)..."))
         let writer = try DiskWriter(rawPath: plan.target.rawDevicePath)
 
-        // 5a. Zero first 1MB
-        progress.report(.init(phase: .writing, message: "Zeroing first 1MB..."))
-        try writer.zero(range: 0..<(2048 * SECTOR_SIZE))
-
-        // 5b. Zero backup GPT area (last 33 sectors)
-        progress.report(.init(phase: .writing, message: "Zeroing backup GPT area..."))
-        try writer.zero(range: (diskSectors - 33) * SECTOR_SIZE ..< diskSectors * SECTOR_SIZE)
-
-        // 5c. Protective MBR
-        progress.report(.init(phase: .writing, message: "Writing protective MBR..."))
-        try writer.writeAt(offset: 0, built.protectiveMBR)
-
-        // 5d. Primary GPT header (LBA 1)
-        progress.report(.init(phase: .writing, message: "Writing primary GPT header..."))
-        try writer.writeAt(offset: SECTOR_SIZE, built.primaryHeader)
-
-        // 5e. Primary GPT entries (LBA 2..33)
-        progress.report(.init(phase: .writing, message: "Writing GPT entries..."))
-        try writer.writeAt(offset: 2 * SECTOR_SIZE, built.entries)
-
-        // 5f. Backup GPT entries + backup header
-        progress.report(.init(phase: .writing, message: "Writing backup GPT..."))
-        try writer.writeAt(offset: (diskSectors - 33) * SECTOR_SIZE, built.entries)
-        try writer.writeAt(offset: (diskSectors - 1) * SECTOR_SIZE, built.backupHeader)
-
-        // 5g. Ventoy boot.img: first 446 bytes of MBR (BIOS boot code)
-        progress.report(.init(phase: .writing, message: "Writing Ventoy boot.img..."))
-        let bootCode = boot.bootImg.prefix(446)
-        try writer.patchSector(lba: 0, offset: 0, bytes: Data(bootCode))
-
-        // boot.img's pointer to core.img (byte 92 of sector 0). Stock
-        // value is LBA 1, right for MBR; on GPT core.img sits at LBA 34
-        // (0x22), after the partition entries.
-        try writer.patchSector(lba: 0, offset: 92, bytes: Data([0x22]))
-
-        // 5h. core.img at sectors 34..2047 (GPT gap area)
-        progress.report(.init(phase: .writing, message: "Writing core.img..."))
-        let coreMax = Int(2014 * SECTOR_SIZE)
-        var core = Data(boot.coreImg.prefix(coreMax))
-        if core.count % Int(SECTOR_SIZE) != 0 {
-            let pad = Int(SECTOR_SIZE) - (core.count % Int(SECTOR_SIZE))
-            core.append(Data(repeating: 0, count: pad))
-        }
-        try writer.writeAt(offset: 34 * SECTOR_SIZE, core)
-
-        // Same again one level down: core.img's first sector points at
-        // the rest of core.img. Byte 17908 is offset 500 of LBA 34;
-        // 0x23 = LBA 35.
-        let sectorOfMarker = UInt64(17908 / Int(SECTOR_SIZE))
-        let offsetInSector = 17908 % Int(SECTOR_SIZE)
-        try writer.patchSector(lba: sectorOfMarker, offset: offsetInSector, bytes: Data([0x23]))
-
-        // 5i. ventoy.disk.img to partition 2 (VTOYEFI)
-        progress.report(.init(phase: .writing, message: "Writing VTOYEFI partition image..."))
-        try writer.writeAt(offset: layout.part2Start * SECTOR_SIZE, boot.diskImg)
-
-        // Disk UUID at offset 384 of sector 0
-        var uuidBytes = [UInt8](repeating: 0, count: 16)
-        let u = UUID().uuid
-        uuidBytes[0] = u.0; uuidBytes[1] = u.1; uuidBytes[2] = u.2; uuidBytes[3] = u.3
-        uuidBytes[4] = u.4; uuidBytes[5] = u.5; uuidBytes[6] = u.6; uuidBytes[7] = u.7
-        uuidBytes[8] = u.8; uuidBytes[9] = u.9; uuidBytes[10] = u.10; uuidBytes[11] = u.11
-        uuidBytes[12] = u.12; uuidBytes[13] = u.13; uuidBytes[14] = u.14; uuidBytes[15] = u.15
-        try writer.patchSector(lba: 0, offset: 384, bytes: Data(uuidBytes))
-
-        // Disk signature at offset 440 of sector 0 (random 4 bytes)
-        var sig = Data(count: 4)
-        _ = sig.withUnsafeMutableBytes { raw in
-            SecRandomCopyBytes(kSecRandomDefault, 4, raw.baseAddress!)
-        }
-        try writer.patchSector(lba: 0, offset: 440, bytes: sig)
+        try Self.writeFreshLayout(
+            writer: writer,
+            boot: boot,
+            diskSectors: diskSectors,
+            layout: layout,
+            table: table,
+            progress: progress
+        )
 
         try writer.fsync()
         // Release the raw-disk fd so macOS can re-scan the partition
@@ -201,7 +144,51 @@ public struct VentoyDriver: InstallDriver {
 
         try Self.verifySecureBootLayout(postInstallProbe, written: boot.diskImg)
 
+        // And in the partition style that was asked for (issue #11).
+        let readBackStyle: VentoyPartitionStyle? = switch postInstallProbe.partitionStyle {
+        case .mbr: .mbr
+        case .gpt: .gpt
+        case .unknown: nil
+        }
+        guard readBackStyle == plan.partitionStyle else {
+            throw DriverError.validation(
+                "Install wrote successfully, but the drive reads back as \(postInstallProbe.partitionStyle.rawValue.uppercased()) " +
+                "when \(plan.partitionStyle.rawValue.uppercased()) was written. The drive may not be reliably storing what was written — try again, or try a different USB stick."
+            )
+        }
+
+        // MBR only: the probe doesn't look at the fields legacy BIOS boot
+        // depends on (boot code, active flag, partition types), and the
+        // diskutil fallback formatter above writes through MediaKit, which
+        // could rewrite sector 0. Compare it with what was written, minus
+        // the per-install UUID and disk signature. Not applied to GPT so
+        // that existing GPT installs can't start failing on a new check.
+        if case .mbr(let written) = table {
+            try Self.verifyMBRSector(rawPath: plan.target.rawDevicePath, written: written)
+        }
+
         progress.report(.init(phase: .done, message: "Ventoy \(version) installed to \(plan.target.devicePath)"))
+    }
+
+    /// Read sector 0 back and compare it with the MBR sector that was
+    /// written, ignoring the random UUID (384..<400) and disk signature
+    /// (440..<444) patched in afterwards.
+    static func verifyMBRSector(rawPath: String, written: Data) throws {
+        let reader = try DiskWriter(rawPath: rawPath, writable: false)
+        defer { reader.close() }
+        let onDisk = try reader.readSector(lba: 0)
+        try checkMBRSector(onDisk, matches: written)
+    }
+
+    static func checkMBRSector(_ onDisk: Data, matches written: Data) throws {
+        let compared: [Range<Int>] = [0..<384, 400..<440, 444..<512]
+        for range in compared where onDisk.subdata(in: range) != written.subdata(in: range) {
+            throw DriverError.validation(
+                "Install wrote successfully, but sector 0 reads back different from what was written " +
+                "(bytes \(range.lowerBound)..<\(range.upperBound)), so the drive may not boot on legacy BIOS PCs. " +
+                "Try again, or try a different USB stick."
+            )
+        }
     }
 
     /// Last line of the post-write verification: the VTOYEFI that reads
@@ -484,6 +471,15 @@ public struct VentoyDriver: InstallDriver {
         case .mbr:
             coreStartLBA = 1
             coreMaxSectors = 2047
+            // Upstream's update makes partition 1 the active one when it
+            // finds partition 2 marked active instead (VentoyWorker.sh,
+            // MBR branch of the update). Only that exact combination is
+            // touched, as upstream does.
+            let flags = try writer.readBytes(at: 446, count: 17)
+            if flags[0] == 0x00 && flags[16] == 0x80 {
+                try writer.patchSector(lba: 0, offset: 446, bytes: Data([0x80]))
+                try writer.patchSector(lba: 0, offset: 462, bytes: Data([0x00]))
+            }
         case .unknown:
             throw DriverError.diskIO("Update: partition style is unknown (probe was successful but didn't determine MBR/GPT)")
         }
@@ -530,5 +526,122 @@ public struct VentoyDriver: InstallDriver {
         //     read at step 4 *before* the boot.img + core.img writes,
         //     so they survive intact.
         try writer.writeAt(offset: 2040 * SECTOR_SIZE, savedReserved)
+    }
+
+    /// The partition table a fresh install writes, built before the disk
+    /// is opened.
+    enum PartitionTable {
+        case gpt(GPT.BuiltGPT)
+        case mbr(Data)   // the complete 512-byte sector 0
+    }
+
+    /// Every byte a fresh install writes, and nothing else (no unmount,
+    /// fsync or diskutil) — split out of `executeFreshInstall` so tests
+    /// can run it against a plain file for both partition styles.
+    ///
+    /// The GPT branch is the pre-v0.5.0 sequence unchanged. The MBR
+    /// branch follows `Ventoy2Disk.sh`'s MBR path: table and boot code
+    /// in sector 0, `core.img` straight after it at LBA 1 (up to 2047
+    /// sectors), and no pointer patches — `boot.img` and `core.img`
+    /// already point at LBA 1 and 2 as shipped.
+    static func writeFreshLayout(
+        writer: DiskWriter,
+        boot: VentoyBootImages,
+        diskSectors: UInt64,
+        layout: VentoyLayout,
+        table: PartitionTable,
+        progress: ProgressSink
+    ) throws {
+        // 5a. Zero first 1MB
+        progress.report(.init(phase: .writing, message: "Zeroing first 1MB..."))
+        try writer.zero(range: 0..<(2048 * SECTOR_SIZE))
+
+        // Both styles: clear whatever a previous GPT left in the last 33
+        // sectors. For GPT the backup table is written there next; for
+        // MBR, partition 2 covers most of it and a stale backup GPT
+        // header in the rest would confuse disk tools.
+        progress.report(.init(phase: .writing, message: "Zeroing backup GPT area..."))
+        try writer.zero(range: (diskSectors - 33) * SECTOR_SIZE ..< diskSectors * SECTOR_SIZE)
+
+        switch table {
+        case .gpt(let built):
+            // 5c. Protective MBR
+            progress.report(.init(phase: .writing, message: "Writing protective MBR..."))
+            try writer.writeAt(offset: 0, built.protectiveMBR)
+
+            // 5d. Primary GPT header (LBA 1)
+            progress.report(.init(phase: .writing, message: "Writing primary GPT header..."))
+            try writer.writeAt(offset: SECTOR_SIZE, built.primaryHeader)
+
+            // 5e. Primary GPT entries (LBA 2..33)
+            progress.report(.init(phase: .writing, message: "Writing GPT entries..."))
+            try writer.writeAt(offset: 2 * SECTOR_SIZE, built.entries)
+
+            // 5f. Backup GPT entries + backup header
+            progress.report(.init(phase: .writing, message: "Writing backup GPT..."))
+            try writer.writeAt(offset: (diskSectors - 33) * SECTOR_SIZE, built.entries)
+            try writer.writeAt(offset: (diskSectors - 1) * SECTOR_SIZE, built.backupHeader)
+
+            // 5g. Ventoy boot.img: first 446 bytes of MBR (BIOS boot code)
+            progress.report(.init(phase: .writing, message: "Writing Ventoy boot.img..."))
+            let bootCode = boot.bootImg.prefix(446)
+            try writer.patchSector(lba: 0, offset: 0, bytes: Data(bootCode))
+
+            // boot.img's pointer to core.img (byte 92 of sector 0). Stock
+            // value is LBA 1, right for MBR; on GPT core.img sits at LBA 34
+            // (0x22), after the partition entries.
+            try writer.patchSector(lba: 0, offset: 92, bytes: Data([0x22]))
+
+            // 5h. core.img at sectors 34..2047 (GPT gap area)
+            progress.report(.init(phase: .writing, message: "Writing core.img..."))
+            let coreMax = Int(2014 * SECTOR_SIZE)
+            var core = Data(boot.coreImg.prefix(coreMax))
+            if core.count % Int(SECTOR_SIZE) != 0 {
+                let pad = Int(SECTOR_SIZE) - (core.count % Int(SECTOR_SIZE))
+                core.append(Data(repeating: 0, count: pad))
+            }
+            try writer.writeAt(offset: 34 * SECTOR_SIZE, core)
+
+            // Same again one level down: core.img's first sector points at
+            // the rest of core.img. Byte 17908 is offset 500 of LBA 34;
+            // 0x23 = LBA 35.
+            let sectorOfMarker = UInt64(17908 / Int(SECTOR_SIZE))
+            let offsetInSector = 17908 % Int(SECTOR_SIZE)
+            try writer.patchSector(lba: sectorOfMarker, offset: offsetInSector, bytes: Data([0x23]))
+
+        case .mbr(let sector0):
+            // Partition table + boot code in one write.
+            progress.report(.init(phase: .writing, message: "Writing MBR and Ventoy boot.img..."))
+            try writer.writeAt(offset: 0, sector0)
+
+            // core.img at LBA 1..2047 (the gap before partition 1).
+            progress.report(.init(phase: .writing, message: "Writing core.img..."))
+            var core = Data(boot.coreImg.prefix(Int(2047 * SECTOR_SIZE)))
+            if core.count % Int(SECTOR_SIZE) != 0 {
+                let pad = Int(SECTOR_SIZE) - (core.count % Int(SECTOR_SIZE))
+                core.append(Data(repeating: 0, count: pad))
+            }
+            try writer.writeAt(offset: 1 * SECTOR_SIZE, core)
+        }
+
+        // 5i. ventoy.disk.img to partition 2 (VTOYEFI)
+        progress.report(.init(phase: .writing, message: "Writing VTOYEFI partition image..."))
+        try writer.writeAt(offset: layout.part2Start * SECTOR_SIZE, boot.diskImg)
+
+        // Disk UUID at offset 384 of sector 0
+        var uuidBytes = [UInt8](repeating: 0, count: 16)
+        let u = UUID().uuid
+        uuidBytes[0] = u.0; uuidBytes[1] = u.1; uuidBytes[2] = u.2; uuidBytes[3] = u.3
+        uuidBytes[4] = u.4; uuidBytes[5] = u.5; uuidBytes[6] = u.6; uuidBytes[7] = u.7
+        uuidBytes[8] = u.8; uuidBytes[9] = u.9; uuidBytes[10] = u.10; uuidBytes[11] = u.11
+        uuidBytes[12] = u.12; uuidBytes[13] = u.13; uuidBytes[14] = u.14; uuidBytes[15] = u.15
+        try writer.patchSector(lba: 0, offset: 384, bytes: Data(uuidBytes))
+
+        // Disk signature at offset 440 of sector 0 (random 4 bytes)
+        var sig = Data(count: 4)
+        _ = sig.withUnsafeMutableBytes { raw in
+            SecRandomCopyBytes(kSecRandomDefault, 4, raw.baseAddress!)
+        }
+        try writer.patchSector(lba: 0, offset: 440, bytes: sig)
     }
 }

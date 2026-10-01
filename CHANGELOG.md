@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **MBR or GPT partition style for Install Ventoy** ([#11](https://github.com/cashcon57/mactoy/issues/11)). Same choice as Ventoy2Disk's default versus `-g`.
+  - **Default is now MBR**, matching Ventoy2Disk: it boots on legacy BIOS as well as UEFI, where some older BIOSes won't start from a GPT stick. **This changes what a fresh install writes by default** — v0.4.x and earlier always wrote GPT. GPT is one click away.
+  - Drives over 2 TiB (0xFFFFFFFF sectors) always get GPT, which MBR can't address; the helper refuses an MBR plan for them too.
+  - The MBR layout follows `format_ventoy_disk_mbr` and Ventoy2Disk's `VentoyFillMBR`: partition 1 active, type 0x07, from LBA 2048; partition 2 (VTOYEFI) type 0xEF, 65536 sectors, 4 KiB-aligned, ending at the disk's last sector; `core.img` at LBA 1 with no pointer patches. CHS fields use the standard 255-head/63-sector encoding, clamped past cylinder 1023, as parted and fdisk write them.
+  - The choice is captured when you confirm and carried through Retry and the helper-approval resume, like the Secure Boot choice; the confirmation sheet states it.
+  - After an MBR install, sector 0 is read back and compared with what was written, so a stick that would fail on legacy BIOS can't report success.
+
+### Changed
+
+- **Update Ventoy on MBR sticks** now makes partition 1 the active partition when it finds partition 2 marked active instead, as upstream's update does. Only that exact combination is touched.
+- `InstallPlan` gains `partitionStyle` (`planVersion` 4). Plans without it decode as GPT. The helper's version is now 0.5.0; the app refuses a helper reporting any other version, so an older helper can't silently ignore the choice.
+- The fresh-install writes moved into `VentoyDriver.writeFreshLayout` so both styles can be tested against a file. The GPT bytes are unchanged: verified by three independent reviews, by a golden hash of the whole written image, and by installing with the released v0.4.0 driver and the new one on disk images and comparing everything the GPT path writes (identical once per-install random IDs are masked).
+
+### Verified
+
+- 102 tests pass (22 new). QEMU end-to-end with the real driver: MBR with Secure Boot on and off, and GPT, each boot to the Ventoy menu under UEFI and legacy BIOS; updating an MBR stick (including converting Secure Boot on → off, and repairing a misplaced active flag) keeps it booting under both.
+- `diskutil eraseVolume` (the fallback formatter) leaves sector 0 of an MBR stick untouched.
+
 ## [0.4.0] — 2026-09-21
 
 Three issues from the tracker, plus a bootloader-corruption bug in Update Ventoy that turned up while investigating one of them. Thanks to [@Bomret](https://github.com/Bomret) (#9), [@poshpaws](https://github.com/poshpaws) (#8) and [@d6v5nhcvzs-afk](https://github.com/d6v5nhcvzs-afk) (#7).

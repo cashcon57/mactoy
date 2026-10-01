@@ -49,6 +49,10 @@ struct EraseConfirmation: Identifiable {
     /// the action button. Captured for the same reason `disk` is: what
     /// the sheet describes must be what runs. Ignored for Flash Image.
     var secureBoot: Bool = true
+    /// Partition table for a fresh install, captured the same way.
+    /// Ignored for Update and Flash Image. No default, for the same
+    /// reason `InstallPlan` has none.
+    let partitionStyle: VentoyPartitionStyle
 }
 
 @MainActor
@@ -81,6 +85,10 @@ final class AppState: ObservableObject {
     /// drive's current layout every time a probe lands, so an update
     /// keeps what the stick has unless the user flips it.
     @Published var updateSecureBoot: Bool = true
+    /// Partition style the user picked for a fresh install (issue #11).
+    /// `nil` = not chosen; `effectiveInstallPartitionStyle` then uses the
+    /// recommended style for the selected disk.
+    @Published var installPartitionStyleChoice: VentoyPartitionStyle?
 
     // flash mode
     @Published var selectedImagePath: String?
@@ -131,6 +139,20 @@ final class AppState: ObservableObject {
     /// from the drive, and Retry would write the layout the user had
     /// just switched away from.
     private var pendingRunSecureBoot: Bool = true
+    private var pendingRunPartitionStyle: VentoyPartitionStyle = .mbr
+
+    /// What the most recent `run(...)` was asked to do, recorded on entry
+    /// before any check can bail out. For diagnostics, and so tests can
+    /// confirm retry/resume pass the captured choices rather than the
+    /// live toggles.
+    struct RunRequest: Equatable {
+        let bsdName: String
+        let mode: AppMode
+        let secureBoot: Bool
+        let partitionStyle: VentoyPartitionStyle
+    }
+    private(set) var lastRunRequest: RunRequest?
+    private(set) var runRequestCount = 0
 
     var selectedDisk: DiskTarget? {
         guard let b = selectedDiskBSD else { return nil }
@@ -252,8 +274,14 @@ final class AppState: ObservableObject {
                         // wipe in v0.3.0.
                         if let target = self.pendingRunTarget, let mode = self.pendingRunMode {
                             let secureBoot = self.pendingRunSecureBoot
+                            let partitionStyle = self.pendingRunPartitionStyle
                             Task { @MainActor in
-                                await self.run(confirmedTarget: target, confirmedMode: mode, confirmedSecureBoot: secureBoot)
+                                await self.run(
+                                    confirmedTarget: target,
+                                    confirmedMode: mode,
+                                    confirmedSecureBoot: secureBoot,
+                                    confirmedPartitionStyle: partitionStyle
+                                )
                             }
                         } else {
                             Self.log.warning("helper poll: helperStatus=enabled but no pending run captured")
@@ -294,6 +322,17 @@ final class AppState: ObservableObject {
                 await self?.setLatestVentoyVersion(v)
             }
         }
+    }
+
+    /// The partition style a fresh install on `disk` will use: GPT when
+    /// the disk is too large for MBR, whatever the user chose otherwise,
+    /// and the recommended style (MBR) if they haven't chosen.
+    func effectiveInstallPartitionStyle(for disk: DiskTarget?) -> VentoyPartitionStyle {
+        if let disk, !VentoyPartitionStyle.mbrCanAddress(diskBytes: disk.sizeInBytes) {
+            return .gpt
+        }
+        return installPartitionStyleChoice
+            ?? VentoyPartitionStyle.recommended(forDiskBytes: disk?.sizeInBytes ?? 0)
     }
 
     /// User picked a disk in the sidebar. Goes through here rather than
@@ -464,7 +503,8 @@ final class AppState: ObservableObject {
             disk: target,
             usedBytes: DiskInfo.estimatedUsedBytes(bsdName: target.bsdName),
             totalBytes: target.sizeInBytes,
-            secureBoot: mode == .updateVentoy ? updateSecureBoot : installSecureBoot
+            secureBoot: mode == .updateVentoy ? updateSecureBoot : installSecureBoot,
+            partitionStyle: effectiveInstallPartitionStyle(for: target)
         )
     }
 
@@ -489,11 +529,18 @@ final class AppState: ObservableObject {
         let capturedTarget = confirmation.disk
         let capturedMode = confirmation.mode
         let capturedSecureBoot = confirmation.secureBoot
+        let capturedPartitionStyle = confirmation.partitionStyle
         pendingRunTarget = capturedTarget
         pendingRunMode = capturedMode
         pendingRunSecureBoot = capturedSecureBoot
+        pendingRunPartitionStyle = capturedPartitionStyle
         Task { @MainActor in
-            await self.run(confirmedTarget: capturedTarget, confirmedMode: capturedMode, confirmedSecureBoot: capturedSecureBoot)
+            await self.run(
+                confirmedTarget: capturedTarget,
+                confirmedMode: capturedMode,
+                confirmedSecureBoot: capturedSecureBoot,
+                confirmedPartitionStyle: capturedPartitionStyle
+            )
         }
     }
 
@@ -509,11 +556,23 @@ final class AppState: ObservableObject {
     /// what caused the wrong-disk wipe in v0.3.0; we now require the
     /// caller to thread the captured target through explicitly.
     ///
-    /// `confirmedSecureBoot` is threaded the same way, for the same
-    /// reason: the live toggles are presentation state (the update one
-    /// is re-seeded by every probe).
-    func run(confirmedTarget: DiskTarget, confirmedMode: AppMode, confirmedSecureBoot: Bool) async {
+    /// `confirmedSecureBoot` and `confirmedPartitionStyle` are threaded
+    /// the same way, for the same reason: the live toggles are
+    /// presentation state (the update one is re-seeded by every probe).
+    func run(
+        confirmedTarget: DiskTarget,
+        confirmedMode: AppMode,
+        confirmedSecureBoot: Bool,
+        confirmedPartitionStyle: VentoyPartitionStyle
+    ) async {
         let target = confirmedTarget
+        runRequestCount += 1
+        lastRunRequest = RunRequest(
+            bsdName: target.bsdName,
+            mode: confirmedMode,
+            secureBoot: confirmedSecureBoot,
+            partitionStyle: confirmedPartitionStyle
+        )
 
         // Layer 6 (BSD-name guard): even if the rest of the
         // fingerprint coincidentally matches a different live disk
@@ -533,7 +592,7 @@ final class AppState: ObservableObject {
 
         log = []
         status = .preparing("Preparing install plan...")
-        Self.log.info("run() begin: mode=\(confirmedMode.rawValue, privacy: .public) target=/dev/\(target.bsdName, privacy: .public)")
+        Self.log.info("run() begin: mode=\(confirmedMode.rawValue, privacy: .public) target=/dev/\(target.bsdName, privacy: .public) secureBoot=\(confirmedSecureBoot, privacy: .public) partitionStyle=\(confirmedPartitionStyle.rawValue, privacy: .public)")
 
         // Layer 4 (app-side re-verification): probe the live disk and
         // assert its identity matches what the user confirmed.
@@ -560,46 +619,12 @@ final class AppState: ObservableObject {
             return
         }
 
-        let source: InstallSource
-        let driver: DriverID
-        let ventoyOperation: VentoyOperation
-        let secureBoot = confirmedSecureBoot
-        switch confirmedMode {
-        case .installVentoy:
-            driver = .ventoy
-            ventoyOperation = .freshInstall
-            let v = effectiveVentoyVersion
-            source = .ventoyVersion(v.isEmpty ? (latestVentoyVersion ?? "") : v)
-        case .updateVentoy:
-            driver = .ventoy
-            ventoyOperation = .updateInPlace
-            let v = effectiveVentoyVersion
-            source = .ventoyVersion(v.isEmpty ? (latestVentoyVersion ?? "") : v)
-        case .flashImage:
-            driver = .rawImage
-            ventoyOperation = .freshInstall  // unused for raw image
-            guard let p = selectedImagePath else { return }
-            source = .localImage(path: p)
-        case .manageDisk:
-            return
-        }
-
-        // Vestigial since v0.4.0: the daemon keeps its own tarball cache
-        // and scratch space (issue #8) and ignores this. Still sent
-        // because `InstallPlan.workDir` is a required key for any
-        // older daemon that's still registered.
-        let workDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("mactoy-\(UUID().uuidString.prefix(8))")
-
-        var plan = InstallPlan(
-            driver: driver,
+        guard var plan = makePlan(
             target: target,
-            source: source,
-            filesystem: .exfat,
-            workDir: workDir.path,
-            ventoyOperation: ventoyOperation,
-            secureBoot: secureBoot
-        )
+            mode: confirmedMode,
+            secureBoot: confirmedSecureBoot,
+            partitionStyle: confirmedPartitionStyle
+        ) else { return }
 
         do {
             try plan.validate()
@@ -619,7 +644,8 @@ final class AppState: ObservableObject {
                     filesystem: plan.filesystem,
                     workDir: plan.workDir,
                     ventoyOperation: plan.ventoyOperation,
-                    secureBoot: plan.secureBoot
+                    secureBoot: plan.secureBoot,
+                    partitionStyle: plan.partitionStyle
                 )
             } catch {
                 status = .failed("Failed to resolve latest Ventoy version: \(error)")
@@ -736,6 +762,58 @@ final class AppState: ObservableObject {
         // poll resume path needs them.
     }
 
+    /// The plan `run(...)` hands to the helper, built from the choices
+    /// captured at confirmation. `nil` for modes that don't run (Manage
+    /// Disk) or a Flash Image run with no image picked. Internal so
+    /// tests can check what reaches the plan.
+    func makePlan(
+        target: DiskTarget,
+        mode: AppMode,
+        secureBoot: Bool,
+        partitionStyle: VentoyPartitionStyle
+    ) -> InstallPlan? {
+        let source: InstallSource
+        let driver: DriverID
+        let ventoyOperation: VentoyOperation
+        switch mode {
+        case .installVentoy:
+            driver = .ventoy
+            ventoyOperation = .freshInstall
+            let v = effectiveVentoyVersion
+            source = .ventoyVersion(v.isEmpty ? (latestVentoyVersion ?? "") : v)
+        case .updateVentoy:
+            driver = .ventoy
+            ventoyOperation = .updateInPlace
+            let v = effectiveVentoyVersion
+            source = .ventoyVersion(v.isEmpty ? (latestVentoyVersion ?? "") : v)
+        case .flashImage:
+            driver = .rawImage
+            ventoyOperation = .freshInstall  // unused for raw image
+            guard let p = selectedImagePath else { return nil }
+            source = .localImage(path: p)
+        case .manageDisk:
+            return nil
+        }
+
+        // Vestigial since v0.4.0: the daemon keeps its own tarball cache
+        // and scratch space (issue #8) and ignores this. Still sent
+        // because `InstallPlan.workDir` is a required key for any
+        // older daemon that's still registered.
+        let workDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mactoy-\(UUID().uuidString.prefix(8))")
+
+        return InstallPlan(
+            driver: driver,
+            target: target,
+            source: source,
+            filesystem: .exfat,
+            workDir: workDir.path,
+            ventoyOperation: ventoyOperation,
+            secureBoot: secureBoot,
+            partitionStyle: partitionStyle
+        )
+    }
+
     func reset() {
         status = .idle
         log = []
@@ -763,7 +841,12 @@ final class AppState: ObservableObject {
             return
         }
         Self.log.info("retryRun: re-invoking run() with captured target /dev/\(target.bsdName, privacy: .public)")
-        await run(confirmedTarget: target, confirmedMode: mode, confirmedSecureBoot: pendingRunSecureBoot)
+        await run(
+            confirmedTarget: target,
+            confirmedMode: mode,
+            confirmedSecureBoot: pendingRunSecureBoot,
+            confirmedPartitionStyle: pendingRunPartitionStyle
+        )
     }
 
     /// Append a progress update to `log`, capping total entries at

@@ -139,6 +139,34 @@ public enum VentoyOperation: String, Codable, Sendable {
     case updateInPlace
 }
 
+/// Partition table a fresh Ventoy install writes. Same choice as
+/// Ventoy2Disk's `-g` (GPT) versus its default (MBR).
+public enum VentoyPartitionStyle: String, Codable, Sendable, CaseIterable {
+    case mbr
+    case gpt
+
+    /// Largest disk an MBR install can use. Partition start and length
+    /// are 32-bit sector counts, so with 512-byte sectors MBR ends at
+    /// 2 TiB. `Ventoy2Disk.sh` refuses MBR beyond this. Its test
+    /// (`-gt 4294967296`) also accepts a disk of exactly 2^32 sectors;
+    /// this is one sector stricter, which costs nothing — no real device
+    /// sits on that boundary — and keeps the rule a plain "fits in 32
+    /// bits".
+    public static let mbrMaxSectors: UInt64 = 0xFFFF_FFFF
+
+    public static func mbrCanAddress(diskBytes: UInt64) -> Bool {
+        diskBytes / SECTOR_SIZE <= mbrMaxSectors
+    }
+
+    /// What a fresh install uses unless the user picks otherwise: MBR,
+    /// matching Ventoy2Disk's default — it boots on legacy BIOS as well
+    /// as UEFI, where some older BIOSes won't start from a GPT stick —
+    /// except on disks MBR can't address.
+    public static func recommended(forDiskBytes bytes: UInt64) -> VentoyPartitionStyle {
+        mbrCanAddress(diskBytes: bytes) ? .mbr : .gpt
+    }
+}
+
 public struct InstallPlan: Codable, Sendable {
     public let driver: DriverID
     public let target: DiskTarget
@@ -155,6 +183,12 @@ public struct InstallPlan: Codable, Sendable {
     /// fresh installs and updates. Defaults to `true`, which is both
     /// upstream's default and what every pre-v0.4.0 plan produced.
     public let secureBoot: Bool
+    /// Only meaningful for a fresh Ventoy install; an update keeps the
+    /// disk's existing table. Plans from before v0.5.0 don't carry it and
+    /// decode as `.gpt`, the only layout those versions could install.
+    /// The initializer deliberately has no default, so no caller can
+    /// silently get one style while the user chose the other.
+    public let partitionStyle: VentoyPartitionStyle
 
     public init(
         driver: DriverID,
@@ -163,25 +197,28 @@ public struct InstallPlan: Codable, Sendable {
         filesystem: FilesystemType = .exfat,
         workDir: String,
         ventoyOperation: VentoyOperation = .freshInstall,
-        secureBoot: Bool = true
+        secureBoot: Bool = true,
+        partitionStyle: VentoyPartitionStyle
     ) {
         self.driver = driver
         self.target = target
         self.source = source
         self.filesystem = filesystem
         self.workDir = workDir
-        self.planVersion = 3
+        self.planVersion = 4
         self.ventoyOperation = ventoyOperation
         self.secureBoot = secureBoot
+        self.partitionStyle = partitionStyle
     }
 
     // Backwards-compat decoder: v0.2.x plans (planVersion == 1) didn't
     // carry `ventoyOperation`, and v0.3.x plans (planVersion == 2)
-    // didn't carry `secureBoot`. Decode the gaps as the behaviour those
+    // didn't carry `secureBoot`, and v0.4.x plans (planVersion == 3)
+    // didn't carry `partitionStyle`. Decode the gaps as the behaviour those
     // versions had, so the daemon can still execute legacy plans during
     // a rolling upgrade.
     enum CodingKeys: String, CodingKey {
-        case driver, target, source, filesystem, workDir, planVersion, ventoyOperation, secureBoot
+        case driver, target, source, filesystem, workDir, planVersion, ventoyOperation, secureBoot, partitionStyle
     }
 
     public init(from decoder: Decoder) throws {
@@ -194,6 +231,7 @@ public struct InstallPlan: Codable, Sendable {
         self.planVersion = try c.decode(Int.self, forKey: .planVersion)
         self.ventoyOperation = try c.decodeIfPresent(VentoyOperation.self, forKey: .ventoyOperation) ?? .freshInstall
         self.secureBoot = try c.decodeIfPresent(Bool.self, forKey: .secureBoot) ?? true
+        self.partitionStyle = try c.decodeIfPresent(VentoyPartitionStyle.self, forKey: .partitionStyle) ?? .gpt
     }
 }
 
@@ -202,6 +240,7 @@ public enum PlanValidationError: Error, CustomStringConvertible {
     case refusedSystemDisk(String)
     case nonexternalDisk
     case tooSmall(UInt64, minimum: UInt64)
+    case tooLargeForMBR(UInt64)
 
     public var description: String {
         switch self {
@@ -213,6 +252,8 @@ public enum PlanValidationError: Error, CustomStringConvertible {
             return "Target disk is not external/removable"
         case .tooSmall(let got, let min):
             return "Target disk (\(got) bytes) is smaller than minimum (\(min) bytes)"
+        case .tooLargeForMBR(let got):
+            return "Target disk (\(got) bytes) is larger than MBR can address (2 TiB, about 2.2 TB). Use the GPT partition style."
         }
     }
 }
@@ -242,6 +283,10 @@ public extension InstallPlan {
         }
         guard target.sizeInBytes >= Self.minimumDiskBytes else {
             throw PlanValidationError.tooSmall(target.sizeInBytes, minimum: Self.minimumDiskBytes)
+        }
+        if driver == .ventoy, ventoyOperation == .freshInstall, partitionStyle == .mbr,
+           !VentoyPartitionStyle.mbrCanAddress(diskBytes: target.sizeInBytes) {
+            throw PlanValidationError.tooLargeForMBR(target.sizeInBytes)
         }
     }
 }

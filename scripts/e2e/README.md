@@ -18,8 +18,10 @@ cd scripts/e2e && swift build
 mkfile -n 1g stick.img
 DEV=$(hdiutil attach -nomount -imagekey diskimage-class=CRawDiskImage stick.img | awk 'NR==1{print $1}')
 
-# 2. Real install.  usage: e2e <diskN> <install|update> <on|off> [ventoy-version]
-.build/debug/e2e "${DEV#/dev/}" install off
+# 2. Real install.  usage: e2e <diskN> <install|update> <on|off> [mbr|gpt] [ventoy-version]
+#    on|off = Secure Boot support; partition style defaults to mbr, as in
+#    the app. (Before v0.5.0 the 4th argument was the Ventoy version.)
+.build/debug/e2e "${DEV#/dev/}" install off mbr
 
 # 3. Optionally copy an ISO onto the mounted "Ventoy" volume, then:
 hdiutil detach "$DEV"
@@ -36,10 +38,7 @@ python3 qemu-drive.py stick.img bios shot wait:45 shot:menu
 the image.
 
 To test Update Ventoy, re-attach the image and run `e2e <diskN> update <on|off>`.
-An MBR-style stick (what Ventoy2Disk creates by default, and what Mactoy never
-creates itself) has to be built by hand: `boot.img[0..<446]` + an MBR with
-partition 1 at LBA 2048 (type 0x07, active) and a 65536-sector partition 2
-(type 0xEF) at the end, `core.img` at LBA 1, `ventoy.disk.img` at partition 2.
+To get an MBR-style stick (Ventoy2Disk's default), install with `mbr`.
 
 What this can't tell you: how a particular machine's firmware behaves. OVMF is
 a spec-compliant UEFI; it isn't Apple's EFI 1.10 or a vendor BIOS with quirks.
