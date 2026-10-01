@@ -42,7 +42,7 @@ And the [Mac App Store sandbox forbids privilege escalation and raw block-device
 
 1. **Install Ventoy** on a USB drive — download from GitHub releases, partition (MBR or GPT, like Ventoy2Disk), write the bootloader, format the data partition as exFAT. Done from macOS, not a Linux VM.
 2. **Flash a raw image** (`.iso`, `.img`, `.img.xz`, `.img.gz`) — a one-shot `dd` replacement with a progress bar and drag-and-drop. Use this when you want a single-boot stick; use Install Ventoy when you want a multi-boot library.
-3. **Manage an existing Ventoy disk** — list, add, and remove ISOs on a mounted `Ventoy` volume without dropping to Finder. Uses `VTOY_DEFAULT_SEARCH_ROOT` from `/ventoy/ventoy.json` (or `/ventoy.json`), otherwise an existing `/images` folder, otherwise the volume root. Lists images in subfolders and adds new images to the selected image folder.
+3. **Manage an existing Ventoy disk** — list, add, and remove ISOs on a mounted `Ventoy` volume without dropping to Finder. Lists the same images Ventoy's boot menu will: it follows `VTOY_DEFAULT_SEARCH_ROOT`, `VTOY_MAX_SEARCH_LEVEL` and `.ventoyignore` from your `/ventoy/ventoy.json` setup, searches subfolders, and adds new images to the search root.
 
 Both write modes share one Liquid Glass UI and one privileged helper binary.
 

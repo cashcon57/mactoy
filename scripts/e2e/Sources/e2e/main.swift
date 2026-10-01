@@ -2,6 +2,7 @@ import Foundation
 import MactoyKit
 
 // usage: e2e <diskN> <install|update> <secure:on|off> [mbr|gpt] [version]
+//        e2e scan <mounted Ventoy volume>
 // Runs the REAL VentoyDriver against an hdiutil-attached disk image.
 struct Sink: ProgressSink {
     func report(_ u: ProgressUpdate) {
@@ -9,6 +10,14 @@ struct Sink: ProgressSink {
     }
 }
 let a = CommandLine.arguments
+
+// e2e scan <mounted Ventoy volume> — print what Manage Disk will list.
+if a.count == 3, a[1] == "scan" {
+    let result = VentoyImageLibrary.scan(volume: URL(fileURLWithPath: a[2]))
+    print("folder: \(result.directory.path)")
+    for url in result.images { print("image: \(url.path)") }
+    exit(0)
+}
 let bsd = a[1], op = a[2], secure = a[3] == "on"
 // Default matches the app's: MBR.
 guard let style = VentoyPartitionStyle(rawValue: a.count > 4 ? a[4] : "mbr") else {

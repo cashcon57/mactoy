@@ -11,6 +11,12 @@
   - The choice is captured when you confirm and carried through Retry and the helper-approval resume, like the Secure Boot choice; the confirmation sheet states it.
   - After an MBR install, sector 0 is read back and compared with what was written, so a stick that would fail on legacy BIOS can't report success.
 
+- **Manage Disk lists images in folders, the way Ventoy's menu does** ([#10](https://github.com/cashcon57/mactoy/pull/10), thanks [@swagdotsh](https://github.com/swagdotsh)). Previously it only listed images at the top of the drive.
+  - Follows `VTOY_DEFAULT_SEARCH_ROOT` and `VTOY_MAX_SEARCH_LEVEL` from `/ventoy/ventoy.json`, skips folders containing `.ventoyignore` and trash folders, and searches subfolders; with no search root it searches the whole drive, as Ventoy does. "Add ISO…" and "Open in Finder" use the search root.
+  - Where the menu's contents depend on the boot mode (`control_<mode>` keys in `ventoy.json`), Manage Disk lists the whole drive rather than guessing.
+  - Rows show each image's path, since two folders can hold files with the same name. The scan runs off the main thread and reruns after Add or Delete.
+  - Hidden files (names starting with `.`) are still not listed: on a drive used from a Mac they're `._` metadata files, not images.
+
 ### Changed
 
 - **Update Ventoy on MBR sticks** now makes partition 1 the active partition when it finds partition 2 marked active instead, as upstream's update does. Only that exact combination is touched.
@@ -21,6 +27,8 @@
 
 - 102 tests pass (22 new). QEMU end-to-end with the real driver: MBR with Secure Boot on and off, and GPT, each boot to the Ventoy menu under UEFI and legacy BIOS; updating an MBR stick (including converting Secure Boot on → off, and repairing a misplaced active flag) keeps it booting under both.
 - `diskutil eraseVolume` (the fallback formatter) leaves sector 0 of an MBR stick untouched.
+- Manage Disk's image list compared with Ventoy's real boot menu on the same stick (QEMU), with a search root, nested folders, a `.ventoyignore` folder and a `$RECYCLE.BIN`, and again with no config: identical both times.
+- The partition-style card checked in the running app.
 
 ## [0.4.0] — 2026-09-21
 

@@ -37,6 +37,9 @@ python3 qemu-drive.py stick.img bios shot wait:45 shot:menu
 `<prefix>-serial.log`. QEMU runs with `-snapshot`, so booting never modifies
 the image.
 
+`e2e scan /Volumes/Ventoy` prints what Manage Disk will list for a mounted
+Ventoy volume, to compare with the boot menu.
+
 To test Update Ventoy, re-attach the image and run `e2e <diskN> update <on|off>`.
 To get an MBR-style stick (Ventoy2Disk's default), install with `mbr`.
 
