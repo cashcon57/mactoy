@@ -13,3 +13,4 @@ DerivedData/
 !.env.example
 app-support/AppIcon.iconset/
 Mactoy-transparent.png
+.vscode/

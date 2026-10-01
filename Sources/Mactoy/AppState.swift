@@ -140,11 +140,18 @@ final class AppState: ObservableObject {
     /// just switched away from.
     private var pendingRunSecureBoot: Bool = true
     private var pendingRunPartitionStyle: VentoyPartitionStyle = .mbr
+    /// Set once Mactoy has re-registered its helper because of a version
+    /// mismatch; a further mismatch then fails instead of looping through
+    /// the approval sheet. Carried across the approval detour (that's the
+    /// loop it guards); cleared whenever the user starts a run themselves
+    /// (confirm or Retry), and when a run succeeds or is cancelled.
+    private var didReregisterForVersionMismatch = false
 
     /// What the most recent `run(...)` was asked to do, recorded on entry
-    /// before any check can bail out. For diagnostics, and so tests can
-    /// confirm retry/resume pass the captured choices rather than the
-    /// live toggles.
+    /// before any check can bail out. Diagnostics and test support only:
+    /// nothing in the app reads these, and they never influence a run.
+    /// Tests use them to confirm retry/resume pass the captured choices
+    /// rather than the live toggles.
     struct RunRequest: Equatable {
         let bsdName: String
         let mode: AppMode
@@ -181,6 +188,15 @@ final class AppState: ObservableObject {
         return m.contains("No such process")
             || m.contains("4099")
             || m.contains("Connection init failed at lookup")
+    }
+
+    /// The registered helper belongs to a different Mactoy version —
+    /// typically this copy was opened from the DMG while an older one in
+    /// /Applications still owns the registration. Re-registering points
+    /// launchd at this app's bundled helper.
+    private func isVersionMismatch(_ err: HelperInvoker.HelperError) -> Bool {
+        if case .versionMismatch = err { return true }
+        return false
     }
 
     private func isFullDiskAccessError(_ err: HelperInvoker.HelperError) -> Bool {
@@ -295,6 +311,7 @@ final class AppState: ObservableObject {
 
     func cancelHelperApproval() {
         helperPollTask?.cancel()
+        didReregisterForVersionMismatch = false
         helperPollTask = nil
         isAwaitingHelperApproval = false
         // Clear the captured target/mode — if the user cancelled the
@@ -456,6 +473,10 @@ final class AppState: ObservableObject {
                 return "Couldn't reach the Mactoy helper to probe this disk. The helper may not be approved yet — try a fresh install on the **Install Ventoy** tab once to register it, then come back here."
             case .executionFailed(let m):
                 return "Probe failed: \(m)"
+            case .versionMismatch:
+                // Not thrown by the probe today (it doesn't ping), but
+                // keep the message useful if that changes.
+                return "Probe failed: \(helperErr.localizedDescription)"
             }
         }
         return "Probe failed: \(error.localizedDescription)"
@@ -510,6 +531,7 @@ final class AppState: ObservableObject {
 
     func cancelRun() {
         pendingEraseConfirmation = nil
+        didReregisterForVersionMismatch = false
         // Also clear the captured target/mode so a stale helper-poll
         // resume can't fire an install the user has since cancelled.
         pendingRunTarget = nil
@@ -518,6 +540,7 @@ final class AppState: ObservableObject {
 
     func confirmRun() {
         guard let confirmation = pendingEraseConfirmation else { return }
+        didReregisterForVersionMismatch = false
         pendingEraseConfirmation = nil
         // **Iron-clad targeting (Layer 3, issue #1):** pass the
         // captured `EraseConfirmation` through to `run()` explicitly.
@@ -691,35 +714,89 @@ final class AppState: ObservableObject {
             showFullDiskAccessSheet = true
             status = .failed("Full Disk Access is required — see the popup.")
             Self.log.error("run() failed: TCC blocked raw disk access (Full Disk Access required)")
-        } catch let err as HelperInvoker.HelperError where isLookupFailure(err) {
-            // BTM says the toggle is on but launchd has no registration
-            // (happens after `sudo launchctl bootout` or a stale
-            // BTM entry). Try to re-submit the daemon plist to launchd
-            // and retry the install automatically.
+        } catch let err as HelperInvoker.HelperError where isLookupFailure(err) || isVersionMismatch(err) {
+            // Either BTM says the toggle is on but launchd has no
+            // registration (after `sudo launchctl bootout` or a stale BTM
+            // entry), or the registered helper belongs to another Mactoy
+            // copy — older or newer (v0.5.0). Both are fixed by
+            // re-submitting this app's daemon plist to launchd and
+            // retrying once. Taking the helper over is always safe: the
+            // retry again requires an exact version match before any plan
+            // is sent, so nothing is written by a mismatched helper.
             // .private redacts in shared log output (e.g. when a user
             // pastes `log show` into a public GitHub issue) but stays
             // visible to the local user running `log show` themselves.
-            Self.log.error("run() XPC lookup failure — retrying after re-register: \(err.localizedDescription, privacy: .private)")
-            status = .preparing("Helper daemon lost — re-registering…")
-            do {
-                try? await HelperLifecycle.unregister()
-                try HelperLifecycle.register()
-                // Brief pause for launchd to pick up the new submission.
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                try await HelperInvoker.run(
-                    plan: plan,
-                    onUpdate: { [weak self] update in
-                        guard let self else { return }
-                        self.appendBoundedLog(update)
-                        switch update.phase {
-                        case .failed, .done: return
-                        default: self.status = .running(update)
-                        }
+            Self.log.error("run() helper registration problem — retrying after re-register: \(err.localizedDescription, privacy: .private)")
+
+            // Already re-registered for a version mismatch once in this
+            // run's life (possibly before an approval detour) and it
+            // still doesn't match: stop instead of looping.
+            if isVersionMismatch(err) && didReregisterForVersionMismatch {
+                status = .failed("\(err.localizedDescription)\n\nAnother copy of Mactoy on this Mac keeps taking over the helper. Quit it and move it to the Trash (keep only one copy, ideally in Applications), then try again.")
+            } else {
+                status = .preparing(isVersionMismatch(err)
+                    ? "Helper is from another Mactoy version — switching it to this one…"
+                    : "Helper daemon lost — re-registering…")
+
+                var registered = false
+                do {
+                    try? await HelperLifecycle.unregister()
+                    try HelperLifecycle.register()
+                    registered = true
+                    if isVersionMismatch(err) { didReregisterForVersionMismatch = true }
+                } catch {
+                    status = .failed(isVersionMismatch(err)
+                        ? "Couldn't switch the helper over to this copy of Mactoy: \(error.localizedDescription)\n\nNothing was written. Quit any other copy of Mactoy and move it to the Trash, then try again."
+                        : "Helper daemon could not be reached and auto-recovery failed.\n\nIn System Settings → General → \(SystemSettingsStrings.loginItemsPane), turn the Mactoy toggle OFF and back ON, then try again.\n\nUnderlying error: \(error.localizedDescription)")
+                }
+
+                if registered {
+                    // Re-registering (especially from another bundle path)
+                    // can leave the helper waiting for the user's approval.
+                    // Hand over to the normal approval flow, which resumes
+                    // this captured run once approved. Return straight away
+                    // so the "uninstall helper after this run" cleanup
+                    // below can't remove the helper mid-approval. (Not
+                    // refreshHelperStatus(): that also resets the uninstall
+                    // checkbox.)
+                    helperStatus = HelperLifecycle.status
+                    if helperStatus != .enabled {
+                        Self.log.info("run(): helper needs approval after re-register — showing explainer")
+                        status = .idle
+                        showHelperExplainer = true
+                        return
                     }
-                )
-                status = .success("Install complete")
-            } catch {
-                status = .failed("Helper daemon could not be reached and auto-recovery failed.\n\nIn System Settings → General → \(SystemSettingsStrings.loginItemsPane), turn the Mactoy toggle OFF and back ON, then try again.\n\nUnderlying error: \(error.localizedDescription)")
+                    // Brief pause for launchd to pick up the new submission.
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    do {
+                        try await HelperInvoker.run(
+                            plan: plan,
+                            onUpdate: { [weak self] update in
+                                guard let self else { return }
+                                self.appendBoundedLog(update)
+                                switch update.phase {
+                                case .failed, .done: return
+                                default: self.status = .running(update)
+                                }
+                            }
+                        )
+                        status = .success("Install complete")
+                    } catch let retryErr as HelperInvoker.HelperError where isFullDiskAccessError(retryErr) {
+                        // Same handling as a first attempt.
+                        showFullDiskAccessSheet = true
+                        status = .failed("Full Disk Access is required — see the popup.")
+                    } catch let retryErr as HelperInvoker.HelperError where isVersionMismatch(retryErr) {
+                        // Could be another copy taking the helper back, or
+                        // just the old helper process not having exited yet.
+                        status = .failed("\(retryErr.localizedDescription)\n\nIf another copy of Mactoy is on this Mac, quit it and move it to the Trash (keep only one copy, ideally in Applications). Otherwise, wait a few seconds and press Retry.")
+                    } catch let retryErr as HelperInvoker.HelperError where isLookupFailure(retryErr) {
+                        status = .failed("Helper daemon could not be reached and auto-recovery failed.\n\nIn System Settings → General → \(SystemSettingsStrings.loginItemsPane), turn the Mactoy toggle OFF and back ON, then try again.\n\nUnderlying error: \(retryErr.localizedDescription)")
+                    } catch {
+                        // Anything else came from the helper actually
+                        // running the plan — report it as it is.
+                        status = .failed(error.localizedDescription)
+                    }
+                }
             }
         } catch {
             status = .failed(error.localizedDescription)
@@ -757,6 +834,7 @@ final class AppState: ObservableObject {
         } else if case .success = status {
             pendingRunTarget = nil
             pendingRunMode = nil
+            didReregisterForVersionMismatch = false
         }
         // .idle (helper-not-enabled) leaves them alone — the helper-
         // poll resume path needs them.
@@ -816,6 +894,7 @@ final class AppState: ObservableObject {
 
     func reset() {
         status = .idle
+        didReregisterForVersionMismatch = false
         log = []
         pendingRunTarget = nil
         pendingRunMode = nil
@@ -840,6 +919,7 @@ final class AppState: ObservableObject {
             Self.log.warning("retryRun called with no captured target — ignoring")
             return
         }
+        didReregisterForVersionMismatch = false
         Self.log.info("retryRun: re-invoking run() with captured target /dev/\(target.bsdName, privacy: .public)")
         await run(
             confirmedTarget: target,

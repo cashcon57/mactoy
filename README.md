@@ -48,13 +48,13 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 
 ---
 
-## Status — v0.4.0 alpha
+## Status — v0.5.0 alpha
 
 - [x] GPT + boot-image math ported from the Python proof-of-concept (cross-validated: Swift and Python produce bit-identical layouts for the same disk).
 - [x] Ventoy install flow end-to-end (download → extract → partition → write → format).
 - [x] **Update Ventoy in-place** (v0.3.0, hardened in v0.3.1). Updates the bootloader on a drive that already has Ventoy without erasing your ISOs or `/ventoy/` config. Mactoy is the first non-official-Ventoy-team port of this flow on macOS.
 - [x] **Secure Boot support toggle** (v0.4.0). Same choice as Ventoy2Disk's `-s` / `-S`, on both Install and Update. Turn it off for sticks that need to boot Macs or firmware that hangs in the UEFI shim.
-- [x] **MBR or GPT partition style** (next release, issue #11). Install Ventoy defaults to MBR, Ventoy2Disk's default, which boots on legacy BIOS and UEFI; GPT is one click away, and drives over 2 TiB always get GPT.
+- [x] **MBR or GPT partition style** (v0.5.0, issue #11). Install Ventoy defaults to MBR, Ventoy2Disk's default, which boots on legacy BIOS and UEFI; GPT is one click away, and drives over 2 TiB always get GPT.
 - [x] **Iron-clad targeting defense** (v0.3.1). Six-layer defense against wrong-disk wipes: fingerprint capture at confirmation, selection freeze while sheet is open, captured-target threading through run(), app-side + daemon-side re-verification (with re-verify immediately before write to bracket long-running download/decompress), and BSD-name guard.
 - [x] Raw image flashing with `.xz` and `.gz` decompression.
 - [x] Liquid Glass SwiftUI interface on macOS 26 Tahoe; automatic `regularMaterial` fallback on macOS 13–15 so the same binary runs on Ventura, Sonoma, Sequoia, and Tahoe — Apple Silicon *and* Intel.
@@ -72,7 +72,7 @@ Grab `Mactoy-<version>.dmg` from the [Releases page](https://github.com/cashcon5
 
 ### Open it
 
-1. Open `Mactoy-0.4.0.dmg` (or whichever `Mactoy-*.dmg` is on the latest release page).
+1. Open `Mactoy-0.5.0.dmg` (or whichever `Mactoy-*.dmg` is on the latest release page).
 2. Drag `Mactoy.app` into `/Applications`.
 3. Launch from Launchpad or `/Applications`. Opens normally — no right-click dance needed. The DMG is Apple-notarized, so Gatekeeper sees it as a known-good Developer ID build.
 
@@ -247,7 +247,7 @@ swift test
 
 # Build the signed release bundle + DMG (requires a Developer ID cert in Keychain)
 ./scripts/build-app.sh release devid
-./scripts/build-dmg.sh 0.4.0 devid
+./scripts/build-dmg.sh 0.5.0 devid
 
 # Build a universal (arm64 + x86_64) app bundle — ship this if you
 # want one binary that runs on both Apple Silicon and Intel Macs.

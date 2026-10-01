@@ -185,8 +185,8 @@ public struct VentoyDriver: InstallDriver {
         for range in compared where onDisk.subdata(in: range) != written.subdata(in: range) {
             throw DriverError.validation(
                 "Install wrote successfully, but sector 0 reads back different from what was written " +
-                "(bytes \(range.lowerBound)..<\(range.upperBound)), so the drive may not boot on legacy BIOS PCs. " +
-                "Try again, or try a different USB stick."
+                "(bytes \(range.lowerBound)..<\(range.upperBound)). The drive may still boot on UEFI machines, " +
+                "but may not on legacy BIOS PCs. Try again, or try a different USB stick."
             )
         }
     }

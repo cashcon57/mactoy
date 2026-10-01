@@ -10,6 +10,9 @@ enum HelperInvoker {
     enum HelperError: LocalizedError {
         case xpcUnreachable(String)
         case executionFailed(String)
+        /// The registered helper is a different version from this app.
+        /// Thrown before any plan is sent, so nothing has been written.
+        case versionMismatch(helper: String)
 
         var errorDescription: String? {
             switch self {
@@ -17,6 +20,8 @@ enum HelperInvoker {
                 return "Could not reach the Mactoy helper daemon: \(s)"
             case .executionFailed(let s):
                 return s
+            case .versionMismatch(let helper):
+                return "The registered Mactoy helper is version \(helper), but this is Mactoy \(mactoydVersion). Nothing was written."
             }
         }
     }
@@ -81,12 +86,9 @@ enum HelperInvoker {
         // it doesn't know: it would write the shim layout regardless of
         // `secureBoot`, and still has the v0.3.x MBR update bug.
         let daemonVersion = try await Self.ping(connection)
+        // AppState re-registers this app's helper and retries once.
         guard daemonVersion == mactoydVersion else {
-            throw HelperError.executionFailed(
-                "The installed Mactoy helper is version \(daemonVersion), but this is Mactoy \(mactoydVersion). " +
-                "Nothing was written. Quit any other copy of Mactoy, then in System Settings → General → " +
-                "\(SystemSettingsStrings.loginItemsPane) turn the Mactoy toggle off and back on, and try again."
-            )
+            throw HelperError.versionMismatch(helper: daemonVersion)
         }
 
         let encoder = JSONEncoder()

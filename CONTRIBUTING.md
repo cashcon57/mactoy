@@ -92,8 +92,8 @@ Changes to any of these are reviewed line by line and need tests that fail
 without the change:
 
 - `Sources/MactoyKit/VentoyDriver.swift`, `RawImageDriver.swift`,
-  `DiskWriter.swift`, `GPT.swift`, `VentoyESP.swift`, `FAT16Reader.swift` —
-  the bytes that get written.
+  `DiskWriter.swift`, `GPT.swift`, `MBR.swift`, `VentoyLayout.swift`,
+  `VentoyESP.swift`, `FAT16Reader.swift` — the bytes that get written.
 - `Sources/mactoyd/` — the root helper and its client check.
 - Disk selection and confirmation in `Sources/Mactoy/AppState.swift`. Mactoy
   has a six-layer defence against writing to the wrong disk (see the v0.3.1

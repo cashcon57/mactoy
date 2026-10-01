@@ -25,7 +25,7 @@ struct ManageDiskPanel: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Select a mounted Ventoy disk to manage ISOs.")
                         .font(.headline)
-                    Text("This pane lists the ISO/IMG files currently on the `Ventoy` partition. It appears when the selected disk is a Ventoy-installed drive and its `Ventoy` volume is mounted.")
+                    Text("This pane lists the images on the `Ventoy` partition that Ventoy's boot menu will list, following the search settings in your `/ventoy/ventoy.json`. It appears when the selected disk is a Ventoy-installed drive and its `Ventoy` volume is mounted.")
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -68,6 +68,10 @@ struct ManageDiskPanel: View {
 private struct ImageLibrary: View {
     let volumeURL: URL
     @State private var scan: VentoyImageLibrary.Scan?
+    /// Bumped by every reload; a scan that finishes after a newer one
+    /// started is discarded, so a slow early scan can't bring back a
+    /// file that was just deleted.
+    @State private var generation = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -140,9 +144,13 @@ private struct ImageLibrary: View {
                     NSWorkspace.shared.activateFileViewerSelecting([scan?.directory ?? volumeURL])
                 }
                 Button("Add ISO…") {
-                    addISO(to: scan?.directory ?? volumeURL)
+                    guard let directory = scan?.directory else { return }
+                    addISO(to: directory)
                     Task { await reload() }
                 }
+                // Until the first scan finishes we don't know the search
+                // root, and would copy to the wrong folder.
+                .disabled(scan == nil)
                 Spacer()
             }
         }
@@ -150,11 +158,15 @@ private struct ImageLibrary: View {
     }
 
     private func reload() async {
+        generation += 1
+        let mine = generation
         let volume = volumeURL
         let result = await Task.detached(priority: .userInitiated) {
             VentoyImageLibrary.scan(volume: volume)
         }.value
-        scan = result
+        if mine == generation {
+            scan = result
+        }
     }
 
     private func relativePath(_ url: URL) -> String {

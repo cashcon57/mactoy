@@ -1,6 +1,10 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.0] — 2026-10-01
+
+MBR installs, the Ventoy2Disk default Mactoy was missing, and Manage Disk support for image folders. Thanks to [@FrancYescO](https://github.com/FrancYescO) (#11) and [@swagdotsh](https://github.com/swagdotsh) (#10, Mactoy's first outside pull request).
+
+**Heads-up: Install Ventoy now defaults to MBR**, where v0.4.x always wrote GPT. Pick GPT on the Install tab if you want the old layout.
 
 ### Added
 
@@ -13,21 +17,26 @@
 
 - **Manage Disk lists images in folders, the way Ventoy's menu does** ([#10](https://github.com/cashcon57/mactoy/pull/10), thanks [@swagdotsh](https://github.com/swagdotsh)). Previously it only listed images at the top of the drive.
   - Follows `VTOY_DEFAULT_SEARCH_ROOT` and `VTOY_MAX_SEARCH_LEVEL` from `/ventoy/ventoy.json`, skips folders containing `.ventoyignore` and trash folders, and searches subfolders; with no search root it searches the whole drive, as Ventoy does. "Add ISO…" and "Open in Finder" use the search root.
-  - Where the menu's contents depend on the boot mode (`control_<mode>` keys in `ventoy.json`), Manage Disk lists the whole drive rather than guessing.
+  - Where Mactoy can't tell what the menu will show — `control_<mode>` keys (the menu then depends on the boot mode), a `control` entry with more than one key, or backslash escapes in `ventoy.json` — Manage Disk lists the whole drive rather than guessing.
   - Rows show each image's path, since two folders can hold files with the same name. The scan runs off the main thread and reruns after Add or Delete.
-  - Hidden files (names starting with `.`) are still not listed: on a drive used from a Mac they're `._` metadata files, not images.
+  - Also follows `VTOY_FILT_TRASH_DIR`, `VTOY_FILE_FLT_<TYPE>`, Ventoy's 32 KiB minimum image size, its handling of a UTF-16 `ventoy.json` (ignored) and of `control` entries (one key each, later entries win); lists `.vtoy` files; and leaves out Ventoy's own `ventoy_wimboot.img` / `ventoy_vhdboot.img`.
+  - Known gaps, where Manage Disk shows more than the menu: the `image_list` / `image_blacklist` plugins aren't applied, `.efi` files are listed even though Ventoy shows them only when booted in UEFI mode, and `.wim` / `.vhd(x)` files even when Ventoy's wimboot/vhdboot support is missing.
+  - Names starting with `.` are still not listed: on a drive used from a Mac they're `._` metadata files, not images.
+  - "Add ISO…" waits for the first scan, so it can't copy to the wrong folder.
 
 ### Changed
 
 - **Update Ventoy on MBR sticks** now makes partition 1 the active partition when it finds partition 2 marked active instead, as upstream's update does. Only that exact combination is touched.
 - `InstallPlan` gains `partitionStyle` (`planVersion` 4). Plans without it decode as GPT. The helper's version is now 0.5.0; the app refuses a helper reporting any other version, so an older helper can't silently ignore the choice.
+- **A helper from another Mactoy copy is now replaced automatically.** If the registered helper belongs to a different version — usually because this copy was opened from the DMG while another one in Applications owns the registration — Mactoy re-registers its own helper and retries once, instead of failing every run. If macOS needs you to approve the helper again, the usual approval sheet appears and the run resumes once you approve. Nothing is written before the versions match. If another copy keeps taking the helper back, the error says to remove it.
+- If the retry after re-registering fails for another reason (for example Full Disk Access), it's now reported as that, rather than as "the helper could not be reached".
 - The fresh-install writes moved into `VentoyDriver.writeFreshLayout` so both styles can be tested against a file. The GPT bytes are unchanged: verified by three independent reviews, by a golden hash of the whole written image, and by installing with the released v0.4.0 driver and the new one on disk images and comparing everything the GPT path writes (identical once per-install random IDs are masked).
 
 ### Verified
 
-- 102 tests pass (22 new). QEMU end-to-end with the real driver: MBR with Secure Boot on and off, and GPT, each boot to the Ventoy menu under UEFI and legacy BIOS; updating an MBR stick (including converting Secure Boot on → off, and repairing a misplaced active flag) keeps it booting under both.
+- 128 tests pass (50 new), plus 2 opt-in tests. QEMU end-to-end with the real driver: MBR with Secure Boot on and off, and GPT, each boot to the Ventoy menu under UEFI and legacy BIOS; updating an MBR stick (including converting Secure Boot on → off, and repairing a misplaced active flag) keeps it booting under both.
 - `diskutil eraseVolume` (the fallback formatter) leaves sector 0 of an MBR stick untouched.
-- Manage Disk's image list compared with Ventoy's real boot menu on the same stick (QEMU), with a search root, nested folders, a `.ventoyignore` folder and a `$RECYCLE.BIN`, and again with no config: identical both times.
+- Manage Disk's image list compared with Ventoy's real boot menu on the same stick (QEMU), with a search root, nested folders, a `.ventoyignore` folder and a `$RECYCLE.BIN`, and again with no config: identical both times (re-checked with the final scanner rules).
 - The partition-style card checked in the running app.
 
 ## [0.4.0] — 2026-09-21
