@@ -118,6 +118,10 @@ final class AppState: ObservableObject {
     /// approved). Drives the UpdateVentoyPanel's "probe-failed" hint
     /// state. Cleared whenever a fresh probe is fired or succeeds.
     @Published var probeError: String?
+    /// The last probe failed because the helper isn't reachable — e.g.
+    /// it was removed after an install, as the explainer sheet offers.
+    /// The Update tab then offers to set it up again (v0.5.1).
+    @Published var probeNeedsHelper = false
     private var probeTask: Task<Void, Never>?
     /// Seam for tests: selection changes fire a probe, and the real one
     /// is an XPC call to the root daemon.
@@ -204,16 +208,24 @@ final class AppState: ObservableObject {
         return m.contains("blocked by macOS (Operation not permitted)")
     }
 
+    /// Seam for tests: where `refreshHelperStatus()` reads the helper's
+    /// registration state.
+    var helperStatusSource: () -> HelperStatus = { HelperLifecycle.status }
+
     func refreshHelperStatus() {
-        let new = HelperLifecycle.status
-        if helperStatus != new {
-            helperStatus = new
-            Self.log.info("helperStatus -> \(String(describing: new), privacy: .public)")
-        }
-        // Default the uninstall-after-run checkbox: if the helper is
-        // already installed, leave it alone by default (unchecked). If we
-        // are about to install the helper for the first time, prefer to
-        // clean up after ourselves (checked).
+        let new = helperStatusSource()
+        guard helperStatus != new else { return }
+        helperStatus = new
+        Self.log.info("helperStatus -> \(String(describing: new), privacy: .public)")
+
+        // Default the "Remove the helper when done" checkbox,
+        // only when the helper's state actually changes: unticked if it's
+        // already installed (the user kept it before), ticked if it's
+        // about to be installed. Before v0.5.1 this ran on every call,
+        // so the run that resumes after approval — which calls this and
+        // sees `.enabled` — silently unticked the user's choice and the
+        // helper was never removed. The approval poll sets `helperStatus`
+        // itself, so by then there's no change and the choice survives.
         let nextUninstall = (new != .enabled)
         if uninstallHelperAfterRun != nextUninstall {
             uninstallHelperAfterRun = nextUninstall
@@ -223,103 +235,187 @@ final class AppState: ObservableObject {
     /// Register the daemon, open the Login Items settings pane, and poll
     /// for the toggle flip. Resolves when `.enabled` (or the user closes
     /// the sheet).
+    /// One run of the approval flow. Its purpose is fixed when it starts,
+    /// and every later step checks it's still the current one, so a
+    /// cancelled approval can't open Settings, start polling, or resume a
+    /// run afterwards (v0.5.1).
+    private struct HelperApproval {
+        let id: Int
+        let resumesRun: Bool
+    }
+    private var currentApproval: HelperApproval?
+    private var approvalCounter = 0
+    /// The latest approval's task. A new approval waits for it, so a
+    /// cancelled approval's slow unregister can't land after the new
+    /// one has registered.
+    private var approvalTask: Task<Void, Never>?
+
+    /// Seams for tests: the SMAppService calls the approval flow makes.
+    var helperRegistrar = HelperRegistrar.live
+
+    private func isCurrent(_ approval: HelperApproval) -> Bool {
+        isAwaitingHelperApproval && currentApproval?.id == approval.id
+    }
+
     func beginHelperApproval() {
         guard !isAwaitingHelperApproval else { return }
         isAwaitingHelperApproval = true
+        approvalCounter += 1
+        let approval = HelperApproval(id: approvalCounter, resumesRun: approvalResumesRun)
+        currentApproval = approval
+        approvalResumesRun = true      // the purpose now lives in `approval`
+        let registrar = helperRegistrar
+        let previous = approvalTask
 
-        Task { [weak self] in
-            guard let self else { return }
-
+        approvalTask = Task { @MainActor [weak self] in
+            await previous?.value
+            guard self?.isCurrent(approval) == true else { return }
             // SMAppService can refuse register() with "Operation not
             // permitted" when BTM already holds an entry for the same
             // label from a previously-signed build. Unregister first to
             // clear any lingering record; ignore failure (nothing to
             // remove is fine).
-            try? await HelperLifecycle.unregister()
+            try? await registrar.unregister()
+            guard let self, self.isCurrent(approval) else { return }   // cancelled meanwhile
 
             // register() may still fail — either the cleanup above
             // didn't actually remove a stale BTM entry, or the user
             // denied the implicit prompt. Either way we still open
             // Login Items so they can toggle whatever entry IS there,
-            // and fall back to polling. Register failures surface only
-            // if the poll times out (handled by the user cancelling).
+            // and fall back to polling.
             let registerError: String?
             do {
-                try HelperLifecycle.register()
+                try registrar.register()
                 registerError = nil
             } catch {
                 registerError = error.localizedDescription
             }
 
-            await MainActor.run {
-                HelperLifecycle.openLoginItemsSettings()
-                self.helperStatus = HelperLifecycle.status
-                if self.helperStatus == .notRegistered, let err = registerError {
-                    self.status = .failed("Helper registration failed: \(err)\n\nIf Mactoy already appears in \(SystemSettingsStrings.loginItemsPane), turn its toggle on manually.")
-                    self.isAwaitingHelperApproval = false
+            registrar.openSettings()
+            self.helperStatus = self.helperStatusSource()
+            if self.helperStatus == .notRegistered, let err = registerError {
+                let message = "Helper registration failed: \(err)\n\nIf Mactoy already appears in \(SystemSettingsStrings.loginItemsPane), turn its toggle on manually."
+                if approval.resumesRun {
+                    self.status = .failed(message)
+                } else {
+                    // Set Up Helper from the Update tab: report it there,
+                    // and leave any failed run's banner (and its Retry)
+                    // as it was.
+                    self.probeError = message
                 }
-            }
-            if await MainActor.run(body: { self.helperStatus == .notRegistered && registerError != nil }) {
+                self.isAwaitingHelperApproval = false
+                self.currentApproval = nil
                 return
             }
-            self.startHelperPoll()
+            self.startHelperPoll(for: approval)
         }
     }
 
-    private func startHelperPoll() {
-
+    private func startHelperPoll(for approval: HelperApproval) {
         helperPollTask?.cancel()
-        helperPollTask = Task { [weak self] in
+        helperPollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard let self else { return }
-                await MainActor.run {
-                    let new = HelperLifecycle.status
-                    if self.helperStatus != new {
-                        self.helperStatus = new
-                    }
-                    if self.helperStatus == .enabled {
-                        self.isAwaitingHelperApproval = false
-                        self.helperPollTask = nil
-                        // If the user was waiting to run an install after
-                        // approval, kick it off now — using the SAME
-                        // captured target/mode they confirmed before
-                        // the helper-approval detour. NEVER re-derive
-                        // from selectedDisk here; that re-derivation is
-                        // exactly the bug that caused the wrong-disk
-                        // wipe in v0.3.0.
-                        if let target = self.pendingRunTarget, let mode = self.pendingRunMode {
-                            let secureBoot = self.pendingRunSecureBoot
-                            let partitionStyle = self.pendingRunPartitionStyle
-                            Task { @MainActor in
-                                await self.run(
-                                    confirmedTarget: target,
-                                    confirmedMode: mode,
-                                    confirmedSecureBoot: secureBoot,
-                                    confirmedPartitionStyle: partitionStyle
-                                )
-                            }
-                        } else {
-                            Self.log.warning("helper poll: helperStatus=enabled but no pending run captured")
-                        }
-                    }
+                guard let self, self.isCurrent(approval) else { return }
+                let new = self.helperStatusSource()
+                if self.helperStatus != new {
+                    self.helperStatus = new
                 }
-                if await MainActor.run(body: { self.helperStatus == .enabled }) { return }
+                if self.helperStatus == .enabled {
+                    self.helperApprovalCompleted(resumesRun: approval.resumesRun)
+                    return
+                }
             }
         }
     }
 
     func cancelHelperApproval() {
+        // The approval under way (if it got that far) decides; otherwise
+        // the purpose set for the explainer that's being cancelled.
+        let resumes = currentApproval?.resumesRun ?? approvalResumesRun
+        currentApproval = nil          // any in-flight step now stops
         helperPollTask?.cancel()
-        didReregisterForVersionMismatch = false
         helperPollTask = nil
         isAwaitingHelperApproval = false
-        // Clear the captured target/mode — if the user cancelled the
-        // approval flow, they are not opting into an install on the
-        // disk they confirmed earlier. Don't let a future helper-poll
-        // resume fire on stale state.
-        pendingRunTarget = nil
-        pendingRunMode = nil
+        if resumes {
+            // Clear the captured target/mode — if the user cancelled the
+            // approval flow, they are not opting into an install on the
+            // disk they confirmed earlier. Don't let a future helper-poll
+            // resume fire on stale state.
+            pendingRunTarget = nil
+            pendingRunMode = nil
+            didReregisterForVersionMismatch = false
+        }
+        // A Set Up Helper approval never touched the captured run (it may
+        // be a failed one the user can still Retry), so leave it alone.
+        approvalResumesRun = true
+    }
+
+    /// Whether the approval in progress was started by `run(...)` (resume
+    /// the captured run once approved) or by the Update tab's Set Up
+    /// Helper button (only re-read the disk). Without this, approving the
+    /// helper from the Update tab after a failed install would restart
+    /// that install — an erase — with no confirmation.
+    private var approvalResumesRun = true
+
+    /// Update tab: the disk probe can't reach the helper (e.g. it was
+    /// removed after an install). Show the approval sheet — with its
+    /// remove-after choice — and re-read the disk once approved. Never
+    /// starts or resumes a run. Refused while a run is in progress, since
+    /// approval begins by unregistering the helper.
+    func setUpHelperForProbe() {
+        guard canSetUpHelperForProbe else { return }
+        // So the sheet's remove-when-done box starts from the helper's
+        // real state (re-defaults only if it changed).
+        refreshHelperStatus()
+        approvalResumesRun = false
+        showHelperExplainer = true
+    }
+
+    /// Set Up Helper is offered only when the probe couldn't reach the
+    /// helper, no approval is already under way, and no run is in
+    /// progress.
+    var canSetUpHelperForProbe: Bool {
+        switch status {
+        case .preparing, .running: return false
+        default: return probeNeedsHelper && !isAwaitingHelperApproval && !showHelperExplainer
+        }
+    }
+
+    /// The approval poll saw the helper become enabled. `resumesRun` is
+    /// the purpose captured when that approval started. Internal so tests
+    /// can drive it without SMAppService.
+    func helperApprovalCompleted(resumesRun resumes: Bool) {
+        isAwaitingHelperApproval = false
+        helperPollTask = nil
+        currentApproval = nil
+        approvalResumesRun = true
+        // Approved from the Update tab: re-read the disk, nothing else —
+        // even if a failed run is still captured for Retry.
+        guard resumes else {
+            Self.log.info("helper approved from the Update tab — re-probing selected disk")
+            triggerVentoyProbe()
+            return
+        }
+        // If the user was waiting to run an install after approval, kick
+        // it off now — using the SAME captured target/mode they confirmed
+        // before the helper-approval detour. NEVER re-derive from
+        // selectedDisk here; that re-derivation is exactly the bug that
+        // caused the wrong-disk wipe in v0.3.0.
+        if let target = pendingRunTarget, let mode = pendingRunMode {
+            let secureBoot = pendingRunSecureBoot
+            let partitionStyle = pendingRunPartitionStyle
+            Task { @MainActor in
+                await self.run(
+                    confirmedTarget: target,
+                    confirmedMode: mode,
+                    confirmedSecureBoot: secureBoot,
+                    confirmedPartitionStyle: partitionStyle
+                )
+            }
+        } else {
+            Self.log.warning("helper poll: helperStatus=enabled but no pending run captured")
+        }
     }
 
     func startDiskEnumeration() {
@@ -415,6 +511,7 @@ final class AppState: ObservableObject {
         // disk's probe data while the new probe is in flight.
         detectedVentoy = nil
         probeError = nil
+        probeNeedsHelper = false
         guard let bsd else { return }
         probeTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 300_000_000)
@@ -438,10 +535,13 @@ final class AppState: ObservableObject {
                 Self.log.info("Ventoy probe failed for \(bsd, privacy: .public): \(error.localizedDescription, privacy: .private)")
                 if Task.isCancelled { return }
                 let message = Self.probeErrorMessage(for: error)
+                let needsHelper: Bool
+                if case .xpcUnreachable? = error as? HelperInvoker.HelperError { needsHelper = true } else { needsHelper = false }
                 await MainActor.run {
                     guard let self else { return }
                     if self.selectedDiskBSD == bsd {
                         self.probeError = message
+                        self.probeNeedsHelper = needsHelper
                     }
                 }
             }
@@ -452,6 +552,7 @@ final class AppState: ObservableObject {
     func applyProbeResult(_ result: VentoyProbeResult) {
         detectedVentoy = result
         probeError = nil
+        probeNeedsHelper = false
         // Don't re-seed under a captured run (awaiting helper approval,
         // or failed and offering Retry): the stick re-enumerating after
         // a write re-probes it, and the toggle on screen should keep
@@ -470,7 +571,7 @@ final class AppState: ObservableObject {
         if let helperErr = error as? HelperInvoker.HelperError {
             switch helperErr {
             case .xpcUnreachable:
-                return "Couldn't reach the Mactoy helper to probe this disk. The helper may not be approved yet — try a fresh install on the **Install Ventoy** tab once to register it, then come back here."
+                return "Mactoy's helper isn't set up or can't be reached, so it can't read this disk. That's normal if you haven't used Mactoy to write a drive yet, or if the helper was removed after the last one. Set it up to check this disk for Ventoy — macOS will ask you to approve it. Nothing is written to the disk."
             case .executionFailed(let m):
                 return "Probe failed: \(m)"
             case .versionMismatch:
@@ -681,6 +782,7 @@ final class AppState: ObservableObject {
         // poll, and auto-resume run() when the toggle flips.
         refreshHelperStatus()
         if helperStatus != .enabled {
+            approvalResumesRun = true
             showHelperExplainer = true
             status = .idle
             return
@@ -756,13 +858,14 @@ final class AppState: ObservableObject {
                     // Hand over to the normal approval flow, which resumes
                     // this captured run once approved. Return straight away
                     // so the "uninstall helper after this run" cleanup
-                    // below can't remove the helper mid-approval. (Not
-                    // refreshHelperStatus(): that also resets the uninstall
-                    // checkbox.)
+                    // below can't remove the helper mid-approval. (Set
+                    // directly, like the approval poll does, so the user's
+                    // uninstall choice isn't re-defaulted.)
                     helperStatus = HelperLifecycle.status
                     if helperStatus != .enabled {
                         Self.log.info("run(): helper needs approval after re-register — showing explainer")
                         status = .idle
+                        approvalResumesRun = true
                         showHelperExplainer = true
                         return
                     }

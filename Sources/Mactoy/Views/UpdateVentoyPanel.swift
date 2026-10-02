@@ -86,9 +86,13 @@ struct UpdateVentoyPanel: View {
         if state.selectedDisk == nil {
             DiskNotSelectedHint()
         } else if let errorMessage = state.probeError {
-            ProbeFailedHint(message: errorMessage) {
-                state.triggerVentoyProbe()
-            }
+            ProbeFailedHint(
+                message: errorMessage,
+                onRetry: { state.triggerVentoyProbe() },
+                onSetUpHelper: state.canSetUpHelperForProbe
+                    ? { state.setUpHelperForProbe() }
+                    : nil
+            )
         } else if let probe = state.detectedVentoy {
             if probe.isVentoyDisk {
                 ventoyDetectedView(probe)
@@ -167,6 +171,9 @@ private struct DiskNotSelectedHint: View {
 private struct ProbeFailedHint: View {
     let message: String
     let onRetry: () -> Void
+    /// Offered when the helper isn't reachable. Registers it through the
+    /// usual approval flow; the disk is re-read once it's approved.
+    var onSetUpHelper: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -181,9 +188,17 @@ private struct ProbeFailedHint: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
-                Button("Try again", action: onRetry)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                if let onSetUpHelper {
+                    Button("Set Up Helper…", action: onSetUpHelper)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    Button("Try again", action: onRetry)
+                        .controlSize(.small)
+                } else {
+                    Button("Try again", action: onRetry)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
                 Spacer()
             }
             .padding(.top, 4)

@@ -40,5 +40,8 @@ import Foundation
 /// `Contents/Library/LaunchDaemons/com.mactoy.mactoyd.plist`.
 public let mactoydMachServiceName = "com.mactoy.mactoyd"
 
+/// The helper's protocol version, checked by the app before every run.
+/// Bumped only when `mactoyd` itself changes — v0.5.1 changed only the
+/// app, so it keeps "0.5.0" and updating doesn't re-register the helper.
 public let mactoydVersion = "0.5.0"
 

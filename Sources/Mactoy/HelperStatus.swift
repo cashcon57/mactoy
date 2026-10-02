@@ -71,3 +71,17 @@ enum HelperLifecycle {
         SMAppService.openSystemSettingsLoginItems()
     }
 }
+
+/// The SMAppService calls the approval flow makes, injectable so tests
+/// can control timing (e.g. cancel while unregistering).
+struct HelperRegistrar {
+    var unregister: @MainActor () async throws -> Void
+    var register: @MainActor () throws -> Void
+    var openSettings: @MainActor () -> Void
+
+    static let live = HelperRegistrar(
+        unregister: { try await HelperLifecycle.unregister() },
+        register: { try HelperLifecycle.register() },
+        openSettings: { HelperLifecycle.openLoginItemsSettings() }
+    )
+}

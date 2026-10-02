@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Shown the first time a user clicks Install / Flash if the mactoyd
-/// daemon has not yet been registered + approved. Explains what Mactoy
+/// Shown when Install / Update / Flash (or the Update tab's Set Up
+/// Helper) needs the mactoyd daemon and it isn't registered + approved. Explains what Mactoy
 /// is about to ask macOS for, so the "Background Items Added"
 /// notification doesn't feel like it came out of nowhere.
 struct HelperExplainerSheet: View {
@@ -14,7 +14,7 @@ struct HelperExplainerSheet: View {
                 Image(systemName: "lock.shield.fill")
                     .font(.title)
                     .foregroundStyle(Color.accentColor)
-                Text("One-time setup")
+                Text("Set up Mactoy's helper")
                     .font(.title2.bold())
                 Spacer()
             }
@@ -22,28 +22,28 @@ struct HelperExplainerSheet: View {
             VStack(alignment: .leading, spacing: 14) {
                 bullet(icon: "externaldrive.badge.minus",
                        title: "Why Mactoy needs this",
-                       body: "macOS blocks ordinary apps from writing directly to USB drives. To install Ventoy (which requires raw disk writes), Mactoy has to go through a privileged helper registered with the system.")
+                       body: "macOS blocks ordinary apps from reading and writing USB drives directly. To install, update or check Ventoy on a drive, or flash an image, Mactoy goes through a privileged helper registered with the system.")
 
                 bullet(icon: "bolt.slash.fill",
                        title: "Mactoy will not auto-launch at login",
                        body: "Despite the **\(SystemSettingsStrings.loginItemsPane)** label, this toggle does **not** make Mactoy open at login. It only allows the privileged helper (`mactoyd`) to start when Mactoy asks for it — during an install, update, or flash. The helper exits a moment after each job and does not run while idle. Mactoy.app itself stays closed until you open it.")
 
                 bullet(icon: "hand.raised.fill",
-                       title: "Approval is a one-time click",
-                       body: "When you continue, macOS will show a 'Background Items Added' notification and open \(SystemSettingsStrings.loginItemsPane). Turn the Mactoy toggle on once — you won't be asked again.")
+                       title: "Approval is one click",
+                       body: "When you continue, macOS will show a 'Background Items Added' notification and open \(SystemSettingsStrings.loginItemsPane). Turn the Mactoy toggle on. If you keep the helper (untick the box below), you won't be asked again.")
 
                 bullet(icon: "trash",
                        title: "You can remove the helper when you're done",
-                       body: "Leave the checkbox below ticked to have Mactoy automatically remove the helper after this install completes. Untick it if you plan to flash more drives soon.")
+                       body: "Leave the box below ticked to have Mactoy remove the helper when the next install, update or flash finishes; you'll approve it again next time. Untick it if you'll be using Mactoy again soon.")
             }
 
             Toggle(isOn: $state.uninstallHelperAfterRun) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Remove the helper after this install")
+                    Text("Remove the helper when done")
                         .font(.callout.bold())
                     Text(state.uninstallHelperAfterRun
-                         ? "Mactoy will unregister the daemon as soon as this run finishes."
-                         : "The daemon will stay registered — future installs will skip this sheet.")
+                         ? "Mactoy unregisters the helper as soon as the next install, update or flash finishes."
+                         : "The helper stays registered, so later runs skip this step.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

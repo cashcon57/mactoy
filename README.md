@@ -48,7 +48,7 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 
 ---
 
-## Status — v0.5.0 alpha
+## Status — v0.5.1 alpha
 
 - [x] GPT + boot-image math ported from the Python proof-of-concept (cross-validated: Swift and Python produce bit-identical layouts for the same disk).
 - [x] Ventoy install flow end-to-end (download → extract → partition → write → format).
@@ -61,7 +61,7 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 - [x] Unit tests for partition layout, GPT header/entry/CRC, MBR, plan validation, version-string allowlist.
 - [x] **Developer ID signed + Apple notarized.** DMG and app are signed under the hardened runtime, notarized by Apple, and the notary ticket is stapled to the DMG. `spctl --assess` reports `accepted, source=Notarized Developer ID`.
 - [x] **Verified on real hardware (Apple Silicon, macOS 26).** v0.1.3 was tested end-to-end on a 128 GB USB drive on macOS 26.2 — the resulting drive boots and runs Ventoy, and the `Ventoy` exFAT partition accepts ISO drops. v0.2.0's universal binary is static-verified (`lipo -info` reports `x86_64 arm64` on both `Mactoy` and `mactoyd`); **runtime verification on Intel Macs is pending user reports** — see *Known limitations* in the v0.2.0 release notes.
-- [x] **SMAppService privileged helper.** v0.1.3 replaced the old `osascript`-based admin prompt with an XPC-based `SMAppService` LaunchDaemon — one-time approval via the native macOS "Background Items Added" flow, no password prompt per install, and XPC peer-signature verification on every connection.
+- [x] **SMAppService privileged helper.** v0.1.3 replaced the old `osascript`-based admin prompt with an XPC-based `SMAppService` LaunchDaemon — approval via the native macOS "Background Items Added" flow (once, if you keep the helper), no password prompt per install, and XPC peer-signature verification on every connection.
 - [ ] Full Disk Access (FDA) still has to be granted manually by the user; macOS deliberately does not allow apps to request FDA programmatically. The app deep-links straight to the Privacy & Security pane and walks you through it once.
 
 ## Installing
@@ -72,13 +72,13 @@ Grab `Mactoy-<version>.dmg` from the [Releases page](https://github.com/cashcon5
 
 ### Open it
 
-1. Open `Mactoy-0.5.0.dmg` (or whichever `Mactoy-*.dmg` is on the latest release page).
+1. Open `Mactoy-0.5.1.dmg` (or whichever `Mactoy-*.dmg` is on the latest release page).
 2. Drag `Mactoy.app` into `/Applications`.
 3. Launch from Launchpad or `/Applications`. Opens normally — no right-click dance needed. The DMG is Apple-notarized, so Gatekeeper sees it as a known-good Developer ID build.
 
 ## Permissions
 
-Mactoy asks for **two** one-time system permissions the first time you click Install Ventoy or Flash Image. Both are required by macOS to write raw bytes to an external disk — not Mactoy being paranoid. Neither has to be granted again on future runs.
+Mactoy asks for **two** system permissions the first time you install, update or flash a drive (or use **Set Up Helper…** on the Update tab). Both are required by macOS to write raw bytes to an external disk — not Mactoy being paranoid. Full Disk Access is granted once. The helper approval is too, if you keep the helper; by default Mactoy removes it after each run, and you approve it again next time (see below).
 
 ### 1. Background Items (Login Items, or Login Items & Extensions on macOS 15+)
 
@@ -90,7 +90,7 @@ Mactoy asks for **two** one-time system permissions the first time you click Ins
 
 **Background items toggle behavior:** the helper is **not** running when Mactoy is closed, and it is **not** running at login either. Functionally, `mactoyd` is an on-demand XPC service that launches only when Mactoy opens a connection to it and exits a moment after the connection closes. `ps -ax | grep mactoyd` between installs shows nothing. The reason "Mactoy" appears in the pane at all is that the LaunchDaemon plist carries `AssociatedBundleIdentifiers = ["com.mactoy.Mactoy"]`, which tells macOS to display the daemon entry under its parent app's name rather than as a bare `com.mactoy.mactoyd` row.
 
-**Toggle it off any time:** the helper entry stays in Login Items until you remove it. Mactoy also offers an **"Uninstall the helper after this install"** checkbox on the first-time approval sheet (checked by default) that unregisters the daemon automatically once a run finishes, so the system is left clean by default.
+**Toggle it off any time:** the helper entry stays in Login Items until you remove it. The approval sheet also has a **"Remove the helper when done"** box (ticked by default) that unregisters the daemon once the next install, update or flash finishes, so the system is left clean by default — you'll approve the helper again next time. Untick it to keep the helper and skip the approval next time. If the helper isn't there when you open Update Ventoy, the tab offers **Set Up Helper…** to approve it again without installing anything.
 
 ### 2. Full Disk Access (Privacy & Security)
 
@@ -109,11 +109,11 @@ They cover different things:
 - **Login Items** is about whether Mactoy is allowed to **spawn the root helper** in the first place.
 - **Full Disk Access** is about whether that root helper is allowed to **touch raw block devices** once spawned.
 
-Either one alone isn't enough. Once both are granted, installs run without any further prompts — no passwords, no dialogs, just a progress bar.
+Either one alone isn't enough. Once both are granted — and if you keep the helper — installs run without any further prompts: no passwords, no dialogs, just a progress bar.
 
 ### Why not…?
 
-- **An admin password prompt per install?** That's what v0.1.2 did (via `osascript`). It required Full Disk Access anyway *and* asked for your password every single time. The SMAppService flow replaces that with a one-time toggle.
+- **An admin password prompt per install?** That's what v0.1.2 did (via `osascript`). It required Full Disk Access anyway *and* asked for your password every single time. The SMAppService flow replaces that with a toggle you approve once (if you keep the helper) — never a password.
 - **A sandbox-friendly system extension?** System extensions require an Apple-approved `com.apple.developer.driverkit.*` entitlement that isn't available to anyone outside a small whitelist. Not an option for a third-party tool.
 - **Just using `diskutil`?** Apple's `diskutil` is signed with `com.apple.rootless.storage.*` entitlements that third-party apps can't replicate. It works without prompts because it's Apple code.
 
@@ -126,7 +126,7 @@ Either one alone isn't enough. Once both are granted, installs run without any f
 1. Plug in a USB drive. It appears in the sidebar with its friendly name and volume list.
 2. Click the disk card to select it.
 3. Stay on the **Install Ventoy** tab. The **Version** dropdown defaults to "Latest"; pick a specific release, or choose **Custom…** to type a tag yourself. Click **Install Ventoy**.
-4. If this is your first run, follow the [Permissions](#permissions) flow once. You won't see either prompt again.
+4. If this is your first run, follow the [Permissions](#permissions) flow. Full Disk Access won't be asked for again; the helper approval comes back only if you let Mactoy remove the helper after each run (the default).
 5. Confirm the erase in the **"Erase \<drive name\>?"** sheet. It lists the drive's total size, a best-effort estimate of how much data is currently on it, and the volume labels about to be wiped.
 6. Wait for the progress bar. When done, the new `Ventoy` volume mounts on your Desktop.
 7. Drag any `.iso`, `.img`, or `.wim` onto the `Ventoy` volume. Boot the USB on any machine and Ventoy will list the images.
@@ -136,7 +136,7 @@ Either one alone isn't enough. Once both are granted, installs run without any f
 1. Switch to the **Flash Image** tab.
 2. Drag an ISO / IMG onto the drop zone (or click to browse). `.xz` and `.gz` compressed images are auto-decompressed.
 3. Select target disk in sidebar.
-4. Click **Flash Image**, confirm the erase prompt, wait. (Same one-time [permissions](#permissions) flow as Install Ventoy — if you've already run an install the prompts won't reappear.)
+4. Click **Flash Image**, confirm the erase prompt, wait. (Same [permissions](#permissions) flow as Install Ventoy — if you kept the helper after an earlier run, no prompts appear.)
 
 ### Manage ISOs on an existing Ventoy drive
 
@@ -216,7 +216,7 @@ The [original proof-of-concept](https://gist.github.com/VladimirMakaev/93503ab7c
 
 ## Security model
 
-- The helper is a proper `launchd` daemon installed via `SMAppService` — one-time user approval in **System Settings → General → Login Items & Extensions**, then no prompts on subsequent installs.
+- The helper is a proper `launchd` daemon installed via `SMAppService` — user approval in **System Settings → General → Login Items & Extensions**, then no prompts on later installs if you keep the helper.
 - The helper verifies every connecting XPC client's Developer ID + bundle identifier against a designated requirement before accepting any install plan. A malicious local process cannot make Mactoy's daemon do disk writes even if that process runs as root.
 - The helper refuses to run without root (`getuid() == 0`) as a defensive second check.
 - The helper validates the incoming plan: whole-disk BSD names only (`^disk[0-9]+$`), never `disk0` / `disk1`, external or removable volumes only, size sanity-checked.
@@ -247,7 +247,7 @@ swift test
 
 # Build the signed release bundle + DMG (requires a Developer ID cert in Keychain)
 ./scripts/build-app.sh release devid
-./scripts/build-dmg.sh 0.5.0 devid
+./scripts/build-dmg.sh 0.5.1 devid
 
 # Build a universal (arm64 + x86_64) app bundle — ship this if you
 # want one binary that runs on both Apple Silicon and Intel Macs.

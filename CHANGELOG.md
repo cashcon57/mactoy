@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.1] — 2026-10-02
+
+### Fixed
+
+- **The "remove the helper" checkbox now does what it says** (now labelled "Remove the helper when done"). It has never worked: when the install resumed after you approved the helper, Mactoy re-applied the checkbox's default for an already-installed helper (unticked), so the helper was always left registered. Your choice now holds until that install finishes, and with it ticked (the default) the helper is removed afterwards.
+- **Update Ventoy no longer gets stuck when the helper has been removed.** Checking a stick for Ventoy needs the helper, and the Update button waits for that check, so with the helper gone there was no way forward — and the hint suggested a fresh install, which erases the stick. The hint now has a **Set Up Helper…** button. It shows the usual approval sheet (including the remove-when-done choice); once you approve, the stick is checked again. It never starts or resumes an install, update or flash — not even a failed one waiting for Retry, and not even if you cancel partway through approving — and isn't offered while one is running.
+- The approval sheet's wording now matches what happens: approval is needed again after the helper is removed, and the remove-when-done choice applies to the next install, update or flash. The README's "one-time approval" claims are corrected the same way.
+
+### Changed
+
+- The app's version is 0.5.1; the helper's stays 0.5.0, since the helper itself didn't change. Updating from v0.5.0 doesn't re-register it.
+
+### Verified
+
+- 144 tests pass (16 new), plus 2 opt-in. Each fix was mutation-tested: the checkbox test fails with v0.5.0's logic restored, the "Set Up Helper never restarts a failed install" test fails if approval may resume a run, and the cancel-mid-approval tests fail without the approval-ID checks.
+
 ## [0.5.0] — 2026-10-01
 
 MBR installs, the Ventoy2Disk default Mactoy was missing, and Manage Disk support for image folders. Thanks to [@FrancYescO](https://github.com/FrancYescO) (#11) and [@swagdotsh](https://github.com/swagdotsh) (#10, Mactoy's first outside pull request).

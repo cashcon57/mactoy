@@ -21,7 +21,7 @@ enum HelperInvoker {
             case .executionFailed(let s):
                 return s
             case .versionMismatch(let helper):
-                return "The registered Mactoy helper is version \(helper), but this is Mactoy \(mactoydVersion). Nothing was written."
+                return "The registered Mactoy helper is version \(helper), but this copy of Mactoy needs helper version \(mactoydVersion). Nothing was written."
             }
         }
     }
