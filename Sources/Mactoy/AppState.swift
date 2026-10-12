@@ -43,7 +43,10 @@ struct EraseConfirmation: Identifiable {
     let id = UUID()
     let mode: AppMode
     let disk: DiskTarget
-    let usedBytes: UInt64?   // nil = couldn't measure (no mounted volumes)
+    /// nil = not measured (yet, or no mounted volumes). Filled in after
+    /// the sheet opens; measuring can block on slow volumes, so it never
+    /// runs on the main thread.
+    var usedBytes: UInt64?
     let totalBytes: UInt64
     /// Secure Boot support as the toggle stood when the user clicked
     /// the action button. Captured for the same reason `disk` is: what
@@ -127,6 +130,14 @@ final class AppState: ObservableObject {
     /// is an XPC call to the root daemon.
     var ventoyProber: @Sendable (String) async throws -> VentoyProbeResult = { bsd in
         try await HelperInvoker.probeVentoy(bsdName: bsd)
+    }
+    /// Seam for tests. `estimatedUsedBytes` shells out to diskutil and
+    /// stats mounted volumes, which blocks for seconds while a volume is
+    /// busy (Time Machine, a sleeping drive), so it runs detached.
+    var usedBytesEstimator: @Sendable (String) async -> UInt64? = { bsd in
+        await Task.detached(priority: .userInitiated) {
+            DiskInfo.estimatedUsedBytes(bsdName: bsd)
+        }.value
     }
 
     /// Captured target + mode from the user's most recent confirmation,
@@ -422,8 +433,14 @@ final class AppState: ObservableObject {
         enumeratorTask?.cancel()
         enumeratorTask = Task { [weak self] in
             while !Task.isCancelled {
-                let disks = (try? DiskInfo.enumerateExternal()) ?? []
-                await self?.applyDiskList(disks)
+                // Detached: this Task inherits MainActor from AppState, and
+                // enumerateExternal runs one diskutil per disk. A busy disk
+                // (Time Machine backing up) froze the whole UI.
+                let disks = await Task.detached(priority: .utility) {
+                    (try? DiskInfo.enumerateExternal()) ?? []
+                }.value
+                if Task.isCancelled { break }
+                self?.applyDiskList(disks)
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
@@ -620,14 +637,23 @@ final class AppState: ObservableObject {
     func requestRun() {
         guard canRun, let target = selectedDisk else { return }
         guard mode != .manageDisk else { return }
-        pendingEraseConfirmation = EraseConfirmation(
+        let confirmation = EraseConfirmation(
             mode: mode,
             disk: target,
-            usedBytes: DiskInfo.estimatedUsedBytes(bsdName: target.bsdName),
+            usedBytes: nil,
             totalBytes: target.sizeInBytes,
             secureBoot: mode == .updateVentoy ? updateSecureBoot : installSecureBoot,
             partitionStyle: effectiveInstallPartitionStyle(for: target)
         )
+        pendingEraseConfirmation = confirmation
+        // The sheet opens now; the used-space line fills in when the
+        // measurement returns, if this same confirmation is still open.
+        let estimator = usedBytesEstimator
+        Task { [weak self] in
+            let used = await estimator(target.bsdName)
+            guard let self, self.pendingEraseConfirmation?.id == confirmation.id else { return }
+            self.pendingEraseConfirmation?.usedBytes = used
+        }
     }
 
     func cancelRun() {

@@ -92,24 +92,28 @@ public enum DiskInfo {
     /// peek inside an unmounted partition without reading its
     /// filesystem), which the UI presents as "up to <disk size>".
     public static func estimatedUsedBytes(bsdName: String) -> UInt64? {
-        guard let mounts = try? FileManager.default.contentsOfDirectory(atPath: "/Volumes") else {
-            return nil
+        // Ask diskutil for this disk's own mount points. The old version
+        // listed /Volumes and ran `diskutil info` on every entry, so a
+        // Time Machine or network volume unrelated to the target could
+        // block it for seconds.
+        guard let r = try? Subprocess.run("/usr/sbin/diskutil", ["list", "-plist", "/dev/\(bsdName)"]),
+              r.status == 0,
+              let data = r.stdout.data(using: .utf8),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let allDisks = plist["AllDisksAndPartitions"] as? [[String: Any]]
+        else { return nil }
+
+        var mountPoints: [String] = []
+        for whole in allDisks where (whole["DeviceIdentifier"] as? String) == bsdName {
+            if let mp = whole["MountPoint"] as? String { mountPoints.append(mp) }
+            for part in whole["Partitions"] as? [[String: Any]] ?? [] {
+                if let mp = part["MountPoint"] as? String { mountPoints.append(mp) }
+            }
         }
+        guard !mountPoints.isEmpty else { return nil }
+
         var used: UInt64 = 0
-        var matched = false
-
-        for name in mounts {
-            let path = "/Volumes/\(name)"
-            guard let r = try? Subprocess.run("/usr/sbin/diskutil", ["info", "-plist", path]),
-                  r.status == 0,
-                  let data = r.stdout.data(using: .utf8),
-                  let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-                  let deviceIdentifier = plist["DeviceIdentifier"] as? String,
-                  deviceIdentifier == bsdName || deviceIdentifier.hasPrefix(bsdName + "s")
-            else { continue }
-
-            matched = true
-
+        for path in mountPoints {
             let url = URL(fileURLWithPath: path)
             if let values = try? url.resourceValues(forKeys: [
                 .volumeTotalCapacityKey,
@@ -121,7 +125,6 @@ public enum DiskInfo {
                 used += UInt64(total - available)
             }
         }
-
-        return matched ? used : nil
+        return used
     }
 }

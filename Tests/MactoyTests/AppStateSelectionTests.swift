@@ -254,4 +254,39 @@ struct AppStateSelectionTests {
         #expect(state.makePlan(target: d, mode: .manageDisk, secureBoot: true, partitionStyle: .mbr) == nil)
         #expect(state.makePlan(target: d, mode: .flashImage, secureBoot: true, partitionStyle: .mbr) == nil, "no image picked")
     }
+
+    @Test("the erase sheet opens before the used-space measurement returns, then fills in")
+    func usedBytesMeasuredOffTheClick() async throws {
+        let state = makeState()
+        state.disks = [disk("disk5")]
+        state.selectedDiskBSD = "disk5"
+        state.mode = .installVentoy
+        state.usedBytesEstimator = { _ in
+            try? await Task.sleep(nanoseconds: 200_000_000)   // a slow volume
+            return 42
+        }
+
+        state.requestRun()
+        #expect(state.pendingEraseConfirmation != nil, "sheet must not wait on the disk")
+        #expect(state.pendingEraseConfirmation?.usedBytes == nil)
+
+        try await Task.sleep(nanoseconds: 400_000_000)
+        #expect(state.pendingEraseConfirmation?.usedBytes == 42)
+    }
+
+    @Test("a late measurement never lands on a newer or cancelled confirmation")
+    func lateUsedBytesIgnored() async throws {
+        let state = makeState()
+        state.disks = [disk("disk5")]
+        state.selectedDiskBSD = "disk5"
+        state.mode = .installVentoy
+        state.usedBytesEstimator = { _ in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            return 42
+        }
+        state.requestRun()
+        state.cancelRun()
+        try await Task.sleep(nanoseconds: 400_000_000)
+        #expect(state.pendingEraseConfirmation == nil)
+    }
 }
