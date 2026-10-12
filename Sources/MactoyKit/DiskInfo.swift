@@ -35,7 +35,7 @@ public enum DiskInfo {
         let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] ?? [:]
         let whole = plist["WholeDisks"] as? [String] ?? []
 
-        let backups = timeMachineWholeDisks()
+        let backups = try timeMachineWholeDisks()
         var out: [DiskTarget] = []
         for name in whole where !backups.contains(name) {
             if let info = try? probe(bsdName: name) {
@@ -49,12 +49,15 @@ public enum DiskInfo {
     /// list so a backup drive can never be picked as an erase target.
     /// One `diskutil apfs list` call; it reports volume roles even when
     /// the backup volume is not mounted.
-    static func timeMachineWholeDisks() -> Set<String> {
-        guard let r = try? Subprocess.run("/usr/sbin/diskutil", ["apfs", "list", "-plist"]),
-              r.status == 0,
-              let data = r.stdout.data(using: .utf8),
-              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
-        else { return [] }
+    ///
+    /// Throws rather than returning an empty set: a failed lookup must not
+    /// quietly put a backup drive back in the list. The caller treats a
+    /// throw as "no disks this poll" and retries two seconds later.
+    static func timeMachineWholeDisks() throws -> Set<String> {
+        let r = try Subprocess.runChecked("/usr/sbin/diskutil", ["apfs", "list", "-plist"])
+        guard let data = r.stdout.data(using: .utf8),
+              let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { throw DriverError.diskIO("diskutil apfs list produced unreadable output") }
         return timeMachineWholeDisks(apfsList: plist)
     }
 
