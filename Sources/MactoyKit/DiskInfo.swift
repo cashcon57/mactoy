@@ -91,7 +91,7 @@ public enum DiskInfo {
     /// Returns `nil` when no volumes on the disk are mounted (we can't
     /// peek inside an unmounted partition without reading its
     /// filesystem), which the UI presents as "up to <disk size>".
-    /// Mount points of the APFS volumes in the container whose physical
+    /// One mount point from the APFS container whose physical
     /// store is `physicalStore` (e.g. disk4s2 -> disk5 -> /Volumes/X).
     private static func apfsMountPoints(physicalStore: String) -> [String] {
         guard let info = try? Subprocess.run("/usr/sbin/diskutil", ["info", "-plist", physicalStore]),
@@ -105,10 +105,15 @@ public enum DiskInfo {
               let listPlist = try? PropertyListSerialization.propertyList(from: listData, format: nil) as? [String: Any],
               let allDisks = listPlist["AllDisksAndPartitions"] as? [[String: Any]]
         else { return [] }
-        return allDisks
+        // Every volume in a container reports the container's capacity,
+        // so one mounted volume measures the whole container. Returning
+        // all of them would count its used space once per volume.
+        let first = allDisks
             .filter { ($0["DeviceIdentifier"] as? String) == container }
             .flatMap { $0["APFSVolumes"] as? [[String: Any]] ?? [] }
             .compactMap { $0["MountPoint"] as? String }
+            .first { !$0.isEmpty }
+        return first.map { [$0] } ?? []
     }
 
     public static func estimatedUsedBytes(bsdName: String) -> UInt64? {

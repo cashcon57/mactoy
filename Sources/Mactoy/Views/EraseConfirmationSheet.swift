@@ -24,6 +24,14 @@ struct EraseConfirmationSheet: View {
     let info: EraseConfirmation
 
     private var isUpdate: Bool { info.mode == .updateVentoy }
+    /// Measured after the sheet opens. Read live from state so the line
+    /// fills in on macOS 13, where `.sheet(item:)` does not re-render
+    /// its content when the item mutates under the same id. Only this
+    /// number is read live; disk, mode and toggles stay as captured.
+    private var usedBytes: UInt64? {
+        guard let live = state.pendingEraseConfirmation, live.id == info.id else { return info.usedBytes }
+        return live.usedBytes
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -114,14 +122,14 @@ struct EraseConfirmationSheet: View {
         let total = sizeString(info.totalBytes)
         switch info.mode {
         case .installVentoy:
-            if let used = info.usedBytes {
+            if let used = usedBytes {
                 return "Installing Ventoy will wipe the entire \(total) drive. Right now about \(sizeString(used)) of data is on it. Every partition below will be destroyed and replaced with a fresh Ventoy layout. \(secureBootSentence) \(partitionStyleSentence)"
             }
             return "Installing Ventoy will wipe the entire \(total) drive. Every partition on it will be destroyed and replaced with a fresh Ventoy layout. \(secureBootSentence) \(partitionStyleSentence)"
         case .updateVentoy:
             return "Update the Ventoy bootloader on this drive in place. Your ISOs and `/ventoy/` configuration are preserved — only the bootloader (MBR boot code, GRUB2 core, and the 32 MB VTOYEFI partition) will be rewritten. Drive total size is \(total). \(secureBootSentence)"
         case .flashImage:
-            if let used = info.usedBytes {
+            if let used = usedBytes {
                 return "Flashing this image will overwrite the entire \(total) drive. Right now about \(sizeString(used)) of data is on it and will be lost."
             }
             return "Flashing this image will overwrite the entire \(total) drive. Anything on it will be lost."

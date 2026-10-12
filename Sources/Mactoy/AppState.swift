@@ -652,7 +652,7 @@ final class AppState: ObservableObject {
         Task { [weak self] in
             let used = await estimator(target.bsdName)
             guard let self, self.pendingEraseConfirmation?.id == confirmation.id else { return }
-            self.pendingEraseConfirmation?.usedBytes = used
+            self.pendingEraseConfirmation?.usedBytes = used.map { min($0, target.sizeInBytes) }
         }
     }
 

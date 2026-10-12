@@ -274,7 +274,7 @@ struct AppStateSelectionTests {
         #expect(state.pendingEraseConfirmation?.usedBytes == 42)
     }
 
-    @Test("a late measurement never lands on a newer or cancelled confirmation")
+    @Test("a late measurement never lands on a newer confirmation")
     func lateUsedBytesIgnored() async throws {
         let state = makeState()
         state.disks = [disk("disk5")]
@@ -285,8 +285,19 @@ struct AppStateSelectionTests {
             return 42
         }
         state.requestRun()
+        let firstID = try #require(state.pendingEraseConfirmation?.id)
         state.cancelRun()
-        try await Task.sleep(nanoseconds: 400_000_000)
-        #expect(state.pendingEraseConfirmation == nil)
+
+        // A second, slower measurement for a fresh confirmation.
+        state.usedBytesEstimator = { _ in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            return 7
+        }
+        state.requestRun()
+        let second = try #require(state.pendingEraseConfirmation)
+        #expect(second.id != firstID)
+
+        try await Task.sleep(nanoseconds: 400_000_000)   // first estimate has returned
+        #expect(state.pendingEraseConfirmation?.usedBytes == nil, "42 belongs to the cancelled sheet")
     }
 }
