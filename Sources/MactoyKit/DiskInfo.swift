@@ -91,6 +91,26 @@ public enum DiskInfo {
     /// Returns `nil` when no volumes on the disk are mounted (we can't
     /// peek inside an unmounted partition without reading its
     /// filesystem), which the UI presents as "up to <disk size>".
+    /// Mount points of the APFS volumes in the container whose physical
+    /// store is `physicalStore` (e.g. disk4s2 -> disk5 -> /Volumes/X).
+    private static func apfsMountPoints(physicalStore: String) -> [String] {
+        guard let info = try? Subprocess.run("/usr/sbin/diskutil", ["info", "-plist", physicalStore]),
+              info.status == 0,
+              let infoData = info.stdout.data(using: .utf8),
+              let infoPlist = try? PropertyListSerialization.propertyList(from: infoData, format: nil) as? [String: Any],
+              let container = infoPlist["APFSContainerReference"] as? String,
+              let list = try? Subprocess.run("/usr/sbin/diskutil", ["list", "-plist", "/dev/\(container)"]),
+              list.status == 0,
+              let listData = list.stdout.data(using: .utf8),
+              let listPlist = try? PropertyListSerialization.propertyList(from: listData, format: nil) as? [String: Any],
+              let allDisks = listPlist["AllDisksAndPartitions"] as? [[String: Any]]
+        else { return [] }
+        return allDisks
+            .filter { ($0["DeviceIdentifier"] as? String) == container }
+            .flatMap { $0["APFSVolumes"] as? [[String: Any]] ?? [] }
+            .compactMap { $0["MountPoint"] as? String }
+    }
+
     public static func estimatedUsedBytes(bsdName: String) -> UInt64? {
         // Ask diskutil for this disk's own mount points. The old version
         // listed /Volumes and ran `diskutil info` on every entry, so a
@@ -104,10 +124,19 @@ public enum DiskInfo {
         else { return nil }
 
         var mountPoints: [String] = []
+        func add(_ mp: Any?) {
+            if let mp = mp as? String, !mp.isEmpty { mountPoints.append(mp) }
+        }
         for whole in allDisks where (whole["DeviceIdentifier"] as? String) == bsdName {
-            if let mp = whole["MountPoint"] as? String { mountPoints.append(mp) }
+            add(whole["MountPoint"])
             for part in whole["Partitions"] as? [[String: Any]] ?? [] {
-                if let mp = part["MountPoint"] as? String { mountPoints.append(mp) }
+                add(part["MountPoint"])
+                // APFS volumes mount on a synthesized container disk, not
+                // on this partition. Follow the partition to its container.
+                if (part["Content"] as? String) == "Apple_APFS",
+                   let partBSD = part["DeviceIdentifier"] as? String {
+                    for mp in apfsMountPoints(physicalStore: partBSD) { add(mp) }
+                }
             }
         }
         guard !mountPoints.isEmpty else { return nil }
