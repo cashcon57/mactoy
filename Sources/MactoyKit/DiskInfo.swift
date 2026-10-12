@@ -30,12 +30,14 @@ public enum DiskInfo {
 
     /// Enumerate all external/physical whole disks on the system.
     public static func enumerateExternal() throws -> [DiskTarget] {
+        // Before `diskutil list`: a backup drive plugged in between the two
+        // calls is then in neither set, never in the list unfiltered.
+        let backups = try timeMachineWholeDisks()
         let r = try Subprocess.runChecked("/usr/sbin/diskutil", ["list", "-plist", "external", "physical"])
         guard let data = r.stdout.data(using: .utf8) else { return [] }
         let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] ?? [:]
         let whole = plist["WholeDisks"] as? [String] ?? []
 
-        let backups = try timeMachineWholeDisks()
         var out: [DiskTarget] = []
         for name in whole where !backups.contains(name) {
             if let info = try? probe(bsdName: name) {

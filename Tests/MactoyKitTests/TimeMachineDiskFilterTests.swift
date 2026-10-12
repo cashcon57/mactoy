@@ -24,12 +24,24 @@ struct TimeMachineDiskFilterTests {
                 "PhysicalStores": [["DeviceIdentifier": "disk7s2"]],
                 "Volumes": [["DeviceIdentifier": "disk8s1", "Roles": [String]()]],
             ],
+            [
+                // Fusion-style backup container on two stores: hide both.
+                "ContainerReference": "disk14",
+                "PhysicalStores": [["DeviceIdentifier": "disk12s2"], ["DeviceIdentifier": "disk13s2"]],
+                "Volumes": [["DeviceIdentifier": "disk14s1", "Roles": ["Backup"]]],
+            ],
+            [
+                // A volume with no Roles key at all is not a backup.
+                "ContainerReference": "disk16",
+                "PhysicalStores": [["DeviceIdentifier": "disk15s2"]],
+                "Volumes": [["DeviceIdentifier": "disk16s1"]],
+            ],
         ]
     ]
 
-    @Test("only the disk holding a Backup-role volume is hidden")
+    @Test("only disks holding a Backup-role volume are hidden, every store of one")
     func onlyBackupDiskHidden() {
-        #expect(DiskInfo.timeMachineWholeDisks(apfsList: apfsList) == ["disk4"])
+        #expect(DiskInfo.timeMachineWholeDisks(apfsList: apfsList) == ["disk4", "disk12", "disk13"])
     }
 
     @Test("no APFS output hides nothing")
