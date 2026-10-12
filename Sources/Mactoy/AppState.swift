@@ -436,11 +436,14 @@ final class AppState: ObservableObject {
                 // Detached: this Task inherits MainActor from AppState, and
                 // enumerateExternal runs one diskutil per disk. A busy disk
                 // (Time Machine backing up) froze the whole UI.
+                // A failed poll keeps the last good list instead of applying
+                // an empty one, which would clear the user's selection and
+                // let the next poll re-select whichever disk comes first.
                 let disks = await Task.detached(priority: .utility) {
-                    (try? DiskInfo.enumerateExternal()) ?? []
+                    try? DiskInfo.enumerateExternal()
                 }.value
                 if Task.isCancelled { break }
-                self?.applyDiskList(disks)
+                if let disks { self?.applyDiskList(disks) }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
