@@ -91,25 +91,63 @@ public enum DiskInfo {
     /// Returns `nil` when no volumes on the disk are mounted (we can't
     /// peek inside an unmounted partition without reading its
     /// filesystem), which the UI presents as "up to <disk size>".
+    /// One mount point from the APFS container whose physical
+    /// store is `physicalStore` (e.g. disk4s2 -> disk5 -> /Volumes/X).
+    private static func apfsMountPoints(physicalStore: String) -> [String] {
+        guard let info = try? Subprocess.run("/usr/sbin/diskutil", ["info", "-plist", physicalStore]),
+              info.status == 0,
+              let infoData = info.stdout.data(using: .utf8),
+              let infoPlist = try? PropertyListSerialization.propertyList(from: infoData, format: nil) as? [String: Any],
+              let container = infoPlist["APFSContainerReference"] as? String,
+              let list = try? Subprocess.run("/usr/sbin/diskutil", ["list", "-plist", "/dev/\(container)"]),
+              list.status == 0,
+              let listData = list.stdout.data(using: .utf8),
+              let listPlist = try? PropertyListSerialization.propertyList(from: listData, format: nil) as? [String: Any],
+              let allDisks = listPlist["AllDisksAndPartitions"] as? [[String: Any]]
+        else { return [] }
+        // Every volume in a container reports the container's capacity,
+        // so one mounted volume measures the whole container. Returning
+        // all of them would count its used space once per volume.
+        let first = allDisks
+            .filter { ($0["DeviceIdentifier"] as? String) == container }
+            .flatMap { $0["APFSVolumes"] as? [[String: Any]] ?? [] }
+            .compactMap { $0["MountPoint"] as? String }
+            .first { !$0.isEmpty }
+        return first.map { [$0] } ?? []
+    }
+
     public static func estimatedUsedBytes(bsdName: String) -> UInt64? {
-        guard let mounts = try? FileManager.default.contentsOfDirectory(atPath: "/Volumes") else {
-            return nil
+        // Ask diskutil for this disk's own mount points. The old version
+        // listed /Volumes and ran `diskutil info` on every entry, so a
+        // Time Machine or network volume unrelated to the target could
+        // block it for seconds.
+        guard let r = try? Subprocess.run("/usr/sbin/diskutil", ["list", "-plist", "/dev/\(bsdName)"]),
+              r.status == 0,
+              let data = r.stdout.data(using: .utf8),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let allDisks = plist["AllDisksAndPartitions"] as? [[String: Any]]
+        else { return nil }
+
+        var mountPoints: [String] = []
+        func add(_ mp: Any?) {
+            if let mp = mp as? String, !mp.isEmpty { mountPoints.append(mp) }
         }
+        for whole in allDisks where (whole["DeviceIdentifier"] as? String) == bsdName {
+            add(whole["MountPoint"])
+            for part in whole["Partitions"] as? [[String: Any]] ?? [] {
+                add(part["MountPoint"])
+                // APFS volumes mount on a synthesized container disk, not
+                // on this partition. Follow the partition to its container.
+                if (part["Content"] as? String) == "Apple_APFS",
+                   let partBSD = part["DeviceIdentifier"] as? String {
+                    for mp in apfsMountPoints(physicalStore: partBSD) { add(mp) }
+                }
+            }
+        }
+        guard !mountPoints.isEmpty else { return nil }
+
         var used: UInt64 = 0
-        var matched = false
-
-        for name in mounts {
-            let path = "/Volumes/\(name)"
-            guard let r = try? Subprocess.run("/usr/sbin/diskutil", ["info", "-plist", path]),
-                  r.status == 0,
-                  let data = r.stdout.data(using: .utf8),
-                  let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-                  let deviceIdentifier = plist["DeviceIdentifier"] as? String,
-                  deviceIdentifier == bsdName || deviceIdentifier.hasPrefix(bsdName + "s")
-            else { continue }
-
-            matched = true
-
+        for path in mountPoints {
             let url = URL(fileURLWithPath: path)
             if let values = try? url.resourceValues(forKeys: [
                 .volumeTotalCapacityKey,
@@ -121,7 +159,6 @@ public enum DiskInfo {
                 used += UInt64(total - available)
             }
         }
-
-        return matched ? used : nil
+        return used
     }
 }
