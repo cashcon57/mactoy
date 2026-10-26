@@ -86,12 +86,44 @@ struct ThemeCatalogTests {
         #expect(!entry { $0.files = [.init(from: prefix + "/*.png", to: ".")] }.problems().isEmpty, "glob \(prefix.debugDescription)")
     }
 
-    @Test("file mappings allow a trailing glob and a '.' destination")
-    func globMappings() {
-        #expect(entry { $0.files = [.init(from: "assets/*.png", to: ".")] }.problems().isEmpty)
-        #expect(entry { $0.files = [.init(from: "assets/*", to: "assets")] }.problems().isEmpty)
-        #expect(!entry { $0.files = [.init(from: "../*.png", to: ".")] }.problems().isEmpty)
-        #expect(!entry { $0.files = [.init(from: "/*", to: ".")] }.problems().isEmpty)
+    // The only glob is a final `*.<ext>` component in `files.from`; the
+    // assembler implements exactly that, so the catalog must not allow more.
+    @Test("files.from accepts only a final *.ext glob", arguments: [
+        ("assets/*.png", true), ("assets/select/1080p/*.png", true), ("*.png", true), ("a/*.pf2", true),
+        ("a/b.png", true),
+        ("assets/*", false), ("*", false), ("a/*/b.png", false), ("a/*.png/b", false),
+        ("a/b*.png", false), ("a/*b.png", false), ("a/**.png", false), ("a/*.png*", false),
+        ("a/*.", false), ("a/*.p-g", false), ("a/*.tar.gz", false), ("a/* .png", false),
+        ("../*.png", false), ("a/../*.png", false), ("/*.png", false), ("a//*.png", false),
+        (".hidden/*.png", false), ("a/.*.png", false), ("a\\*.png", false),
+    ])
+    func globFrom(from: String, allowed: Bool) {
+        let e = entry { $0.files = [.init(from: from, to: ".")] }
+        #expect(e.problems().isEmpty == allowed, "\(from.debugDescription)")
+    }
+
+    @Test("files.to is a plain path or '.', never a glob")
+    func globTo() {
+        #expect(entry { $0.files = [.init(from: "a/*.png", to: ".")] }.problems().isEmpty)
+        #expect(entry { $0.files = [.init(from: "a/b.png", to: "sub/b.png")] }.problems().isEmpty)
+        #expect(!entry { $0.files = [.init(from: "a/b.png", to: "*.png")] }.problems().isEmpty)
+        #expect(!entry { $0.files = [.init(from: "a/b.png", to: "sub/*")] }.problems().isEmpty)
+    }
+
+    // JSON-hostile (`"`) and FAT/exFAT-reserved characters. The theme lands on
+    // a FAT-family partition and in ventoy.json, so none may reach either.
+    @Test("reserved characters are rejected in every path field", arguments: ["\"", "*", "?", "<", ">", "|", ":"])
+    func reservedCharacters(char: String) {
+        #expect(!entry { $0.settings.file = "a\(char)b.txt" }.problems().isEmpty, "settings.file")
+        #expect(!entry { $0.settings.fonts = ["a\(char)b.pf2"] }.problems().isEmpty, "settings.fonts")
+        #expect(!entry { $0.download.root = "dir/a\(char)b" }.problems().isEmpty, "download.root")
+        #expect(!entry { $0.files = [.init(from: "a\(char)b.png", to: "b.png")] }.problems().isEmpty, "files.from")
+        #expect(!entry { $0.files = [.init(from: "a/b.png", to: "a\(char)b.png")] }.problems().isEmpty, "files.to")
+    }
+
+    @Test("a settings.file that closes the JSON string is rejected")
+    func jsonInjection() {
+        #expect(!entry { $0.settings.file = #"a","x":"y.txt"# }.problems().isEmpty)
     }
 
     @Test("only the listed hosts over https are accepted", arguments: [

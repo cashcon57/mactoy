@@ -127,8 +127,7 @@ public struct ThemeEntry: Codable, Sendable, Equatable, Identifiable {
         if !ThemePath.matches(download.sha256, #"^[0-9a-f]{64}$"#) { out.append("download.sha256 must be 64 lowercase hex characters") }
         if !download.root.isEmpty && !ThemePath.isSafeRelative(download.root) { out.append("download.root is not a safe relative path") }
         for m in files ?? [] {
-            let fromOK = ThemePath.isSafeRelative(m.from.hasSuffix("/*") ? String(m.from.dropLast(2)) : m.from.replacingOccurrences(of: "/*.", with: "/x."))
-            if !fromOK { out.append("files.from \(m.from) is not a safe relative path") }
+            if !ThemePath.isSafeSource(m.from) { out.append("files.from \(m.from) must be a safe relative path, optionally ending in *.ext") }
             if m.to != "." && !ThemePath.isSafeRelative(m.to) { out.append("files.to \(m.to) is not a safe relative path") }
         }
         if !ThemePath.isSafeRelative(settings.file) || !settings.file.lowercased().hasSuffix(".txt") {
@@ -150,15 +149,33 @@ public struct ThemeEntry: Codable, Sendable, Equatable, Identifiable {
 
 /// Path rules shared by the catalog, assembler and installer.
 public enum ThemePath {
+    /// Characters that are reserved on FAT/exFAT (where themes land) or
+    /// break out of a JSON string (where names are written).
+    private static let reserved: Set<Character> = ["\"", "*", "?", "<", ">", "|", ":", "\\"]
+
     /// Relative, `/`-separated, no `.`/`..`/empty/hidden components, no
-    /// backslash or control characters.
+    /// control characters, and none of `reserved`. In particular no `*`:
+    /// a glob is only accepted through `isSafeSource`.
     public static func isSafeRelative(_ path: String) -> Bool {
-        guard !path.isEmpty, path.count <= 200, !path.hasPrefix("/"), !path.contains("\\"),
+        guard !path.isEmpty, path.count <= 200, !path.hasPrefix("/"),
+              !path.contains(where: { reserved.contains($0) }),
               !path.unicodeScalars.contains(where: { $0.properties.generalCategory == .control })
         else { return false }
         return path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy { c in
             !c.isEmpty && c != "." && c != ".." && !c.hasPrefix(".")
         }
+    }
+
+    /// A `files.from` value: a safe relative path, or a safe directory
+    /// (possibly none) plus a final `*.<ext>` component. That final glob is
+    /// the only wildcard the assembler implements, so nothing else with a
+    /// `*` may pass.
+    public static func isSafeSource(_ path: String) -> Bool {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard path.count <= 200, let last = parts.last,
+              matches(String(last), #"^\*\.[A-Za-z0-9]+$"#)
+        else { return isSafeRelative(path) }
+        return parts.count == 1 || isSafeRelative(parts.dropLast().joined(separator: "/"))
     }
 
     /// The match must cover the whole string. `^...$` alone isn't enough:
