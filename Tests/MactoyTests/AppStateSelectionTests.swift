@@ -24,6 +24,7 @@ struct AppStateSelectionTests {
     /// a probe, and the real one talks to the root daemon.
     private func makeState() -> AppState {
         let state = AppState()
+        state.timeMachineLookup = { [] }   // no real diskutil in tests
         state.ventoyProber = { bsd in .unknownDisk(bsdName: bsd, reason: "stub") }
         return state
     }

@@ -92,6 +92,10 @@ struct InstallVentoyPanel: View {
             SecureBootCard(isOn: $state.installSecureBoot)
 
             if let disk = state.selectedDisk {
+                if state.isTimeMachineBackup(disk) {
+                    TimeMachineBanner(disk: disk)
+                        .id(disk.bsdName)
+                }
                 // Pre-flight quirky-enclosure warning (issue #4). Non-
                 // blocking — user can proceed if they want to. Shown
                 // above the danger banner because it's actionable

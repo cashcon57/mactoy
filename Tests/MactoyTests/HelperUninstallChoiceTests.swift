@@ -13,6 +13,7 @@ struct HelperUninstallChoiceTests {
 
     private func state(source: HelperStatus) -> AppState {
         let s = AppState()
+        s.timeMachineLookup = { [] }       // no real diskutil in tests
         s.helperStatusSource = { source }
         return s
     }

@@ -119,6 +119,11 @@ struct EraseConfirmationSheet: View {
     }
 
     private var summary: String {
+        guard info.isTimeMachineBackup, info.mode != .updateVentoy else { return baseSummary }
+        return "This is a Time Machine backup drive that you unlocked. All of its backups will be erased and can't be recovered. " + baseSummary
+    }
+
+    private var baseSummary: String {
         let total = sizeString(info.totalBytes)
         switch info.mode {
         case .installVentoy:

@@ -16,6 +16,15 @@ struct DiskSidebar: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 20)
 
+            if state.failedDiskPolls >= 3 {
+                Label("Couldn't refresh the disk list. Showing the last one; it may be out of date.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 20)
+            }
+
             ScrollView {
                 MactoyGlassContainer(spacing: 12) {
                     VStack(spacing: 12) {
@@ -25,6 +34,8 @@ struct DiskSidebar: View {
                             ForEach(state.disks, id: \.bsdName) { disk in
                                 DiskCard(
                                     disk: disk,
+                                    timeMachine: state.isTimeMachineBackup(disk)
+                                        ? (state.isLockedBackup(disk) ? .locked : .unlocked) : nil,
                                     isSelected: state.selectedDiskBSD == disk.bsdName,
                                     onTap: { state.selectDisk(disk.bsdName) }
                                 )
@@ -41,7 +52,10 @@ struct DiskSidebar: View {
 }
 
 private struct DiskCard: View {
+    enum TimeMachineState { case locked, unlocked }
     let disk: DiskTarget
+    /// Non-nil for a Time Machine backup drive (PR #13).
+    var timeMachine: TimeMachineState? = nil
     let isSelected: Bool
     let onTap: () -> Void
 
@@ -65,6 +79,13 @@ private struct DiskCard: View {
                     Text(Self.sizeString(disk.sizeInBytes))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    if let timeMachine {
+                        Label(timeMachine == .locked ? "Time Machine backup · locked" : "Time Machine backup · unlocked",
+                              systemImage: timeMachine == .locked ? "lock.fill" : "lock.open.fill")
+                            .font(.caption)
+                            .foregroundStyle(timeMachine == .locked ? Color.orange : Color.red)
+                    }
 
                     if !disk.volumes.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {

@@ -56,6 +56,9 @@ struct EraseConfirmation: Identifiable {
     /// Ignored for Update and Flash Image. No default, for the same
     /// reason `InstallPlan` has none.
     let partitionStyle: VentoyPartitionStyle
+    /// The disk is a Time Machine backup the user unlocked; the sheet
+    /// says its backups will be erased.
+    var isTimeMachineBackup: Bool = false
 }
 
 @MainActor
@@ -71,6 +74,46 @@ final class AppState: ObservableObject {
     // disk enumeration
     @Published var disks: [DiskTarget] = []
     @Published var selectedDiskBSD: String?
+    /// Listed disks that hold a Time Machine backup (PR #13). Mactoy won't
+    /// install, update or flash one unless the user unlocks it.
+    @Published private(set) var timeMachineDisks: Set<String> = []
+    /// Time Machine drives the user chose to unlock, by identity, for
+    /// this session only. A drive that disappears from the list is
+    /// dropped, so replugging it locks it again.
+    @Published private(set) var unlockedBackupDisks: Set<DiskIdentity> = []
+
+    /// What identifies "the same drive" for an unlock: the fields the
+    /// wrong-disk defence fingerprints, minus the flags.
+    struct DiskIdentity: Hashable {
+        let bsdName: String
+        let sizeInBytes: UInt64
+        let mediaName: String?
+        init(_ disk: DiskTarget) {
+            bsdName = disk.bsdName
+            sizeInBytes = disk.sizeInBytes
+            mediaName = disk.mediaName
+        }
+    }
+
+    func isTimeMachineBackup(_ disk: DiskTarget) -> Bool {
+        timeMachineDisks.contains(disk.bsdName)
+    }
+
+    /// A Time Machine drive the user hasn't unlocked: nothing may write to it.
+    func isLockedBackup(_ disk: DiskTarget) -> Bool {
+        isTimeMachineBackup(disk) && !unlockedBackupDisks.contains(DiskIdentity(disk))
+    }
+
+    /// The user confirmed they want to erase this backup drive anyway.
+    func unlockBackupDisk(_ disk: DiskTarget) {
+        guard isTimeMachineBackup(disk) else { return }
+        unlockedBackupDisks.insert(DiskIdentity(disk))
+        Self.log.info("Time Machine drive unlocked for this session: /dev/\(disk.bsdName, privacy: .public)")
+    }
+
+    func lockBackupDisk(_ disk: DiskTarget) {
+        unlockedBackupDisks.remove(DiskIdentity(disk))
+    }
 
     // mode
     @Published var mode: AppMode = .installVentoy
@@ -131,6 +174,17 @@ final class AppState: ObservableObject {
     var ventoyProber: @Sendable (String) async throws -> VentoyProbeResult = { bsd in
         try await HelperInvoker.probeVentoy(bsdName: bsd)
     }
+    /// Seams for tests: one poll of the external disks, and a live
+    /// Time Machine lookup for `run()`'s last check.
+    var diskScanner: @Sendable () async -> DiskInfo.ExternalDiskScan? = {
+        await Task.detached(priority: .utility) { try? DiskInfo.scanExternal() }.value
+    }
+    var timeMachineLookup: @Sendable () async throws -> Set<String> = {
+        try await Task.detached(priority: .userInitiated) { try DiskInfo.timeMachineWholeDisks() }.value
+    }
+    /// Consecutive disk polls that failed. The sidebar says so after a
+    /// few, instead of silently showing a list that may be stale.
+    @Published private(set) var failedDiskPolls = 0
     /// Seam for tests. `estimatedUsedBytes` shells out to diskutil and
     /// stats mounted volumes, which blocks for seconds while a volume is
     /// busy (Time Machine, a sleeping drive), so it runs detached.
@@ -183,7 +237,8 @@ final class AppState: ObservableObject {
 
     var canRun: Bool {
         guard case .idle = status else { return false }
-        guard selectedDisk != nil else { return false }
+        guard let disk = selectedDisk else { return false }
+        if mode != .manageDisk, isLockedBackup(disk) { return false }
         switch mode {
         case .installVentoy: return true
         case .updateVentoy:  return detectedVentoy?.isVentoyDisk == true
@@ -439,11 +494,10 @@ final class AppState: ObservableObject {
                 // A failed poll keeps the last good list instead of applying
                 // an empty one, which would clear the user's selection and
                 // let the next poll re-select whichever disk comes first.
-                let disks = await Task.detached(priority: .utility) {
-                    try? DiskInfo.enumerateExternal()
-                }.value
+                guard let scanner = self?.diskScanner else { break }
+                let scan = await scanner()
                 if Task.isCancelled { break }
-                if let disks { self?.applyDiskList(disks) }
+                self?.applyScan(scan)
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
@@ -481,10 +535,30 @@ final class AppState: ObservableObject {
         triggerVentoyProbe()
     }
 
+    /// One poll's result. A failed poll (`nil`) keeps the last list.
+    func applyScan(_ scan: DiskInfo.ExternalDiskScan?) {
+        guard let scan else {
+            failedDiskPolls += 1
+            return
+        }
+        if failedDiskPolls != 0 { failedDiskPolls = 0 }
+        applyDiskList(scan.disks, timeMachine: scan.timeMachineDisks)
+    }
+
     // Internal (not private) so MactoyTests can drive this directly to
     // verify Layer 2 of the iron-clad targeting defense (the selection
     // freeze while a confirmation is pending). v0.3.1 issue #1.
-    func applyDiskList(_ disks: [DiskTarget]) {
+    // `timeMachine` has no default: it's a safety input.
+    func applyDiskList(_ disks: [DiskTarget], timeMachine: Set<String>) {
+        if timeMachineDisks != timeMachine {
+            timeMachineDisks = timeMachine
+        }
+        // An unlock only lasts while that exact drive stays listed.
+        let present = Set(disks.map(DiskIdentity.init))
+        if !unlockedBackupDisks.isSubset(of: present) {
+            unlockedBackupDisks.formIntersection(present)
+        }
+
         // Skip the assign when nothing changed — every @Published write
         // fires `objectWillChange` regardless of equality, invalidating
         // every @EnvironmentObject subscriber. The disk poll runs every
@@ -509,7 +583,10 @@ final class AppState: ObservableObject {
         if let sel = selectedDiskBSD, !disks.contains(where: { $0.bsdName == sel }) {
             selectedDiskBSD = nil
         }
-        if selectedDiskBSD == nil, let first = disks.first {
+        // Auto-select a disk that isn't a Time Machine backup if there is
+        // one; a backup drive is only selected if it's all there is.
+        if selectedDiskBSD == nil,
+           let first = disks.first(where: { !timeMachine.contains($0.bsdName) }) ?? disks.first {
             selectedDiskBSD = first.bsdName
         }
         // Re-probe when the selection actually changed. The probe runs
@@ -646,7 +723,8 @@ final class AppState: ObservableObject {
             usedBytes: nil,
             totalBytes: target.sizeInBytes,
             secureBoot: mode == .updateVentoy ? updateSecureBoot : installSecureBoot,
-            partitionStyle: effectiveInstallPartitionStyle(for: target)
+            partitionStyle: effectiveInstallPartitionStyle(for: target),
+            isTimeMachineBackup: isTimeMachineBackup(target)
         )
         pendingEraseConfirmation = confirmation
         // The sheet opens now; the used-space line fills in when the
@@ -740,6 +818,37 @@ final class AppState: ObservableObject {
                 "This usually means a USB drive was plugged or unplugged during the confirmation. Please re-select the disk and try again."
             )
             Self.log.error("run() aborted: selection drifted (confirmed=\(target.bsdName, privacy: .public), live=\(liveSelection, privacy: .public))")
+            return
+        }
+
+        // Time Machine guard (PR #13, v0.6.0): never write to a backup
+        // drive the user hasn't unlocked. `canRun` already hides the
+        // button; this also covers Retry and the approval resume, and
+        // re-checks live rather than trusting the last poll (a container
+        // can attach a moment after its disk is listed). A lookup that
+        // fails refuses the run.
+        if confirmedMode != .manageDisk {
+            // Busy before the first await, so Install/Retry/Done can't
+            // start a second run or reset the UI while this check runs
+            // (it can take seconds on a busy backup volume).
+            status = .preparing("Checking the drive…")
+            do {
+                let live = try await timeMachineLookup()
+                if live.contains(target.bsdName), !timeMachineDisks.contains(target.bsdName) {
+                    timeMachineDisks.insert(target.bsdName)
+                }
+            } catch {
+                status = .failed("Refusing to run: couldn't check whether /dev/\(target.bsdName) holds Time Machine backups (\(error.localizedDescription)). Nothing was written. Try again in a moment.")
+                Self.log.error("run() aborted: Time Machine lookup failed")
+                return
+            }
+        }
+        if confirmedMode != .manageDisk, isLockedBackup(target) {
+            status = .failed(
+                "Refusing to run: /dev/\(target.bsdName) holds Time Machine backups and hasn't been unlocked. " +
+                "Select it and use Unlock This Drive… if you really mean to erase it."
+            )
+            Self.log.error("run() aborted: target is a locked Time Machine drive (\(target.bsdName, privacy: .public))")
             return
         }
 
@@ -967,6 +1076,9 @@ final class AppState: ObservableObject {
             pendingRunTarget = nil
             pendingRunMode = nil
             didReregisterForVersionMismatch = false
+            // An unlocked backup drive has now been erased; if it ever
+            // becomes a backup drive again it starts out locked.
+            unlockedBackupDisks.remove(DiskIdentity(target))
         }
         // .idle (helper-not-enabled) leaves them alone — the helper-
         // poll resume path needs them.

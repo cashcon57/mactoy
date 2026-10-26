@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.6.0] — 2026-10-26
+
+Two pull requests from [@gbentz2](https://github.com/gbentz2), with thanks: a fix for long UI freezes ([#12](https://github.com/cashcon57/mactoy/pull/12)) and protection for Time Machine drives ([#13](https://github.com/cashcon57/mactoy/pull/13)).
+
+### Added
+
+- **Time Machine drives are protected** ([#13](https://github.com/cashcon57/mactoy/pull/13)). A USB Time Machine drive is an ordinary external disk to macOS, so Mactoy used to list it as something it could erase. Now it's detected (any APFS volume with the Time Machine "Backup" role, read with `diskutil apfs list`, which works even when the backup volume isn't mounted) and:
+  - it's still listed, marked **Time Machine backup · locked**, and Mactoy picks another drive when choosing one automatically;
+  - Install, Update and Flash are blocked on it, and the Install and Flash tabs explain why;
+  - **Unlock This Drive…** allows erasing it after a warning that its backups will be lost. The unlock covers that one drive until you lock it again, unplug it or quit Mactoy;
+  - the erase confirmation for an unlocked backup drive says its backups will be erased;
+  - right before writing, Mactoy checks again, so a drive whose backup volume appeared after the last refresh is still caught; if that check fails, nothing is written;
+  - if the Time Machine check fails during a refresh, Mactoy keeps the previous disk list rather than showing a backup drive unmarked;
+  - drives with the "Sidecar (Time Machine)" APFS role are treated the same way. What creates that role isn't documented, so this errs on the side of locking.
+  - Not detected: older HFS+ Time Machine drives, which have no APFS role.
+
+### Fixed
+
+- **The app no longer freezes for seconds at a time** ([#12](https://github.com/cashcon57/mactoy/pull/12)). The disk list was refreshed on the main thread every two seconds, one `diskutil` call per disk; with a busy volume attached, such as a Time Machine destination, the app beachballed for 15 to 20 seconds. Clicking Install also measured every mounted volume on the main thread. Both now run in the background.
+  - The erase confirmation opens straight away and fills in "about N GB of data is on it" when the measurement finishes.
+  - The measurement now only looks at the target disk's own volumes, and counts APFS drives correctly: before, an APFS-formatted drive got no figure at all, so the sheet fell back to the generic warning.
+  - A failed disk poll keeps the last list instead of clearing it, so it can't move your selection. If refreshing keeps failing, the sidebar says the list may be out of date.
+- **Commands with a lot of output no longer hang.** Mactoy waited for each command to finish before reading its output, so any command printing more than 64 KB stalled forever. `diskutil apfs list` grows with every volume on the Mac, so on a Mac with many volumes the disk list would have stayed empty. Output is now read as it arrives, and the Time Machine lookup has a time limit. (Found in review of #13.)
+
+### Changed
+
+- The app is 0.6.0 (build 14). The helper's protocol (what the app sends it) didn't change, so it keeps protocol version 0.5.0 and updating doesn't ask you to approve it again. Its code does include the command-output fix above.
+
+### Verified
+
+- 167 tests pass (23 new: 5 from the pull requests, 18 for the follow-up), plus 2 opt-in. Mutation-tested: removing the button gate or the check inside `run()` fails the Time Machine tests, and the old command-output code fails the 200 KB output test.
+- The used-space measurement was compared with `df` on APFS and exFAT disk images holding 100 MiB: v0.5.1 found nothing on the APFS one, v0.6.0 reports 101 MiB; both report 100 MiB on exFAT.
+- Not tested on a real Time Machine drive, and the new Time Machine banner hasn't been seen on screen: both need a physical backup drive, and disk images aren't listed as external disks.
+
 ## [0.5.1] — 2026-10-02
 
 ### Fixed

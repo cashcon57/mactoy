@@ -45,6 +45,10 @@ struct FlashImagePanel: View {
             )
 
             if let disk = state.selectedDisk {
+                if state.isTimeMachineBackup(disk) {
+                    TimeMachineBanner(disk: disk)
+                        .id(disk.bsdName)
+                }
                 DangerBanner(disk: disk)
             } else {
                 Text("Select a disk in the sidebar to continue.")

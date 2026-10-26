@@ -29,17 +29,44 @@ public enum DiskInfo {
     }
 
     /// Enumerate all external/physical whole disks on the system.
-    public static func enumerateExternal() throws -> [DiskTarget] {
-        // Before `diskutil list`: a backup drive plugged in between the two
-        // calls is then in neither set, never in the list unfiltered.
+    /// External disks plus which of them hold a Time Machine backup.
+    public struct ExternalDiskScan: Sendable, Equatable {
+        public let disks: [DiskTarget]
+        /// Whole-disk BSD names with a Time Machine (APFS "Backup" role)
+        /// volume. The app lists these but won't write to one unless the
+        /// user unlocks it (PR #13, v0.6.0).
+        public let timeMachineDisks: Set<String>
+
+        public init(disks: [DiskTarget], timeMachineDisks: Set<String>) {
+            self.disks = disks
+            self.timeMachineDisks = timeMachineDisks
+        }
+    }
+
+    /// One poll of the external disks. Throws if either lookup fails, so
+    /// the caller keeps its previous list rather than showing a backup
+    /// drive without its Time Machine mark.
+    public static func scanExternal() throws -> ExternalDiskScan {
+        // List first, then look up backups: a backup drive plugged in
+        // between the two calls is then not listed this poll, rather than
+        // listed without its mark. (The other order gets that wrong.) The
+        // app also re-checks live in `run()`, which covers a container
+        // that attaches a moment after its disk appears.
+        let disks = try enumerateExternal()
         let backups = try timeMachineWholeDisks()
+        return ExternalDiskScan(disks: disks, timeMachineDisks: backups.intersection(disks.map(\.bsdName)))
+    }
+
+    /// Enumerate all external/physical whole disks on the system,
+    /// Time Machine drives included (see `scanExternal`).
+    public static func enumerateExternal() throws -> [DiskTarget] {
         let r = try Subprocess.runChecked("/usr/sbin/diskutil", ["list", "-plist", "external", "physical"])
         guard let data = r.stdout.data(using: .utf8) else { return [] }
         let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] ?? [:]
         let whole = plist["WholeDisks"] as? [String] ?? []
 
         var out: [DiskTarget] = []
-        for name in whole where !backups.contains(name) {
+        for name in whole {
             if let info = try? probe(bsdName: name) {
                 out.append(info)
             }
@@ -47,16 +74,16 @@ public enum DiskInfo {
         return out
     }
 
-    /// Whole disks that hold a Time Machine backup. Hidden from the disk
-    /// list so a backup drive can never be picked as an erase target.
+    /// Whole disks that hold a Time Machine backup. Mactoy refuses to
+    /// write to these unless the user unlocks the drive for the session.
     /// One `diskutil apfs list` call; it reports volume roles even when
     /// the backup volume is not mounted.
     ///
     /// Throws rather than returning an empty set: a failed lookup must not
-    /// quietly put a backup drive back in the list. The caller treats a
-    /// throw as "no disks this poll" and retries two seconds later.
-    static func timeMachineWholeDisks() throws -> Set<String> {
-        let r = try Subprocess.runChecked("/usr/sbin/diskutil", ["apfs", "list", "-plist"])
+    /// quietly list a backup drive as an ordinary disk. The caller keeps
+    /// its previous list and retries two seconds later.
+    public static func timeMachineWholeDisks() throws -> Set<String> {
+        let r = try Subprocess.runChecked("/usr/sbin/diskutil", ["apfs", "list", "-plist"], timeout: 20)
         guard let data = r.stdout.data(using: .utf8),
               let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
         else { throw DriverError.diskIO("diskutil apfs list produced unreadable output") }
@@ -68,7 +95,15 @@ public enum DiskInfo {
         var out = Set<String>()
         for container in plist["Containers"] as? [[String: Any]] ?? [] {
             let volumes = container["Volumes"] as? [[String: Any]] ?? []
-            let isBackup = volumes.contains { ($0["Roles"] as? [String] ?? []).contains("Backup") }
+            // "Backup" is Time Machine's role (diskutil(8): "T - Backup
+            // (Time Machine)"). The man page also lists "C - Sidecar (Time
+            // Machine)"; what creates one isn't documented, so treat it the
+            // same way: locking a drive by mistake is recoverable, erasing
+            // backups isn't.
+            let isBackup = volumes.contains {
+                let roles = $0["Roles"] as? [String] ?? []
+                return roles.contains("Backup") || roles.contains("Sidecar")
+            }
             guard isBackup else { continue }
             for store in container["PhysicalStores"] as? [[String: Any]] ?? [] {
                 guard let id = store["DeviceIdentifier"] as? String else { continue }

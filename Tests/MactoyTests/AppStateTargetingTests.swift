@@ -47,7 +47,7 @@ struct AppStateTargetingTests {
         state.pendingEraseConfirmation = nil
 
         // Simulate disk5 disappearing (USB hub hiccup).
-        state.applyDiskList([d6])
+        state.applyDiskList([d6], timeMachine: [])
 
         // Without the freeze, snap-to-first behavior should kick in.
         #expect(state.selectedDiskBSD == "disk6")
@@ -67,7 +67,7 @@ struct AppStateTargetingTests {
         // bus. WITHOUT the freeze, applyDiskList would clear
         // selectedDiskBSD and snap to disk6 — which is the exact race
         // that caused the v0.3.0 wrong-disk wipe.
-        state.applyDiskList([d6])
+        state.applyDiskList([d6], timeMachine: [])
 
         #expect(state.selectedDiskBSD == "disk5",
                 "Selection must NOT change while a confirmation sheet is open")
@@ -87,7 +87,7 @@ struct AppStateTargetingTests {
         #expect(state.pendingEraseConfirmation == nil)
 
         // Disk poll fires — selection should now be allowed to update.
-        state.applyDiskList([d6])
+        state.applyDiskList([d6], timeMachine: [])
         #expect(state.selectedDiskBSD == "disk6")
     }
 
@@ -102,7 +102,7 @@ struct AppStateTargetingTests {
         state.pendingEraseConfirmation = confirmation(for: d5)
 
         // A new disk gets plugged in mid-confirmation.
-        state.applyDiskList([d5, d6, d7])
+        state.applyDiskList([d5, d6, d7], timeMachine: [])
 
         #expect(state.selectedDiskBSD == "disk5", "Selection still held")
         #expect(state.disks.map(\.bsdName) == ["disk5", "disk6", "disk7"], "Disk list updated")
@@ -113,6 +113,7 @@ struct AppStateTargetingTests {
     @Test("Layer 6: run() refuses when selectedDiskBSD differs from confirmedTarget.bsdName")
     func bsdNameGuardCatchesDrift() async {
         let state = AppState()
+        state.timeMachineLookup = { [] }
         let d5 = disk("disk5")
         // Simulate: somehow (despite Layer 2's freeze) the selection
         // has drifted to disk6 by the time run() is called. Layer 6
@@ -144,6 +145,7 @@ struct AppStateTargetingTests {
         // short-circuit when names match. The .failed status will come
         // from the probe layer, with a different message.
         let state = AppState()
+        state.timeMachineLookup = { [] }
         let d5 = disk("disk5")
         state.disks = [d5]
         state.selectedDiskBSD = "disk5"

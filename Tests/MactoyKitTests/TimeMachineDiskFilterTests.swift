@@ -55,4 +55,14 @@ struct TimeMachineDiskFilterTests {
         #expect(DiskInfo.wholeDisk(of: "disk12s10") == "disk12")
         #expect(DiskInfo.wholeDisk(of: "disk6") == "disk6")
     }
+
+    @Test("a Sidecar-role (Time Machine) container is treated as a backup too")
+    func sidecarRole() {
+        let list: [String: Any] = ["Containers": [[
+            "ContainerReference": "disk21",
+            "PhysicalStores": [["DeviceIdentifier": "disk20s2"]],
+            "Volumes": [["DeviceIdentifier": "disk21s1", "Roles": ["Sidecar"]]],
+        ]]]
+        #expect(DiskInfo.timeMachineWholeDisks(apfsList: list) == ["disk20"])
+    }
 }

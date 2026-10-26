@@ -29,11 +29,31 @@ public enum Subprocess {
         process.standardError = errPipe
         try process.run()
 
+        // Read both pipes while the process runs. Waiting for exit first
+        // deadlocks once a command writes more than the pipe buffer
+        // (64 KiB): it blocks on write, and we block on its exit.
+        // `diskutil apfs list -plist` grows by ~900 bytes per volume.
+        let outBox = DataBox(), errBox = DataBox()
+        let readers = DispatchGroup()
+        for (pipe, box) in [(outPipe, outBox), (errPipe, errBox)] {
+            readers.enter()
+            DispatchQueue.global(qos: .utility).async {
+                box.set((try? pipe.fileHandleForReading.readToEnd()) ?? Data())
+                readers.leave()
+            }
+        }
+
         if let timeout {
             let deadline = Date().addingTimeInterval(timeout)
             while process.isRunning {
                 if Date() > deadline {
                     process.terminate()
+                    // SIGTERM can be ignored; give it a moment, then SIGKILL.
+                    Thread.sleep(forTimeInterval: 0.5)
+                    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                    // Don't wait on the readers for long: a child the
+                    // command spawned could still hold the pipe open.
+                    _ = readers.wait(timeout: .now() + 2)
                     throw DriverError.subprocess(path, -1, "timeout after \(timeout)s")
                 }
                 Thread.sleep(forTimeInterval: 0.05)
@@ -41,13 +61,16 @@ public enum Subprocess {
         } else {
             process.waitUntilExit()
         }
+        // The process has exited; its pipes reach EOF unless a child it
+        // left behind still holds them. Bounded, for the same reason.
+        if readers.wait(timeout: .now() + 10) == .timedOut {
+            throw DriverError.subprocess(path, -1, "output not closed 10s after exit")
+        }
 
-        let outData = try outPipe.fileHandleForReading.readToEnd() ?? Data()
-        let errData = try errPipe.fileHandleForReading.readToEnd() ?? Data()
         return SubprocessResult(
             status: process.terminationStatus,
-            stdout: String(data: outData, encoding: .utf8) ?? "",
-            stderr: String(data: errData, encoding: .utf8) ?? ""
+            stdout: String(data: outBox.get(), encoding: .utf8) ?? "",
+            stderr: String(data: errBox.get(), encoding: .utf8) ?? ""
         )
     }
 
@@ -59,4 +82,12 @@ public enum Subprocess {
         }
         return r
     }
+}
+
+/// Hand-off cell for pipe output read on another thread.
+private final class DataBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+    func set(_ d: Data) { lock.lock(); data = d; lock.unlock() }
+    func get() -> Data { lock.lock(); defer { lock.unlock() }; return data }
 }
