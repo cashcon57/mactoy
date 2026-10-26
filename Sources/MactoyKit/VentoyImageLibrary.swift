@@ -85,7 +85,14 @@ public enum VentoyImageLibrary {
     /// A missing or unreadable file means Ventoy's defaults.
     public static func configuration(on volume: URL) -> Configuration {
         let url = volume.appendingPathComponent("ventoy/ventoy.json")
-        guard var data = try? Data(contentsOf: url) else { return Configuration() }
+        guard let data = try? Data(contentsOf: url) else { return Configuration() }
+        return configuration(fromFileData: data)
+    }
+
+    /// The same, from the file's bytes. `VentoyConfigEditor` uses this to
+    /// prove an edit didn't change what Manage Disk or the menu lists.
+    public static func configuration(fromFileData raw: Data) -> Configuration {
+        var data = raw
         // Ventoy skips a UTF-8 byte-order mark and rejects UTF-16 outright
         // (`ventoy_cmd_load_plugin`), so a UTF-16 file means defaults.
         if data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF]) { return Configuration() }
