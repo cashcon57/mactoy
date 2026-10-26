@@ -21,6 +21,7 @@ public enum ThemeError: Error, Equatable, LocalizedError {
     case readOnlyVolume
     case writeFailed(String)
     case unknownTheme(String)
+    case destinationExists(String)
 
     public var errorDescription: String? {
         switch self {
@@ -36,6 +37,7 @@ public enum ThemeError: Error, Equatable, LocalizedError {
         case .readOnlyVolume: return "This drive is read-only on this Mac (an NTFS drive is, for example), so Mactoy can't add a theme to it."
         case .writeFailed(let why): return "Couldn't save the theme settings: \(why)"
         case .unknownTheme(let id): return "The theme \(id) isn't in Mactoy's theme list any more."
+        case .destinationExists(let path): return "Couldn't save the theme because \(path) already exists."
         }
     }
 }
@@ -51,8 +53,20 @@ public enum ThemeAssembler {
     public static func files(fromZip data: Data) throws -> [ThemeSourceFile] {
         let infos: [ZipEntryInfo]
         do { infos = try ZipContainer.info(container: data) } catch { throw ThemeError.unreadableArchive("\(error)") }
-        let declared = infos.reduce(0) { $0 + ($1.size ?? 0) }
-        guard declared <= maxUnpackedBytes else { throw ThemeError.themeTooLarge(declared) }
+        guard infos.count <= maxFiles * 2 else { throw ThemeError.tooManyFiles(infos.count) }
+        // SWCompression inflates each entry before it checks the entry's size,
+        // so these declared sizes are the only guard before `open`. They can
+        // understate, which is why catalog ZIPs are unzipped only after their
+        // SHA-256 matched; for a ZIP the user picked, that risk is accepted.
+        // Directories carry no data, so everything else counts, symlinks included.
+        try checkDeclaredSizes(infos.filter { $0.type != .directory }.map(\.size))
+        // A stored entry is sliced straight out of the archive, and SWCompression
+        // traps (it doesn't throw) when the declared size runs past the end.
+        // This only catches a size bigger than the whole archive; entry offsets
+        // aren't exposed, so it can't catch every overrun.
+        guard infos.allSatisfy({ $0.compressionMethod != .copy || ($0.size ?? 0) <= data.count }) else {
+            throw ThemeError.unreadableArchive("an entry is larger than the archive")
+        }
         let entries: [ZipEntry]
         do { entries = try ZipContainer.open(container: data) } catch { throw ThemeError.unreadableArchive("\(error)") }
         var total = 0
@@ -68,6 +82,19 @@ public enum ThemeAssembler {
             out.append(ThemeSourceFile(path: name, data: d))
         }
         return out
+    }
+
+    /// Entries that will be inflated must declare a size, and the sizes must
+    /// add up to no more than `maxUnpackedBytes`. The sum stops at the first
+    /// entry that crosses the limit, so a huge declared size can't wrap it.
+    static func checkDeclaredSizes(_ sizes: [Int?]) throws {
+        var total = 0
+        for size in sizes {
+            guard let size, size >= 0 else { throw ThemeError.unreadableArchive("an entry doesn't declare a valid size") }
+            let (sum, overflow) = total.addingReportingOverflow(size)
+            guard !overflow, sum <= maxUnpackedBytes else { throw ThemeError.themeTooLarge(overflow ? Int.max : sum) }
+            total = sum
+        }
     }
 
     public static func files(fromFolder folder: URL) throws -> [ThemeSourceFile] {
@@ -104,6 +131,12 @@ public enum ThemeAssembler {
     @discardableResult
     public static func assemble(_ files: [ThemeSourceFile], root: String,
                                 mappings: [ThemeEntry.FileMapping]?, into destination: URL) throws -> [String] {
+        let fm = FileManager.default
+        // attributesOfItem doesn't follow symlinks, so a link at `destination`
+        // (even a dangling one) counts as existing and is never written through.
+        guard (try? fm.attributesOfItem(atPath: destination.path)) == nil else {
+            throw ThemeError.destinationExists(destination.path)
+        }
         let prefix = root.isEmpty ? "" : root + "/"
         var picked: [(String, Data)] = []
         if let mappings {
@@ -138,8 +171,10 @@ public enum ThemeAssembler {
         let total = accepted.reduce(0) { $0 + $1.1.count }
         guard total <= maxThemeBytes else { throw ThemeError.themeTooLarge(total) }
 
-        let fm = FileManager.default
-        try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        // The last component is created without intermediates so that losing a
+        // race for the name fails instead of reusing someone else's folder.
+        try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.createDirectory(at: destination, withIntermediateDirectories: false)
         for (path, data) in accepted {
             let url = destination.appendingPathComponent(path)
             try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
