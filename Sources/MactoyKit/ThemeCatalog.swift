@@ -148,22 +148,25 @@ public struct ThemeEntry: Codable, Sendable, Equatable, Identifiable {
 }
 
 /// Path rules shared by the catalog, assembler and installer.
+///
+/// Everything here works on unicode scalars, never on `Character`s: a
+/// reserved character followed by a combining mark, ZWJ or variation
+/// selector is a single `Character` that no longer equals the reserved
+/// one, and the file system still sees both scalars.
 public enum ThemePath {
     /// Characters that are reserved on FAT/exFAT (where themes land) or
     /// break out of a JSON string (where names are written).
-    private static let reserved: Set<Character> = ["\"", "*", "?", "<", ">", "|", ":", "\\"]
+    private static let reserved: Set<Unicode.Scalar> = ["\"", "*", "?", "<", ">", "|", ":", "\\"]
+    private static let slash: Unicode.Scalar = "/"
+    private static let dot: Unicode.Scalar = "."
 
-    /// Relative, `/`-separated, no `.`/`..`/empty/hidden components, no
-    /// control characters, and none of `reserved`. In particular no `*`:
-    /// a glob is only accepted through `isSafeSource`.
+    /// Relative, `/`-separated; no `.`/`..`/empty/hidden components; no
+    /// control or line-break scalars; none of `reserved`; and no component
+    /// starting with an invisible mark (combining, enclosing, spacing or
+    /// format scalar). In particular no `*`: a glob is only accepted
+    /// through `isSafeSource`.
     public static func isSafeRelative(_ path: String) -> Bool {
-        guard !path.isEmpty, path.count <= 200, !path.hasPrefix("/"),
-              !path.contains(where: { reserved.contains($0) }),
-              !path.unicodeScalars.contains(where: { $0.properties.generalCategory == .control })
-        else { return false }
-        return path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy { c in
-            !c.isEmpty && c != "." && c != ".." && !c.hasPrefix(".")
-        }
+        isSafe(Array(path.unicodeScalars))
     }
 
     /// A `files.from` value: a safe relative path, or a safe directory
@@ -171,11 +174,46 @@ public enum ThemePath {
     /// the only wildcard the assembler implements, so nothing else with a
     /// `*` may pass.
     public static func isSafeSource(_ path: String) -> Bool {
-        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
-        guard path.count <= 200, let last = parts.last,
-              matches(String(last), #"^\*\.[A-Za-z0-9]+$"#)
-        else { return isSafeRelative(path) }
-        return parts.count == 1 || isSafeRelative(parts.dropLast().joined(separator: "/"))
+        let scalars = Array(path.unicodeScalars)
+        guard scalars.count <= 200, let last = scalars.split(separator: slash, omittingEmptySubsequences: false).last,
+              isGlobComponent(last)
+        else { return isSafe(scalars) }
+        // `last` is ASCII, so what's left is the directory part and its slash.
+        let directory = Array(scalars.dropLast(last.count + 1))
+        return directory.isEmpty ? last.count == scalars.count : isSafe(directory)
+    }
+
+    private static func isSafe(_ scalars: [Unicode.Scalar]) -> Bool {
+        guard !scalars.isEmpty, scalars.count <= 200, scalars.first != slash,
+              !scalars.contains(where: { reserved.contains($0) || isControlOrBreak($0) })
+        else { return false }
+        return scalars.split(separator: slash, omittingEmptySubsequences: false).allSatisfy { component in
+            // An empty component, ".", ".." and hidden names all start with "." or nothing.
+            guard let first = component.first, first != dot else { return false }
+            return !isInvisibleMark(first)
+        }
+    }
+
+    /// `*.<ext>` with a letters-and-digits extension, nothing else.
+    private static func isGlobComponent(_ c: ArraySlice<Unicode.Scalar>) -> Bool {
+        guard c.count >= 3, c[c.startIndex] == "*", c[c.startIndex + 1] == "." else { return false }
+        return c.dropFirst(2).allSatisfy {
+            ("a"..."z").contains($0) || ("A"..."Z").contains($0) || ("0"..."9").contains($0)
+        }
+    }
+
+    private static func isControlOrBreak(_ s: Unicode.Scalar) -> Bool {
+        switch s.properties.generalCategory {
+        case .control, .lineSeparator, .paragraphSeparator: return true
+        default: return false
+        }
+    }
+
+    private static func isInvisibleMark(_ s: Unicode.Scalar) -> Bool {
+        switch s.properties.generalCategory {
+        case .nonspacingMark, .enclosingMark, .spacingMark, .format: return true
+        default: return false
+        }
     }
 
     /// The match must cover the whole string. `^...$` alone isn't enough:

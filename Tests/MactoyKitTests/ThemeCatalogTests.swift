@@ -112,13 +112,59 @@ struct ThemeCatalogTests {
 
     // JSON-hostile (`"`) and FAT/exFAT-reserved characters. The theme lands on
     // a FAT-family partition and in ventoy.json, so none may reach either.
-    @Test("reserved characters are rejected in every path field", arguments: ["\"", "*", "?", "<", ">", "|", ":"])
+    @Test("reserved characters are rejected in every path field", arguments: ["\"", "*", "?", "<", ">", "|", ":", "\\"])
     func reservedCharacters(char: String) {
         #expect(!entry { $0.settings.file = "a\(char)b.txt" }.problems().isEmpty, "settings.file")
         #expect(!entry { $0.settings.fonts = ["a\(char)b.pf2"] }.problems().isEmpty, "settings.fonts")
         #expect(!entry { $0.download.root = "dir/a\(char)b" }.problems().isEmpty, "download.root")
         #expect(!entry { $0.files = [.init(from: "a\(char)b.png", to: "b.png")] }.problems().isEmpty, "files.from")
         #expect(!entry { $0.files = [.init(from: "a/b.png", to: "a\(char)b.png")] }.problems().isEmpty, "files.to")
+    }
+
+    // A reserved character followed by a combining mark, ZWJ or variation
+    // selector is one grapheme cluster (one Swift Character), so checks on
+    // Characters miss it. Every path rule must look at unicode scalars.
+    @Test("a reserved character can't hide behind a combining mark, ZWJ or variation selector",
+          arguments: ["\"", "*", "?", "<", ">", "|", ":", "\\"], ["\u{0301}", "\u{200D}", "\u{FE0F}"])
+    func reservedCharactersWithMarks(char: String, mark: String) {
+        let c = char + mark
+        #expect(!entry { $0.settings.file = "a\(c)b.txt" }.problems().isEmpty, "settings.file")
+        #expect(!entry { $0.settings.fonts = ["a\(c)b.pf2"] }.problems().isEmpty, "settings.fonts")
+        #expect(!entry { $0.download.root = "dir/a\(c)b" }.problems().isEmpty, "download.root")
+        #expect(!entry { $0.files = [.init(from: "a\(c)b.png", to: "b.png")] }.problems().isEmpty, "files.from")
+        #expect(!entry { $0.files = [.init(from: "a/b.png", to: "a\(c)b.png")] }.problems().isEmpty, "files.to")
+    }
+
+    @Test("a literal * with a combining mark is never a glob", arguments: [
+        "a/*\u{0301}/b.png", "*\u{0301}", "a/b*\u{0301}.png", "*\u{0301}.png", "a/*.png\u{0301}", "a/*\u{200D}.png",
+    ])
+    func starWithMark(from: String) {
+        #expect(!entry { $0.files = [.init(from: from, to: ".")] }.problems().isEmpty, "\(from.debugDescription)")
+    }
+
+    @Test("slash, dot and hidden checks work on scalars, not grapheme clusters", arguments: [
+        "/\u{0301}abs/x.txt",       // leading slash followed by a mark
+        "a/.\u{0301}b/x.txt",       // hidden component with a mark after the dot
+        "..\u{0301}/x.txt",         // parent component with a mark after the dots
+        ".\u{0301}/x.txt",
+        "a/\u{0301}b/x.txt",        // component starts with a combining mark
+        "\u{0301}b/x.txt",
+        "a/\u{200D}b/x.txt",        // ... or a zero width joiner
+        "a/\u{FE0F}b/x.txt",        // ... or a variation selector
+        "a/\u{20E3}b/x.txt",        // ... or an enclosing mark
+        "a/\u{0903}b/x.txt",        // ... or a spacing mark
+        "a/\u{2028}b/x.txt",        // line separator
+        "a/\u{2029}b/x.txt",        // paragraph separator
+    ])
+    func scalarLevelPaths(prefix: String) {
+        #expect(!entry { $0.download.root = prefix }.problems().isEmpty, "root")
+        #expect(!entry { $0.settings.file = prefix }.problems().isEmpty, "file")
+    }
+
+    @Test("a combining mark inside a component is still fine")
+    func marksInsideComponents() {
+        #expect(entry { $0.settings.file = "cafe\u{0301}/theme.txt" }.problems().isEmpty)
+        #expect(entry { $0.download.root = "dir/cafe\u{0301}" }.problems().isEmpty)
     }
 
     @Test("a settings.file that closes the JSON string is rejected")
