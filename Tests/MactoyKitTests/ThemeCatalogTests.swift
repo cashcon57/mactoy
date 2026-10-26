@@ -1,0 +1,171 @@
+import Foundation
+import ImageIO
+import Testing
+@testable import MactoyKit
+
+@Suite("Theme catalog")
+struct ThemeCatalogTests {
+
+    static let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+
+    private func entry(_ edit: (inout ThemeEntry) -> Void = { _ in }) -> ThemeEntry {
+        var e = ThemeEntry(
+            id: "sample-theme", name: "Sample", author: "Someone",
+            homepage: URL(string: "https://github.com/someone/sample")!, license: "MIT",
+            showsVentoyHotkeys: true, notes: nil,
+            download: .init(url: URL(string: "https://codeload.github.com/someone/sample/zip/0123456789abcdef0123456789abcdef01234567")!,
+                            sha256: String(repeating: "a", count: 64), root: "sample-0123/theme"),
+            files: nil,
+            settings: .init(file: "theme.txt", fonts: ["font.pf2"], gfxmode: "1920x1080,auto",
+                            ventoyLeft: "5%", ventoyTop: "95%-10", ventoyColor: "#89b4fa"))
+        edit(&e)
+        return e
+    }
+
+    @Test("a well-formed entry has no problems")
+    func valid() { #expect(entry().problems().isEmpty) }
+
+    @Test("each rule is enforced", arguments: [
+        "id", "url-scheme", "url-host", "sha", "root", "file-ext", "font-ext", "font-path",
+        "gfxmode", "left", "top", "color", "name", "mapping",
+    ])
+    func rules(rule: String) {
+        let bad = entry { e in
+            switch rule {
+            case "id": e.id = "Bad Id"
+            case "url-scheme": e.download.url = URL(string: "http://github.com/a/b.zip")!
+            case "url-host": e.download.url = URL(string: "https://example.com/a.zip")!
+            case "sha": e.download.sha256 = "ABC"
+            case "root": e.download.root = "../escape"
+            case "file-ext": e.settings.file = "theme.cfg"
+            case "font-ext": e.settings.fonts = ["font.ttf"]
+            case "font-path": e.settings.fonts = ["/abs/font.pf2"]
+            case "gfxmode": e.settings.gfxmode = "huge; reboot"
+            case "left": e.settings.ventoyLeft = "left"
+            case "top": e.settings.ventoyTop = "95"
+            case "color": e.settings.ventoyColor = "blue"
+            case "name": e.name = ""
+            case "mapping": e.files = [.init(from: "a/../../b.png", to: "b.png")]
+            default: break
+            }
+        }
+        #expect(!bad.problems().isEmpty, "rule \(rule) not enforced")
+    }
+
+    // ICU's `$` also matches before a final line break, so an anchored
+    // pattern alone lets "value\n" through. These values end up in paths
+    // and in ventoy.json, so a stray newline must be rejected.
+    @Test("a trailing line break doesn't slip past the patterns", arguments: [
+        "id", "sha", "gfxmode", "left", "top", "color",
+    ])
+    func trailingLineBreak(rule: String) {
+        let bad = entry { e in
+            switch rule {
+            case "id": e.id = "sample-theme\n"
+            case "sha": e.download.sha256 = String(repeating: "a", count: 64) + "\n"
+            case "gfxmode": e.settings.gfxmode = "1920x1080,auto\n"
+            case "left": e.settings.ventoyLeft = "5%\n"
+            case "top": e.settings.ventoyTop = "95%-10\n"
+            case "color": e.settings.ventoyColor = "#89b4fa\n"
+            default: break
+            }
+        }
+        #expect(!bad.problems().isEmpty, "rule \(rule) accepted a trailing newline")
+    }
+
+    // Each bad prefix is tried in every place a path is accepted.
+    @Test("unsafe paths are rejected in root, files, settings.file and settings.fonts",
+          arguments: ["..", "a/..", ".", "/abs", "a\\b", ".hidden", "a/.hidden", "a//b", "a\nb"])
+    func unsafePaths(prefix: String) {
+        #expect(!entry { $0.download.root = prefix }.problems().isEmpty, "root \(prefix.debugDescription)")
+        #expect(!entry { $0.settings.file = prefix + "/x.txt" }.problems().isEmpty, "file \(prefix.debugDescription)")
+        #expect(!entry { $0.settings.fonts = [prefix + "/x.pf2"] }.problems().isEmpty, "font \(prefix.debugDescription)")
+        #expect(!entry { $0.files = [.init(from: prefix + "/x.png", to: "x.png")] }.problems().isEmpty, "from \(prefix.debugDescription)")
+        #expect(!entry { $0.files = [.init(from: "x.png", to: prefix + "/x.png")] }.problems().isEmpty, "to \(prefix.debugDescription)")
+        #expect(!entry { $0.files = [.init(from: prefix + "/*.png", to: ".")] }.problems().isEmpty, "glob \(prefix.debugDescription)")
+    }
+
+    @Test("file mappings allow a trailing glob and a '.' destination")
+    func globMappings() {
+        #expect(entry { $0.files = [.init(from: "assets/*.png", to: ".")] }.problems().isEmpty)
+        #expect(entry { $0.files = [.init(from: "assets/*", to: "assets")] }.problems().isEmpty)
+        #expect(!entry { $0.files = [.init(from: "../*.png", to: ".")] }.problems().isEmpty)
+        #expect(!entry { $0.files = [.init(from: "/*", to: ".")] }.problems().isEmpty)
+    }
+
+    @Test("only the listed hosts over https are accepted", arguments: [
+        ("https://github.com/a/b.zip", true),
+        ("https://codeload.github.com/a/b/zip/abc", true),
+        ("https://gitlab.com/a/b.zip", true),
+        ("https://codeberg.org/a/b.zip", true),
+        ("https://github.com.evil.com/a.zip", false),
+        ("https://evil.com/github.com/a.zip", false),
+        ("https://github.com@evil.com/a.zip", false),
+        ("https://raw.githubusercontent.com/a/b.zip", false),
+        ("http://github.com/a.zip", false),
+        ("ftp://github.com/a.zip", false),
+        ("file:///tmp/a.zip", false),
+    ])
+    func hosts(url: String, allowed: Bool) {
+        let e = entry { $0.download.url = URL(string: url)! }
+        #expect(e.problems().isEmpty == allowed, "\(url)")
+    }
+
+    @Test("id, name, author and license limits")
+    func limits() {
+        #expect(entry { $0.id = "ab" }.problems().isEmpty)
+        #expect(entry { $0.id = String(repeating: "a", count: 40) }.problems().isEmpty)
+        #expect(!entry { $0.id = "a" }.problems().isEmpty)
+        #expect(!entry { $0.id = String(repeating: "a", count: 41) }.problems().isEmpty)
+        #expect(!entry { $0.id = "-lead" }.problems().isEmpty)
+        #expect(!entry { $0.id = "../x" }.problems().isEmpty)
+        for set in [{ (e: inout ThemeEntry, v: String) in e.name = v },
+                    { (e: inout ThemeEntry, v: String) in e.author = v },
+                    { (e: inout ThemeEntry, v: String) in e.license = v }] {
+            #expect(entry { set(&$0, String(repeating: "x", count: 60)) }.problems().isEmpty)
+            #expect(!entry { set(&$0, String(repeating: "x", count: 61)) }.problems().isEmpty)
+            #expect(!entry { set(&$0, "") }.problems().isEmpty)
+            #expect(!entry { set(&$0, "   ") }.problems().isEmpty)
+            #expect(!entry { set(&$0, "two\nlines") }.problems().isEmpty)
+        }
+    }
+
+    @Test("the six allowed settings keys decode")
+    func allSettingsKeys() throws {
+        let json = ##"{"file":"theme.txt","fonts":["a.pf2"],"gfxmode":"1920x1080,auto","ventoy_left":"5%","ventoy_top":"95%-10","ventoy_color":"#89b4fa"}"##
+        let s = try JSONDecoder().decode(ThemeEntry.Settings.self, from: Data(json.utf8))
+        #expect(s == .init(file: "theme.txt", fonts: ["a.pf2"], gfxmode: "1920x1080,auto",
+                           ventoyLeft: "5%", ventoyTop: "95%-10", ventoyColor: "#89b4fa"))
+    }
+
+    @Test("catalog rejects duplicate ids and unknown schema")
+    func catalogRules() {
+        #expect(!ThemeCatalog(schema: 1, themes: [entry(), entry()]).problems().isEmpty)
+        #expect(!ThemeCatalog(schema: 2, themes: [entry()]).problems().isEmpty)
+    }
+
+    @Test("unknown settings keys don't decode")
+    func strictSettings() {
+        let json = #"{"file":"theme.txt","menu_password":"x"}"#
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(ThemeEntry.Settings.self, from: Data(json.utf8)) }
+    }
+
+    @Test("the repo's catalog is valid and every theme has a preview")
+    func realCatalog() throws {
+        let url = Self.repoRoot.appendingPathComponent("themes/catalog.json")
+        let catalog = try JSONDecoder().decode(ThemeCatalog.self, from: Data(contentsOf: url))
+        #expect(catalog.problems().isEmpty, "\(catalog.problems())")
+        #expect(catalog.themes.count >= 14)
+        for theme in catalog.themes {
+            let preview = Self.repoRoot.appendingPathComponent("themes/previews/\(theme.id).jpg")
+            let size = try FileManager.default.attributesOfItem(atPath: preview.path)[.size] as? Int ?? 0
+            #expect(size > 0 && size <= 600 * 1024, "\(theme.id) preview size \(size)")
+            let source = try #require(CGImageSourceCreateWithURL(preview as CFURL, nil))
+            let props = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+            let w = props[kCGImagePropertyPixelWidth] as? Int ?? 0
+            let h = props[kCGImagePropertyPixelHeight] as? Int ?? 0
+            #expect(w >= 1280 && abs(Double(w) / Double(h) - 16.0 / 9.0) < 0.02, "\(theme.id) preview \(w)x\(h)")
+        }
+    }
+}
