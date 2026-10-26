@@ -30,18 +30,58 @@ public enum DiskInfo {
 
     /// Enumerate all external/physical whole disks on the system.
     public static func enumerateExternal() throws -> [DiskTarget] {
+        // Before `diskutil list`: a backup drive plugged in between the two
+        // calls is then in neither set, never in the list unfiltered.
+        let backups = try timeMachineWholeDisks()
         let r = try Subprocess.runChecked("/usr/sbin/diskutil", ["list", "-plist", "external", "physical"])
         guard let data = r.stdout.data(using: .utf8) else { return [] }
         let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] ?? [:]
         let whole = plist["WholeDisks"] as? [String] ?? []
 
         var out: [DiskTarget] = []
-        for name in whole {
+        for name in whole where !backups.contains(name) {
             if let info = try? probe(bsdName: name) {
                 out.append(info)
             }
         }
         return out
+    }
+
+    /// Whole disks that hold a Time Machine backup. Hidden from the disk
+    /// list so a backup drive can never be picked as an erase target.
+    /// One `diskutil apfs list` call; it reports volume roles even when
+    /// the backup volume is not mounted.
+    ///
+    /// Throws rather than returning an empty set: a failed lookup must not
+    /// quietly put a backup drive back in the list. The caller treats a
+    /// throw as "no disks this poll" and retries two seconds later.
+    static func timeMachineWholeDisks() throws -> Set<String> {
+        let r = try Subprocess.runChecked("/usr/sbin/diskutil", ["apfs", "list", "-plist"])
+        guard let data = r.stdout.data(using: .utf8),
+              let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { throw DriverError.diskIO("diskutil apfs list produced unreadable output") }
+        return timeMachineWholeDisks(apfsList: plist)
+    }
+
+    /// Pure half of `timeMachineWholeDisks()`, split out for tests.
+    static func timeMachineWholeDisks(apfsList plist: [String: Any]) -> Set<String> {
+        var out = Set<String>()
+        for container in plist["Containers"] as? [[String: Any]] ?? [] {
+            let volumes = container["Volumes"] as? [[String: Any]] ?? []
+            let isBackup = volumes.contains { ($0["Roles"] as? [String] ?? []).contains("Backup") }
+            guard isBackup else { continue }
+            for store in container["PhysicalStores"] as? [[String: Any]] ?? [] {
+                guard let id = store["DeviceIdentifier"] as? String else { continue }
+                out.insert(wholeDisk(of: id))
+            }
+        }
+        return out
+    }
+
+    /// disk4s2 -> disk4. A whole-disk name comes back unchanged.
+    static func wholeDisk(of bsdName: String) -> String {
+        guard let r = bsdName.range(of: #"^disk[0-9]+"#, options: .regularExpression) else { return bsdName }
+        return String(bsdName[r])
     }
 
     /// Enumerate partitions / volumes on a given whole-disk BSD name.
