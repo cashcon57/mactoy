@@ -74,6 +74,14 @@ if [[ -d "$BUILD_DIR/Mactoy_Mactoy.bundle" ]]; then
     cp -R "$BUILD_DIR/Mactoy_Mactoy.bundle" "$APP/Contents/Resources/"
 fi
 
+# Boot theme list, screenshots and the default theme, used when the online
+# list can't be reached. cp -R keeps the hidden .complete marker inside each
+# bundled theme folder; without it the app ignores that folder and downloads.
+mkdir -p "$APP/Contents/Resources/Themes"
+cp "$ROOT/themes/catalog.json" "$APP/Contents/Resources/Themes/catalog.json"
+cp -R "$ROOT/themes/previews" "$APP/Contents/Resources/Themes/previews"
+cp -R "$ROOT/themes/bundled" "$APP/Contents/Resources/Themes/bundled"
+
 # Signing:
 #   SIGN=nosign    : no codesign at all
 #   SIGN=sign      : ad-hoc sign (for local dev)
