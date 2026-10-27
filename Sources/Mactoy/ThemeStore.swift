@@ -53,9 +53,12 @@ enum ThemeStoreError: Error, Equatable, LocalizedError {
 final class ThemeStore: ObservableObject {
     @Published private(set) var catalog: [ThemeEntry] = []
     @Published private(set) var catalogSource: ThemeCatalogLoader.Source = .none
-    /// Catalog previews by theme id. Saved themes have their own table:
-    /// a catalog id may legitimately look like `custom-…`.
+    /// Catalog previews by theme id.
     @Published private(set) var previews: [String: NSImage] = [:]
+    /// Pictures of the themes in My Themes, by saved id. A separate table because they are
+    /// read from the library on this Mac, not downloaded like the catalog's, and it is
+    /// dropped per theme when one is removed. A catalog entry can't take a `custom-` id
+    /// (`ThemeEntry.problems()`), so the two never share a key anyway.
     @Published private(set) var customPreviews: [String: NSImage] = [:]
     /// "My Themes": kept on this Mac, so they outlive the session and the drive they came from.
     @Published private(set) var savedThemes: [SavedTheme] = []

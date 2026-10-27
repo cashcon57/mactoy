@@ -113,9 +113,17 @@ public struct ThemeEntry: Codable, Sendable, Equatable, Identifiable {
 
     static let allowedHosts: Set<String> = ["github.com", "codeload.github.com", "gitlab.com", "codeberg.org"]
 
+    /// Ids a catalog entry may not take. `custom-` begins every id in My Themes, which
+    /// sit beside catalog ids in the same picker and on drives (`mactoy-<id>`), and
+    /// `ventoy-default` names the picture of Ventoy's own menu in `previews/`.
+    static let reservedIDPrefix = "custom-"
+    static let reservedIDs: Set<String> = ["ventoy-default"]
+
     public func problems() -> [String] {
         var out: [String] = []
         if !ThemePath.matches(id, #"^[a-z0-9][a-z0-9-]{1,39}$"#) { out.append("id must be 2-40 lowercase letters, digits or hyphens") }
+        if id.hasPrefix(Self.reservedIDPrefix) { out.append("id must not start with \(Self.reservedIDPrefix) (that is how themes saved on a Mac are named)") }
+        if Self.reservedIDs.contains(id) { out.append("id \(id) is reserved for Mactoy") }
         for (label, value) in [("name", name), ("author", author), ("license", license)]
         where value.trimmingCharacters(in: .whitespaces).isEmpty || value.count > 60 || value.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) {
             out.append("\(label) must be 1-60 printable characters")

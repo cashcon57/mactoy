@@ -78,16 +78,29 @@ public struct ThemeCatalogLoader: Sendable {
 
     /// Preview bytes for a catalog theme. Remote copies are cached per
     /// download checksum, so a theme update fetches a new screenshot.
+    ///
+    /// Previews are JPEGs, so anything else a server sends (an HTML error page
+    /// behind a 200, an empty body) is neither shown nor kept: a cached copy
+    /// would be served on every launch afterwards. The bundled picture is used instead.
     public func previewData(for entry: ThemeEntry) async -> Data? {
         // The id and checksum end up in a URL and a file name.
         guard entry.problems().isEmpty else { return nil }
         let cached = cacheDirectory.appendingPathComponent("previews/\(entry.id)-\(entry.download.sha256.prefix(16)).jpg")
-        if let data = try? Data(contentsOf: cached) { return data }
-        if let data = try? await transport.data(from: Self.remotePreviewURL(for: entry.id), maxBytes: Self.maxPreviewBytes) {
+        // A file an older version cached before this check is ignored too, and replaced below.
+        if let data = try? Data(contentsOf: cached), Self.isJPEG(data) { return data }
+        if let data = try? await transport.data(from: Self.remotePreviewURL(for: entry.id), maxBytes: Self.maxPreviewBytes),
+           Self.isJPEG(data) {
             Self.writeAtomically(data, to: cached)
             return data
         }
-        return bundledPreviews.flatMap { try? Data(contentsOf: $0.appendingPathComponent("\(entry.id).jpg")) }
+        return bundledPreview(named: entry.id)
+    }
+
+    /// A JPEG starts with FF D8 FF. An empty body has no start, so it fails too.
+    static func isJPEG(_ data: Data) -> Bool { data.starts(with: [0xFF, 0xD8, 0xFF]) }
+
+    private func bundledPreview(named name: String) -> Data? {
+        bundledPreviews.flatMap { try? Data(contentsOf: $0.appendingPathComponent("\(name).jpg")) }
     }
 
     /// Atomic so a crash or a second window mid-write can't leave a

@@ -209,6 +209,20 @@ struct ThemeCatalogTests {
         }
     }
 
+    @Test("ids that My Themes or Mactoy use are reserved, so a catalog theme can't be mistaken for a saved one",
+          arguments: ["custom-night-12345678", "custom-x", "custom-ab", "ventoy-default"])
+    func reservedIDs(id: String) {
+        let bad = entry { $0.id = id }
+        #expect(!bad.problems().isEmpty, "\(id)")
+        #expect(!ThemeCatalog(schema: 1, themes: [bad]).problems().isEmpty)
+        #expect(ThemeCatalog(schema: 1, themes: [bad, entry()]).usableThemes.map(\.id) == ["sample-theme"], "dropped from what the app shows")
+    }
+
+    @Test("ids that only look like the reserved ones are fine", arguments: ["customx", "custom", "my-custom-theme", "ventoy-default-2", "ventoy", "default"])
+    func nearlyReservedIDs(id: String) {
+        #expect(entry { $0.id = id }.problems().isEmpty, "\(id)")
+    }
+
     @Test("the six allowed settings keys decode")
     func allSettingsKeys() throws {
         let json = ##"{"file":"theme.txt","fonts":["a.pf2"],"gfxmode":"1920x1080,auto","ventoy_left":"5%","ventoy_top":"95%-10","ventoy_color":"#89b4fa"}"##

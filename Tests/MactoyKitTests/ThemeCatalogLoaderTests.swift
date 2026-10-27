@@ -208,38 +208,114 @@ struct ThemeCatalogLoaderTests {
         #expect(source == .bundled && catalog.themes.map(\.id) == ["from-bundle"])
     }
 
-    @Test("previews: fetched once per catalog checksum, else cached, else bundled")
-    func previews() async throws {
+    /// Starts like a JPEG (FF D8 FF), then says what it is for the assertions.
+    private func jpeg(_ label: String) -> Data { Data([0xFF, 0xD8, 0xFF, 0xE0]) + Data(label.utf8) }
+
+    private func previewSetup(bundled: Bool = true) throws -> (loader: ThemeCatalogLoader, transport: Transport, dir: URL) {
         let dir = tempDir()
         let previews = dir.appendingPathComponent("bundled-previews")
         try FileManager.default.createDirectory(at: previews, withIntermediateDirectories: true)
-        try Data("bundled-art".utf8).write(to: previews.appendingPathComponent("pretty.jpg"))
+        if bundled { try jpeg("bundled-art").write(to: previews.appendingPathComponent("pretty.jpg")) }
         let t = Transport()
-        let loader = makeLoader(t, in: dir, previews: previews)
+        return (makeLoader(t, in: dir, previews: previews), t, dir)
+    }
+
+    private func cachedPreview(_ dir: URL, _ entry: ThemeEntry) -> URL {
+        dir.appendingPathComponent("cache/previews/\(entry.id)-\(entry.download.sha256.prefix(16)).jpg")
+    }
+
+    @Test("previews: fetched once per catalog checksum, else cached, else bundled")
+    func previews() async throws {
+        let (loader, t, _) = try previewSetup()
         let v1 = entry("pretty", sha: "a")
         let url = ThemeCatalogLoader.remotePreviewURL(for: "pretty")
 
         // Offline with nothing cached: the bundled picture.
-        #expect(await loader.previewData(for: v1) == Data("bundled-art".utf8))
+        #expect(await loader.previewData(for: v1) == jpeg("bundled-art"))
         // No picture anywhere.
         #expect(await loader.previewData(for: entry("unknown")) == nil)
 
         // Online: the remote picture, which is then kept.
-        t.responses[url] = Data("remote-art".utf8)
-        #expect(await loader.previewData(for: v1) == Data("remote-art".utf8))
+        t.responses[url] = jpeg("remote-art")
+        #expect(await loader.previewData(for: v1) == jpeg("remote-art"))
         t.responses = [:]
         t.requested = []
-        #expect(await loader.previewData(for: v1) == Data("remote-art".utf8))
+        #expect(await loader.previewData(for: v1) == jpeg("remote-art"))
         #expect(t.requested.isEmpty)
 
         // The theme was updated (new checksum): fetch again; offline falls
         // back to the bundled one rather than the stale cached picture.
         let v2 = entry("pretty", sha: "d")
-        t.responses[url] = Data("remote-art-2".utf8)
-        #expect(await loader.previewData(for: v2) == Data("remote-art-2".utf8))
+        t.responses[url] = jpeg("remote-art-2")
+        #expect(await loader.previewData(for: v2) == jpeg("remote-art-2"))
         let v3 = entry("pretty", sha: "e")
         t.responses = [:]
-        #expect(await loader.previewData(for: v3) == Data("bundled-art".utf8))
+        #expect(await loader.previewData(for: v3) == jpeg("bundled-art"))
+    }
+
+    @Test("a reply that isn't a JPEG is neither shown nor cached; the bundled picture is used",
+          arguments: ["<!DOCTYPE html><html>404: Not Found</html>", "404: Not Found", "", "\u{89}PNG\r\n"])
+    func nonImageIsNotCached(body: String) async throws {
+        let (loader, t, dir) = try previewSetup()
+        let v1 = entry("pretty", sha: "a")
+        t.responses[ThemeCatalogLoader.remotePreviewURL(for: "pretty")] = Data(body.utf8)
+        #expect(await loader.previewData(for: v1) == jpeg("bundled-art"))
+        #expect(!FileManager.default.fileExists(atPath: cachedPreview(dir, v1).path), "nothing written to the cache")
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("cache/previews").path)
+                || ((try? FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("cache/previews").path)) ?? []).isEmpty)
+        // And it asks again next time, since there is nothing kept.
+        t.requested = []
+        #expect(await loader.previewData(for: v1) == jpeg("bundled-art"))
+        #expect(t.requested == [ThemeCatalogLoader.remotePreviewURL(for: "pretty")])
+    }
+
+    @Test("with no bundled picture either, a non-image reply gives nothing")
+    func nonImageWithoutBundle() async throws {
+        let (loader, t, dir) = try previewSetup(bundled: false)
+        let v1 = entry("pretty", sha: "a")
+        t.responses[ThemeCatalogLoader.remotePreviewURL(for: "pretty")] = Data("<html></html>".utf8)
+        #expect(await loader.previewData(for: v1) == nil)
+        #expect(!FileManager.default.fileExists(atPath: cachedPreview(dir, v1).path))
+    }
+
+    @Test("the JPEG check is the three magic bytes, so a shorter or different start fails")
+    func jpegMagic() {
+        #expect(ThemeCatalogLoader.isJPEG(Data([0xFF, 0xD8, 0xFF])))
+        #expect(ThemeCatalogLoader.isJPEG(Data([0xFF, 0xD8, 0xFF, 0xDB, 0x00])))
+        #expect(!ThemeCatalogLoader.isJPEG(Data()))
+        #expect(!ThemeCatalogLoader.isJPEG(Data([0xFF, 0xD8])))
+        #expect(!ThemeCatalogLoader.isJPEG(Data([0xFF, 0xD8, 0x00])))
+        #expect(!ThemeCatalogLoader.isJPEG(Data([0x00, 0xFF, 0xD8, 0xFF])))
+    }
+
+    @Test("a cached file that isn't a JPEG is ignored and replaced by the next good download")
+    func badCacheIsIgnored() async throws {
+        let (loader, t, dir) = try previewSetup()
+        let v1 = entry("pretty", sha: "a")
+        let cached = cachedPreview(dir, v1)
+        try FileManager.default.createDirectory(at: cached.deletingLastPathComponent(), withIntermediateDirectories: true)
+        for junk in [Data("<html>cached error page</html>".utf8), Data()] {
+            try junk.write(to: cached)
+            // Offline: not the junk, the bundled picture.
+            #expect(await loader.previewData(for: v1) == jpeg("bundled-art"))
+        }
+        // Online: the good picture replaces the junk and is served from the cache after.
+        t.responses[ThemeCatalogLoader.remotePreviewURL(for: "pretty")] = jpeg("remote-art")
+        #expect(await loader.previewData(for: v1) == jpeg("remote-art"))
+        #expect(try Data(contentsOf: cached) == jpeg("remote-art"))
+        t.responses = [:]
+        #expect(await loader.previewData(for: v1) == jpeg("remote-art"))
+    }
+
+    @Test("a good cached picture is still served without a request")
+    func goodCacheIsServed() async throws {
+        let (loader, t, dir) = try previewSetup()
+        let v1 = entry("pretty", sha: "a")
+        let cached = cachedPreview(dir, v1)
+        try FileManager.default.createDirectory(at: cached.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try jpeg("cached-art").write(to: cached)
+        #expect(await loader.previewData(for: v1) == jpeg("cached-art"))
+        #expect(t.requested.isEmpty)
     }
 
     @Test("a preview for an entry with an unsafe id touches nothing")

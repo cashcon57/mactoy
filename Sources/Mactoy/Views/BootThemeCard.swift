@@ -54,7 +54,7 @@ struct BootThemeCard: View {
             if let image = themes.previews[id] { Image(nsImage: image).resizable().aspectRatio(contentMode: .fill) }
             else { Color.black.opacity(0.85) }
         case .custom(let id):
-            // Saved themes have their own table: a catalog id may look like `custom-…`.
+            // A saved theme's picture comes from My Themes, not from the catalog's previews.
             if let image = themes.customPreviews[id] { Image(nsImage: image).resizable().aspectRatio(contentMode: .fill) }
             else { Color.black.opacity(0.85) }
         case .ventoyDefault:
