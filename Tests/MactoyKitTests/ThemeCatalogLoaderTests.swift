@@ -90,6 +90,8 @@ struct ThemeCatalogLoaderTests {
         let cacheFile = dir.appendingPathComponent("cache/catalog.json")
         #expect(try Data(contentsOf: cacheFile) == good)
 
+        var insecure = try json(of: entry("insecure"))
+        insecure["homepage"] = "http://example.com"
         let junk: [Data] = [
             Data("not json".utf8),
             Data("[]".utf8),                                                   // not an object
@@ -98,6 +100,9 @@ struct ThemeCatalogLoaderTests {
             Data(#"{"themes":[]}"#.utf8),                                      // no schema
             Data(#"{"schema":"1","themes":[]}"#.utf8),                         // schema isn't a number
             try rawCatalog(schema: 2, themes: [["id": 5, "future": true]]),    // unsupported schema, new shape
+            Data(#"{"schema":1,"themes":[]}"#.utf8),                           // supported but empty: must not replace a good cache
+            try rawCatalog(themes: [NSNull(), 7, ["id": 5, "future": true]]),  // every entry malformed
+            try rawCatalog(themes: [insecure]),                                // well-formed, but nothing passes validation
         ]
         for body in junk {
             t.responses[ThemeCatalogLoader.remoteCatalogURL] = body
@@ -156,6 +161,17 @@ struct ThemeCatalogLoaderTests {
         let dir = tempDir()
         try FileManager.default.createDirectory(at: dir.appendingPathComponent("cache"), withIntermediateDirectories: true)
         try Data("garbage".utf8).write(to: dir.appendingPathComponent("cache/catalog.json"))
+        let bundled = dir.appendingPathComponent("bundled.json")
+        try catalogData(ids: ["from-bundle"]).write(to: bundled)
+        let (catalog, source) = await makeLoader(Transport(), in: dir, bundled: bundled).load()
+        #expect(source == .bundled && catalog.themes.map(\.id) == ["from-bundle"])
+    }
+
+    @Test("a cache with no usable entries falls through to the bundle")
+    func poisonedCache() async throws {
+        let dir = tempDir()
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("cache"), withIntermediateDirectories: true)
+        try Data(#"{"schema":1,"themes":[]}"#.utf8).write(to: dir.appendingPathComponent("cache/catalog.json"))
         let bundled = dir.appendingPathComponent("bundled.json")
         try catalogData(ids: ["from-bundle"]).write(to: bundled)
         let (catalog, source) = await makeLoader(Transport(), in: dir, bundled: bundled).load()

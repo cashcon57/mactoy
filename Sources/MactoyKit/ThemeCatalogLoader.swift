@@ -43,7 +43,8 @@ public struct ThemeCatalogLoader: Sendable {
 
     /// A supported catalog, with only its usable entries. Unusable means
     /// not a JSON object with an `Int` `schema` we support and a `themes`
-    /// array; the next source is tried then. Entries are decoded one at a
+    /// array, or no entry left after filtering; the next source is tried
+    /// then. Entries are decoded one at a
     /// time so a single malformed or future-shaped one (say, a settings key
     /// this app doesn't know) drops only itself, not the whole list.
     static func decode(_ data: Data) -> ThemeCatalog? {
@@ -60,8 +61,11 @@ public struct ThemeCatalogLoader: Sendable {
         guard let header = try? decoder.decode(Header.self, from: data),
               header.schema == ThemeCatalog.supportedSchema,
               let body = try? decoder.decode(Body.self, from: data) else { return nil }
-        let all = ThemeCatalog(schema: header.schema, themes: body.themes.compactMap(\.entry))
-        return ThemeCatalog(schema: all.schema, themes: all.usableThemes)
+        let usable = ThemeCatalog(schema: header.schema, themes: body.themes.compactMap(\.entry)).usableThemes
+        // A catalog with nothing usable is no better than none: if it won it
+        // would replace a good cache, and the empty cache would then mask
+        // the bundled copy on the next offline launch.
+        return usable.isEmpty ? nil : ThemeCatalog(schema: header.schema, themes: usable)
     }
 
     /// Preview bytes for a catalog theme. Remote copies are cached per
