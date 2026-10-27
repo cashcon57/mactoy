@@ -168,15 +168,32 @@ struct ThemeLibraryTests {
     }
 
     @Test("ids fit the installer's rule whatever the name",
-          arguments: ["", "   ", "Ünïcödé Thème", "A/B\\C", String(repeating: "long ", count: 40), "---", "🎨🎨", "Night\u{0}Sky\n", "\u{202E}rtl", "UPPER lower 123"])
+          arguments: ["", "   ", "Ünïcödé Thème", "A/B\\C", String(repeating: "long ", count: 40), "---", "🎨🎨", "Night\u{0}Sky\n", "\u{202E}rtl", "zero\u{200B}width\u{FEFF}", "a\u{202D}b\u{2066}c\u{200F}", "UPPER lower 123"])
     func idsAreValid(name: String) throws {
         let lib = try library()
         let saved = try lib.save(folder: themeFolder(), name: name, settings: settings, origin: "x")
         #expect(isValidID(saved.id), "\(saved.id)")
         #expect(saved.id.count <= 46)
         #expect(saved.name.count <= 60 && !saved.name.isEmpty)
-        #expect(!saved.name.unicodeScalars.contains { $0.properties.generalCategory == .control })
+        #expect(!saved.name.unicodeScalars.contains { [.control, .format].contains($0.properties.generalCategory) })
+        #expect(!saved.origin.unicodeScalars.contains { [.control, .format].contains($0.properties.generalCategory) })
         #expect(lib.list() == [saved])
+    }
+
+    @Test("invisible and direction-changing characters are removed from names and origins")
+    func cleansFormatCharacters() throws {
+        #expect(ThemeLibrary.cleaned("a\u{202E}b\u{200B}c\u{FEFF}", limit: 60) == "abc")
+        #expect(ThemeLibrary.cleaned("\u{202E}\u{200B}", limit: 60, fallback: "Theme") == "Theme")
+        let lib = try library()
+        let saved = try lib.save(folder: themeFolder(), name: "Night\u{202E}Sky\u{200B}", settings: settings, origin: "Saved from the drive “\u{202E}Ventoy”")
+        #expect(saved.name == "NightSky")
+        #expect(saved.origin == "Saved from the drive “Ventoy”")
+        // An entry written by something else, with such a character in its name, is not listed.
+        let url = lib.directory(for: saved).appendingPathComponent(ThemeLibrary.metadataName)
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        json["name"] = "Night\u{202E}Sky"
+        try JSONSerialization.data(withJSONObject: json).write(to: url)
+        #expect(lib.list().isEmpty)
     }
 
     @Test("the picture comes from the theme file, relative to the theme file's folder")

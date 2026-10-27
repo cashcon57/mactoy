@@ -174,12 +174,14 @@ public struct ThemeLibrary: Sendable {
 
     // MARK: Internals
 
-    /// A short name the user can read: no control characters, no outer
-    /// blanks, at most `limit` characters. Names come from drives and ZIP files.
+    /// A short name the user can read: no control or invisible format characters,
+    /// no outer blanks, at most `limit` characters. Names come from drives and ZIP
+    /// files, so a right-to-left override (U+202E) or a zero-width space must not
+    /// survive to reorder or hide text in a dialog.
     static func cleaned(_ text: String, limit: Int, fallback: String = "") -> String {
         let scalars = text.unicodeScalars.filter {
             switch $0.properties.generalCategory {
-            case .control, .lineSeparator, .paragraphSeparator: return false
+            case .control, .format, .lineSeparator, .paragraphSeparator: return false
             default: return true
             }
         }

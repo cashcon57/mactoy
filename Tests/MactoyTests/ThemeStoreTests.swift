@@ -300,12 +300,26 @@ struct ThemeStoreTests {
         await #expect(throws: ThemeLibraryError.notInLibrary("../keep")) { try await store.removeSaved(id: "../keep") }
     }
 
+    @Test("before the catalog has loaded, a Mactoy-installed theme is offered, so an older custom theme is never replaced unsaved")
+    func savableBeforeCatalogLoads() async throws {
+        let store = try await offlineStore(bundledIDs: ["from-catalog"])
+        #expect(store.catalogSource == .none && store.catalog.isEmpty)
+        #expect(store.isSavable(driveTheme(managedID: "custom-x-12345678")))
+        // Needlessly offering a catalog theme is harmless; the decision then asks.
+        #expect(store.isSavable(driveTheme(managedID: "from-catalog")))
+        let managed = ThemeInstaller.Current.managed(id: "custom-x-12345678", name: "X")
+        let theme = driveTheme(managedID: "custom-x-12345678")
+        #expect(ThemeReplacement.step(current: managed, driveTheme: theme, isSavable: store.isSavable(theme)) == .offerSave(theme))
+        // Once the catalog is known the catalog theme is exempt again.
+        await store.load()
+        #expect(!store.isSavable(driveTheme(managedID: "from-catalog")))
+        #expect(store.isSavable(driveTheme(managedID: "custom-x-12345678")))
+    }
+
     @Test("a drive's theme is worth keeping unless Mactoy can get it back")
     func savable() async throws {
         let store = try await offlineStore(bundledIDs: ["from-catalog"])
         #expect(!store.isSavable(nil))
-        // Before the catalog is loaded a Mactoy-installed theme can't be told from a catalog one.
-        #expect(!store.isSavable(driveTheme(managedID: "custom-x-12345678")))
         #expect(store.isSavable(driveTheme(managedID: nil)), "a theme the user set up themselves")
         await store.load()
         #expect(!store.isSavable(driveTheme(managedID: "from-catalog")))

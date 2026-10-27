@@ -186,13 +186,13 @@ final class ThemeStore: ObservableObject {
     /// Whether a drive's theme is worth offering to keep: any theme Mactoy can't
     /// download again. Catalog themes can always be fetched, and one already in
     /// My Themes is kept. Before the catalog has loaded a managed theme can't be
-    /// told apart from a catalog one, so none is offered.
+    /// told apart from a catalog one, and then it is offered: a needless offer to
+    /// keep a catalog theme costs a click, while no offer could let the only copy
+    /// of an older Mactoy's custom theme be deleted when it is replaced.
     func isSavable(_ driveTheme: DriveTheme?) -> Bool {
         guard let driveTheme else { return false }
         guard let managed = driveTheme.managedID else { return true }
-        return catalogSource != .none
-            && !catalog.contains { $0.id == managed }
-            && !savedThemes.contains { $0.id == managed }
+        return !catalog.contains { $0.id == managed } && !savedThemes.contains { $0.id == managed }
     }
 
     /// Download early so a later apply doesn't wait (catalog themes only).
