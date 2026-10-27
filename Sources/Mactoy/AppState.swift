@@ -171,8 +171,9 @@ final class AppState: ObservableObject {
     }
 
     /// Puts the pick back to `defaultInstallTheme` when what it names is gone: a saved
-    /// theme removed from My Themes, or a catalog theme that isn't in the catalog
-    /// that has loaded. The app calls it whenever either list changes.
+    /// theme removed from My Themes, or a catalog theme that isn't in the online
+    /// catalog (the bundled and cached copies can lag behind it, so they never
+    /// reset a pick). The app calls it whenever either list changes.
     func resetInstallThemeIfUnavailable(_ available: ThemeAvailability) {
         let valid = available.validated(installTheme, fallback: Self.defaultInstallTheme)
         // Only a real change, so a pick that is fine is never written again.

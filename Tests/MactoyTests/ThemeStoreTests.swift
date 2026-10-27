@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Testing
 import Foundation
 @testable import Mactoy
@@ -392,6 +393,11 @@ struct ThemeStoreTests {
         DiskTarget(bsdName: bsd, sizeInBytes: 32_000_000_000, isExternal: true, isRemovable: true, mediaName: "Stick", volumes: [])
     }
 
+    /// What `diskutil` says about the volume when it really is on the installed disk (`installedDisk()`).
+    private let onInstalledDisk: @Sendable (URL) -> String? = { _ in "disk97s2" }
+
+    private let notTheNewDrive = "the drive in that slot doesn't look like the one Mactoy just set up."
+
     /// Every file and folder under `root` with its bytes, so "unchanged" means unchanged.
     private func snapshot(_ root: URL) throws -> [String: Data?] {
         let fm = FileManager.default
@@ -408,7 +414,8 @@ struct ThemeStoreTests {
         let store = try await offlineStore()
         guard case .custom(let id) = try await store.importCustom(from: themeFolder()) else { Issue.record("not a saved theme"); return }
         let volume = try tempDir()
-        let problem = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume })
+        let problem = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume },
+                                                   deviceIdentifier: onInstalledDisk)
         #expect(problem == nil)
         #expect(try ThemeInstaller.current(on: volume) == .managed(id: id, name: "Night Sky"))
     }
@@ -430,8 +437,9 @@ struct ThemeStoreTests {
         // Another stick took the disk number: it has a theme of the user's own.
         let volume = try volumeWithHandTheme()
         let before = try snapshot(volume)
-        let problem = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume })
-        #expect(problem == "the drive in that slot doesn't look like the one Mactoy just set up, so the theme wasn't added.")
+        let problem = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume },
+                                                   deviceIdentifier: onInstalledDisk)
+        #expect(problem == notTheNewDrive)
         #expect(try snapshot(volume) == before, "not a byte of the drive changed")
         #expect(try ThemeInstaller.current(on: volume) == .other(file: "/ventoy/mytheme/theme.txt"))
     }
@@ -446,8 +454,9 @@ struct ThemeStoreTests {
         try Data(#"{"id":"x","name":"X"}"#.utf8).write(to: old.appendingPathComponent(ThemeInstaller.markerName))
         try Data("title-text: \"x\"\n".utf8).write(to: old.appendingPathComponent("theme.txt"))
         let before = try snapshot(volume)
-        let problem = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume })
-        #expect(problem == "the drive in that slot doesn't look like the one Mactoy just set up, so the theme wasn't added.")
+        let problem = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume },
+                                                   deviceIdentifier: onInstalledDisk)
+        #expect(problem == notTheNewDrive)
         #expect(try snapshot(volume) == before, "mactoy-x is still there, and nothing was added")
     }
 
@@ -458,28 +467,28 @@ struct ThemeStoreTests {
         let volume = try tempDir()
         let looked = Box()
         let no = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume },
-                                              looksFresh: { looked.add($0.path); return false })
+                                              looksFresh: { looked.add($0.path); return false }, deviceIdentifier: onInstalledDisk)
         #expect(no != nil)
         #expect(looked.values == [volume.path])
         #expect(!FileManager.default.fileExists(atPath: volume.appendingPathComponent("ventoy").path))
         let yes = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume },
-                                               looksFresh: { _ in true })
+                                               looksFresh: { _ in true }, deviceIdentifier: onInstalledDisk)
         #expect(yes == nil)
         #expect(FileManager.default.fileExists(atPath: volume.appendingPathComponent("ventoy/ventoy.json").path))
     }
 
     @Test("a catalog theme's download finishes before the drive is looked at")
     func afterInstallDownloadsFirst() async throws {
-        let gate = GatedTransport()
-        let offline = GatedTransport()
-        await offline.open()
-        let store = try makeStore(bundledIDs: ["slow-theme"], loaderTransport: offline, fetcherTransport: gate)
-        await store.load()
+        let archive = try themeZip()
+        let url = entry("fetched-theme").download.url
+        let gate = GatedTransport(responses: [url: archive])   // the download waits here
+        let (store, _) = try await storeWithDownloadableTheme(archive: archive, fetcherTransport: gate)
         let volume = try tempDir()
         let order = Box()
+        let identify = onInstalledDisk
         let running = Task {
-            await store.applyAfterInstall(.catalog(id: "slow-theme"), disk: installedDisk(), findVolume: { _ in volume },
-                                          looksFresh: { _ in order.add("looked"); return false })
+            await store.applyAfterInstall(.catalog(id: "fetched-theme"), disk: installedDisk(), findVolume: { _ in volume },
+                                          looksFresh: { _ in order.add("looked"); return false }, deviceIdentifier: identify)
         }
         for _ in 0..<500 where await gate.requestCount == 0 { try await Task.sleep(nanoseconds: 10_000_000) }
         #expect(await gate.requestCount == 1)
@@ -488,6 +497,179 @@ struct ThemeStoreTests {
         await gate.open()
         _ = await running.value
         #expect(order.values == ["looked"])
+    }
+
+    @Test("a volume with an ISO on it is not the one Mactoy just set up, even with no settings on it")
+    func afterInstallIsoAtTheRoot() async throws {
+        let store = try await offlineStore()
+        guard case .custom(let id) = try await store.importCustom(from: themeFolder()) else { Issue.record("not a saved theme"); return }
+        let volume = try tempDir()
+        try Data([1, 2, 3]).write(to: volume.appendingPathComponent("ubuntu.iso"))
+        let before = try snapshot(volume)
+        let problem = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume },
+                                                   deviceIdentifier: onInstalledDisk)
+        #expect(problem == notTheNewDrive)
+        #expect(try snapshot(volume) == before, "no ventoy folder was made")
+    }
+
+    @Test("a volume that is not on the installed disk any more gets nothing, however fresh it looks")
+    func afterInstallDeviceMismatch() async throws {
+        let store = try await offlineStore()
+        guard case .custom(let id) = try await store.importCustom(from: themeFolder()) else { Issue.record("not a saved theme"); return }
+        // Another disk, a number that only starts the same, no answer from diskutil, and a different slice of the same number.
+        let answers: [String?] = ["disk3s2", "disk970s2", "disk9s2", "disk97", nil, ""]
+        for answer in answers {
+            let volume = try tempDir()
+            let asked = Box()
+            let problem = await store.applyAfterInstall(.custom(id: id), disk: installedDisk("disk97"), findVolume: { _ in volume },
+                                                       looksFresh: { _ in true },
+                                                       deviceIdentifier: { asked.add($0.path); return answer })
+            #expect(problem == notTheNewDrive, "\(String(describing: answer))")
+            #expect(asked.values == [volume.path])
+            #expect(try snapshot(volume).isEmpty, "nothing was written for \(String(describing: answer))")
+        }
+        // The same disk, any slice, is fine.
+        let volume = try tempDir()
+        let ok = await store.applyAfterInstall(.custom(id: id), disk: installedDisk("disk97"), findVolume: { _ in volume },
+                                              looksFresh: { _ in true }, deviceIdentifier: { _ in "disk97s1" })
+        #expect(ok == nil)
+        #expect(try ThemeInstaller.current(on: volume) == .managed(id: id, name: "Night Sky"))
+    }
+
+    @Test("the disk is asked about after the drive is checked, right before the write")
+    func afterInstallChecksTheDiskLast() async throws {
+        let store = try await offlineStore()
+        guard case .custom(let id) = try await store.importCustom(from: themeFolder()) else { Issue.record("not a saved theme"); return }
+        let volume = try tempDir()
+        let order = Box()
+        let problem = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in order.add("found"); return volume },
+                                                   looksFresh: { _ in order.add("fresh"); return true },
+                                                   deviceIdentifier: { _ in order.add("device"); return "disk97s2" })
+        #expect(problem == nil)
+        #expect(order.values == ["found", "fresh", "device"])
+    }
+
+    @Test("a download that fails is the problem reported, with no check and no second try")
+    func afterInstallFailedDownload() async throws {
+        let offline = GatedTransport()
+        await offline.open()
+        let fetching = GatedTransport()   // answers nothing: every download fails
+        await fetching.open()
+        let store = try makeStore(bundledIDs: ["slow-theme"], loaderTransport: offline, fetcherTransport: fetching)
+        await store.load()
+        let volume = try tempDir()
+        let looked = Box()
+        let problem = await store.applyAfterInstall(.catalog(id: "slow-theme"), disk: installedDisk(), findVolume: { _ in volume },
+                                                   looksFresh: { looked.add($0.path); return true }, deviceIdentifier: onInstalledDisk)
+        #expect(problem == DriverError.network("offline").localizedDescription)
+        #expect(await fetching.requestCount == 1, "downloaded once, before the check, and not again to apply")
+        #expect(looked.values.isEmpty)
+        #expect(try snapshot(volume).isEmpty, "nothing was applied")
+        // The drive is free again afterwards.
+        #expect(try await store.apply(.ventoyDefault, to: volume).isEmpty)
+    }
+
+    @Test("a theme that isn't in the catalog or My Themes is reported before the drive is looked at")
+    func afterInstallUnknownTheme() async throws {
+        let store = try await offlineStore(bundledIDs: ["there"])
+        await store.load()
+        let volume = try tempDir()
+        let looked = Box()
+        for choice in [ThemeChoice.catalog(id: "gone"), .custom(id: "custom-gone-12345678")] {
+            let id: String
+            switch choice { case .catalog(let x), .custom(let x): id = x; case .ventoyDefault: id = "" }
+            let problem = await store.applyAfterInstall(choice, disk: installedDisk(), findVolume: { _ in volume },
+                                                       looksFresh: { looked.add($0.path); return true }, deviceIdentifier: onInstalledDisk)
+            #expect(problem == ThemeError.unknownTheme(id).localizedDescription)
+        }
+        #expect(looked.values.isEmpty)
+        #expect(try snapshot(volume).isEmpty)
+    }
+
+    /// A ZIP with a theme file in it, made with zip(1).
+    private func themeZip() throws -> Data {
+        let source = try tempDir()
+        try Data("title-text: \"x\"\n".utf8).write(to: source.appendingPathComponent("theme.txt"))
+        let archive = try tempDir().appendingPathComponent("theme.zip")
+        let zip = Process()
+        zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        zip.arguments = ["-q", archive.path, "theme.txt"]
+        zip.currentDirectoryURL = source
+        try zip.run()
+        zip.waitUntilExit()
+        #expect(zip.terminationStatus == 0)
+        return try Data(contentsOf: archive)
+    }
+
+    /// A store whose catalog holds one theme, "fetched-theme" (named "Fetched"), that downloads as `archive`
+    /// through `fetcherTransport`. Also returns the folder the fetcher keeps its downloads in.
+    private func storeWithDownloadableTheme(archive: Data, fetcherTransport: any ThemeTransport) async throws -> (ThemeStore, URL) {
+        let sha = SHA256.hash(data: archive).map { String(format: "%02x", $0) }.joined()
+        let dir = try tempDir()
+        let base = entry("fetched-theme")
+        let theme = ThemeEntry(id: base.id, name: "Fetched", author: base.author, homepage: base.homepage, license: base.license,
+                               showsVentoyHotkeys: true, notes: nil,
+                               download: .init(url: base.download.url, sha256: sha, root: ""), files: nil, settings: .init(file: "theme.txt"))
+        let bundled = dir.appendingPathComponent("bundled.json")
+        try JSONEncoder().encode(ThemeCatalog(schema: ThemeCatalog.supportedSchema, themes: [theme])).write(to: bundled)
+        let offline = GatedTransport()
+        await offline.open()
+        let cache = dir.appendingPathComponent("themes")
+        let store = ThemeStore(loader: ThemeCatalogLoader(transport: offline, cacheDirectory: dir.appendingPathComponent("cache"),
+                                                          bundledCatalog: bundled, bundledPreviews: nil),
+                               fetcher: ThemeFetcher(transport: fetcherTransport, cacheRoot: cache, bundledRoot: nil),
+                               library: ThemeLibrary(root: dir.appendingPathComponent("My Themes")))
+        await store.load()
+        #expect(store.catalog.map(\.id) == ["fetched-theme"])
+        return (store, cache)
+    }
+
+    /// Hands out one archive and notes every request.
+    private struct RecordingTransport: ThemeTransport {
+        let archive: Data
+        let log: Box
+        func data(from url: URL, maxBytes: Int) async throws -> Data { log.add("download"); return archive }
+    }
+
+    @Test("a catalog theme is downloaded once, before the check, and the write uses that download")
+    func afterInstallDownloadsOnlyBeforeTheCheck() async throws {
+        let archive = try themeZip()
+        let log = Box()
+        let (store, cache) = try await storeWithDownloadableTheme(archive: archive, fetcherTransport: RecordingTransport(archive: archive, log: log))
+
+        let volume = try tempDir()
+        let problem = await store.applyAfterInstall(.catalog(id: "fetched-theme"), disk: installedDisk(), findVolume: { _ in volume },
+                                                   looksFresh: { _ in
+            log.add("looked")
+            // Spoil the cached copy's "complete" marker: asking the fetcher for the theme again would now download it again.
+            let files = FileManager.default.enumerator(at: cache, includingPropertiesForKeys: nil)?.allObjects as? [URL] ?? []
+            for file in files where file.lastPathComponent == ".complete" { try? FileManager.default.removeItem(at: file) }
+            return true
+        }, deviceIdentifier: { _ in log.add("device"); return "disk97s2" })
+        #expect(problem == nil)
+        #expect(log.values == ["download", "looked", "device"], "nothing is fetched after the drive is looked at")
+        #expect(try ThemeInstaller.current(on: volume) == .managed(id: "fetched-theme", name: "Fetched"))
+        #expect(FileManager.default.fileExists(atPath: volume.appendingPathComponent("ventoy/themes/mactoy-fetched-theme/theme.txt").path))
+    }
+
+    @Test("a second change to the drive is refused while a fresh install's theme is being added")
+    func afterInstallHoldsTheDrive() async throws {
+        let gate = GatedTransport()
+        let offline = GatedTransport()
+        await offline.open()
+        let store = try makeStore(bundledIDs: ["held-theme"], loaderTransport: offline, fetcherTransport: gate)
+        await store.load()
+        let volume = try tempDir()
+        let identify = onInstalledDisk
+        let running = Task {
+            await store.applyAfterInstall(.catalog(id: "held-theme"), disk: installedDisk(), findVolume: { _ in volume },
+                                          looksFresh: { _ in true }, deviceIdentifier: identify)
+        }
+        for _ in 0..<500 where await gate.requestCount == 0 { try await Task.sleep(nanoseconds: 10_000_000) }
+        await #expect(throws: ThemeStoreError.busy) { _ = try await store.apply(.ventoyDefault, to: volume) }
+        await gate.open()
+        #expect(await running.value != nil, "the download has no answer, so this one fails")
+        #expect(try await store.apply(.ventoyDefault, to: volume).isEmpty, "and the drive is free again")
     }
 
 }

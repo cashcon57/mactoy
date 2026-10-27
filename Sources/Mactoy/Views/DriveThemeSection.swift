@@ -47,7 +47,21 @@ enum DriveThemeCopy {
         let action = toDefault
             ? "Mactoy will switch the drive back to Ventoy's own theme."
             : "Mactoy will point the drive at the new theme instead."
-        return "This drive uses a theme you set up yourself (\(file)). \(action) Your theme's files stay on the drive."
+        let fate = mactoyFolder(of: file).map {
+            "The theme folder Mactoy added (\($0)) will be removed. You can download or pick it again later."
+        } ?? "Your theme's files stay on the drive."
+        return "This drive uses a theme you set up yourself (\(file)). \(action) \(fate)"
+    }
+
+    /// The `mactoy-<id>` folder a theme file is in, when it is under `/ventoy/themes/mactoy-`.
+    /// A theme setting edited by hand can still point into a folder Mactoy added, and
+    /// changing the theme deletes that folder, so the user's "files stay" does not hold.
+    /// (The drive is exFAT, which ignores case, so the folder names are compared that way.)
+    static func mactoyFolder(of file: String) -> String? {
+        let parts = file.split(separator: "/", omittingEmptySubsequences: true)
+        guard parts.count >= 3, parts[0].lowercased() == "ventoy", parts[1].lowercased() == "themes",
+              parts[2].lowercased().hasPrefix(ThemeInstaller.managedPrefix) else { return nil }
+        return String(parts[2])
     }
 
     static let keepCopyTitle = "Keep a copy of this drive's theme?"

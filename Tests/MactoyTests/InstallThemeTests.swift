@@ -960,13 +960,21 @@ struct InstallThemeGoneTests {
         }
     }
 
-    @Test("a catalog theme that isn't in a loaded catalog goes back to the default, whichever catalog loaded")
+    @Test("a catalog theme that isn't in the online catalog goes back to the default; one that is stays")
     func missingCatalogTheme() {
         let pick = ThemeChoice.catalog(id: "tela")
-        for source: ThemeCatalogLoader.Source in [.bundled, .cached, .remote] {
-            #expect(available(catalog: ["tela", "dracula"], source: source).validated(pick, fallback: fallback) == pick)
-            #expect(available(catalog: ["dracula"], source: source).validated(pick, fallback: fallback) == fallback, "\(source)")
-            #expect(available(catalog: [], source: source).validated(pick, fallback: fallback) == fallback)
+        #expect(available(catalog: ["tela", "dracula"], source: .remote).validated(pick, fallback: fallback) == pick)
+        #expect(available(catalog: ["dracula"], source: .remote).validated(pick, fallback: fallback) == fallback)
+        #expect(available(catalog: [], source: .remote).validated(pick, fallback: fallback) == fallback)
+    }
+
+    @Test("the bundled and cached catalogs can lag the online one, so a pick missing from them is kept")
+    func laggingCatalogsKeepThePick() {
+        let pick = ThemeChoice.catalog(id: "tela")
+        for source: ThemeCatalogLoader.Source in [.bundled, .cached] {
+            #expect(available(catalog: ["tela", "dracula"], source: source).validated(pick, fallback: fallback) == pick, "\(source)")
+            #expect(available(catalog: ["dracula"], source: source).validated(pick, fallback: fallback) == pick, "\(source)")
+            #expect(available(catalog: [], source: source).validated(pick, fallback: fallback) == pick, "\(source)")
         }
     }
 
@@ -1003,6 +1011,10 @@ struct InstallThemeGoneTests {
         s.resetInstallThemeIfUnavailable(available(catalog: [], source: .none))
         #expect(s.installTheme == .catalog(id: "tela"), "no catalog yet")
         s.resetInstallThemeIfUnavailable(available(catalog: ["dracula"], source: .bundled))
+        #expect(s.installTheme == .catalog(id: "tela"), "a bundled copy can lag the online catalog")
+        s.resetInstallThemeIfUnavailable(available(catalog: ["dracula"], source: .cached))
+        #expect(s.installTheme == .catalog(id: "tela"), "so can a cached one")
+        s.resetInstallThemeIfUnavailable(available(catalog: ["dracula"], source: .remote))
         #expect(s.installTheme == AppState.defaultInstallTheme)
         // The next launch starts from the reset pick, not from the theme that is gone.
         #expect(AppState(defaults: d.defaults).installTheme == AppState.defaultInstallTheme)

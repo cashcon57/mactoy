@@ -76,6 +76,35 @@ struct DriveThemeCopyTests {
             == "This drive uses a theme you set up yourself (/ventoy/mine/theme.txt). Mactoy will switch the drive back to Ventoy's own theme. Your theme's files stay on the drive.")
     }
 
+    @Test("a hand-edited setting that points into a folder Mactoy added says that folder will be removed")
+    func mactoyFolderIsRemoved() {
+        let file = "/ventoy/themes/mactoy-night/theme.txt"
+        #expect(DriveThemeCopy.replaceMessage(file: file, toDefault: false)
+            == "This drive uses a theme you set up yourself (\(file)). Mactoy will point the drive at the new theme instead. The theme folder Mactoy added (mactoy-night) will be removed. You can download or pick it again later.")
+        #expect(DriveThemeCopy.replaceMessage(file: file, toDefault: true)
+            == "This drive uses a theme you set up yourself (\(file)). Mactoy will switch the drive back to Ventoy's own theme. The theme folder Mactoy added (mactoy-night) will be removed. You can download or pick it again later.")
+        // A theme file deeper in the folder, a folder named in other case, and the folder itself.
+        for deeper in ["/ventoy/themes/mactoy-night/sub/theme.txt", "/Ventoy/Themes/mactoy-night/theme.txt", "/ventoy/themes/mactoy-night"] {
+            let message = DriveThemeCopy.replaceMessage(file: deeper, toDefault: false)
+            #expect(message.contains("The theme folder Mactoy added (mactoy-night) will be removed."), "\(deeper)")
+            #expect(!message.contains("stay on the drive"), "\(deeper)")
+        }
+        #expect(DriveThemeCopy.mactoyFolder(of: file) == "mactoy-night")
+    }
+
+    @Test("a theme of the user's anywhere else keeps the 'files stay' wording")
+    func otherFoldersKeepFilesStay() {
+        for file in ["/ventoy/mine/theme.txt", "/ventoy/themes/mine/theme.txt", "/ventoy/mactoy-night/theme.txt",
+                     "/ventoy/themes/xmactoy-night/theme.txt", "/ventoy/themes/mactoynight/theme.txt", "/mactoy-night/theme.txt",
+                     "/ventoy/themes", "/ventoy/themes/", "/themes/mactoy-night/theme.txt", "mactoy-night"] {
+            #expect(DriveThemeCopy.mactoyFolder(of: file) == nil, "\(file)")
+            for toDefault in [true, false] {
+                #expect(DriveThemeCopy.replaceMessage(file: file, toDefault: toDefault).hasSuffix("Your theme's files stay on the drive."), "\(file)")
+            }
+        }
+        #expect(DriveThemeCopy.mactoyFolder(of: "") == nil)
+    }
+
     @Test("settings with no theme file are described without a path")
     func noFile() {
         #expect(DriveThemeCopy.replaceMessage(file: "", toDefault: false)
@@ -109,7 +138,8 @@ struct DriveThemeCopyTests {
                    DriveThemeCopy.changeFailed(savedName: "X", reason: "x"), DriveThemeCopy.success(removed: true), DriveThemeCopy.success(removed: false),
                    DriveThemeCopy.ownTheme(file: ""), DriveThemeCopy.ownTheme(file: "/a"), ThemeStoreError.nothingToSave.errorDescription ?? "",
                    ThemeStoreError.busy.errorDescription ?? ""]
-            + [true, false].flatMap { [DriveThemeCopy.replaceMessage(file: "", toDefault: $0), DriveThemeCopy.replaceMessage(file: "/a", toDefault: $0)] }
+            + [true, false].flatMap { [DriveThemeCopy.replaceMessage(file: "", toDefault: $0), DriveThemeCopy.replaceMessage(file: "/a", toDefault: $0),
+                                       DriveThemeCopy.replaceMessage(file: "/ventoy/themes/mactoy-x/theme.txt", toDefault: $0)] }
         #expect(all.allSatisfy { !$0.contains("\u{2014}") })
     }
 

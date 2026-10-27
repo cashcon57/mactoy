@@ -21,8 +21,10 @@ struct ThemeAvailability: Equatable, Sendable {
     /// A saved theme can be removed from My Themes while it is the pick for the
     /// next install, and a remembered catalog theme can leave the catalog; either
     /// would be a pick that fails after the drive has been erased. A catalog pick
-    /// is judged only once a catalog has loaded: before that, an empty list says
-    /// nothing. Ventoy's own theme is always there.
+    /// is judged only against the online catalog: the bundled and cached copies can
+    /// lag behind it, and before any list has loaded an empty one says nothing, so a
+    /// theme missing from those is not yet known to be gone. Ventoy's own theme is
+    /// always there.
     func validated(_ choice: ThemeChoice, fallback: ThemeChoice) -> ThemeChoice {
         switch choice {
         case .ventoyDefault:
@@ -30,7 +32,7 @@ struct ThemeAvailability: Equatable, Sendable {
         case .custom(let id):
             return savedIDs.contains(id) ? choice : fallback
         case .catalog(let id):
-            return catalogSource == .none || catalogIDs.contains(id) ? choice : fallback
+            return catalogSource == .remote && !catalogIDs.contains(id) ? fallback : choice
         }
     }
 }
@@ -267,6 +269,43 @@ final class ThemeStore: ObservableObject {
         Task.detached(priority: .utility) { _ = try? await fetcher.themeDirectory(for: entry) }
     }
 
+    /// A theme found in the catalog or My Themes, with its files on this Mac: all
+    /// `ThemeInstaller.apply` needs. Resolved once, so a catalog or library that
+    /// changes meanwhile can't swap the entry between the lookup and the write.
+    private struct ResolvedTheme: Sendable {
+        let id: String
+        let name: String
+        let settings: ThemeEntry.Settings
+        let directory: URL
+    }
+
+    /// Finds the choice and, for a catalog theme, downloads it. This is the only
+    /// place a download can happen. Nil for Ventoy's own theme, which has no files.
+    private func resolve(_ choice: ThemeChoice) async throws -> ResolvedTheme? {
+        switch choice {
+        case .ventoyDefault:
+            return nil
+        case .catalog(let id):
+            guard let entry = catalog.first(where: { $0.id == id }) else { throw ThemeError.unknownTheme(id) }
+            let directory = try await fetcher.themeDirectory(for: entry)
+            return ResolvedTheme(id: entry.id, name: entry.name, settings: entry.settings, directory: directory)
+        case .custom(let id):
+            guard let saved = savedThemes.first(where: { $0.id == id }) else { throw ThemeError.unknownTheme(id) }
+            return ResolvedTheme(id: saved.id, name: saved.name, settings: saved.settings, directory: library.directory(for: saved))
+        }
+    }
+
+    /// Writes a resolved choice to the drive, off the main actor. Never downloads.
+    private func write(_ theme: ResolvedTheme?, to volume: URL) async throws -> [String] {
+        guard let theme else {
+            return try await Task.detached { try ThemeInstaller.removeTheme(from: volume).warnings }.value
+        }
+        return try await Task.detached {
+            try ThemeInstaller.apply(themeDirectory: theme.directory, id: theme.id, name: theme.name,
+                                     settings: theme.settings, to: volume).warnings
+        }.value
+    }
+
     /// Puts the choice on a mounted Ventoy volume. Returns warnings to show.
     /// Throws `ThemeStoreError.busy` if this drive is already being changed.
     func apply(_ choice: ThemeChoice, to volume: URL) async throws -> [String] {
@@ -277,22 +316,7 @@ final class ThemeStore: ObservableObject {
         // Held across the download too, so two changes to a drive finish in the order they began.
         defer { busyVolumes.remove(volumeKey) }
 
-        switch choice {
-        case .ventoyDefault:
-            return try await Task.detached { try ThemeInstaller.removeTheme(from: volume).warnings }.value
-        case .catalog(let id):
-            guard let entry = catalog.first(where: { $0.id == id }) else { throw ThemeError.unknownTheme(id) }
-            let dir = try await fetcher.themeDirectory(for: entry)
-            return try await Task.detached {
-                try ThemeInstaller.apply(themeDirectory: dir, id: entry.id, name: entry.name, settings: entry.settings, to: volume).warnings
-            }.value
-        case .custom(let id):
-            guard let saved = savedThemes.first(where: { $0.id == id }) else { throw ThemeError.unknownTheme(id) }
-            let directory = library.directory(for: saved)
-            return try await Task.detached {
-                try ThemeInstaller.apply(themeDirectory: directory, id: saved.id, name: saved.name, settings: saved.settings, to: volume).warnings
-            }.value
-        }
+        return try await write(try await resolve(choice), to: volume)
     }
 
     /// For a fresh install: wait for macOS to mount the new volume, then
@@ -300,29 +324,40 @@ final class ThemeStore: ObservableObject {
     ///
     /// The volume is found by disk number, and macOS reuses numbers: if the user
     /// swapped sticks while this waited, the Ventoy volume that appears may be
-    /// another drive, with a theme of its own. So nothing is applied unless the
-    /// volume still looks freshly installed (`ThemeInstaller.looksFreshlyInstalled`).
-    /// `findVolume` and `looksFresh` are seams for tests.
+    /// another drive, with files or a theme of its own. So nothing is applied unless
+    /// the volume still looks freshly installed (`ThemeInstaller.looksFreshlyInstalled`)
+    /// and, asked once more just before the write, is still on the installed disk.
+    ///
+    /// A catalog theme is downloaded before either check, and nothing is downloaded
+    /// after them: a download that fails is the problem reported, and the write uses
+    /// the folder that download produced. `findVolume`, `looksFresh` and `deviceIdentifier`
+    /// are seams for tests.
     func applyAfterInstall(
         _ choice: ThemeChoice, disk: DiskTarget,
         findVolume: @escaping @Sendable (String) async -> URL? = { await VentoyVolumeLocator.waitForVolume(onDisk: $0) },
-        looksFresh: @escaping @Sendable (URL) -> Bool = ThemeInstaller.looksFreshlyInstalled
+        looksFresh: @escaping @Sendable (URL) -> Bool = ThemeInstaller.looksFreshlyInstalled,
+        deviceIdentifier: @escaping @Sendable (URL) -> String? = VentoyVolumeLocator.deviceIdentifier
     ) async -> String? {
         guard let volume = await findVolume(disk.bsdName) else {
             return "the new Ventoy volume didn't appear."
         }
-        // A catalog theme is downloaded first, so the drive is checked right before it is
-        // written, not before a download that can take a while. A failure here is reported
-        // by `apply` below, which asks for the same download again.
-        if case .catalog(let id) = choice, let entry = catalog.first(where: { $0.id == id }) {
-            _ = try? await fetcher.themeDirectory(for: entry)
-        }
-        // File system calls stay off the main actor: a drive mid-eject could stall it.
-        guard await Task.detached(priority: .userInitiated, operation: { looksFresh(volume) }).value else {
-            return "the drive in that slot doesn't look like the one Mactoy just set up, so the theme wasn't added."
-        }
+        let volumeKey = volume.standardizedFileURL.path
+        guard busyVolumes.insert(volumeKey).inserted else { return ThemeStoreError.busy.localizedDescription }
+        defer { busyVolumes.remove(volumeKey) }
+
         do {
-            let warnings = try await apply(choice, to: volume)
+            // The checks come right before the write, not before a download that can take a while.
+            let theme = try await resolve(choice)
+            // "<bsd>s" and not just "<bsd>": disk1 must not match disk10s1 (as in `VentoyVolumeLocator.find`).
+            let slot = disk.bsdName + "s"
+            // File system calls and diskutil stay off the main actor: a drive mid-eject could stall them.
+            let isTheNewDrive = await Task.detached(priority: .userInitiated) {
+                looksFresh(volume) && deviceIdentifier(volume)?.hasPrefix(slot) == true
+            }.value
+            guard isTheNewDrive else {
+                return "the drive in that slot doesn't look like the one Mactoy just set up."
+            }
+            let warnings = try await write(theme, to: volume)
             return warnings.isEmpty ? nil : warnings.joined(separator: " ")
         } catch {
             return error.localizedDescription
