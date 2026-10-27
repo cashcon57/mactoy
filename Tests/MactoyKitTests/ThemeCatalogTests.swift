@@ -243,6 +243,29 @@ struct ThemeCatalogTests {
         #expect(throws: (any Error).self) { try JSONDecoder().decode(ThemeEntry.Settings.self, from: Data(json.utf8)) }
     }
 
+    @Test("every bundled theme folder is finished for its catalog entry's current recipe")
+    func bundledFoldersMatchTheCatalog() throws {
+        let catalog = try JSONDecoder().decode(ThemeCatalog.self, from: Data(contentsOf: Self.repoRoot.appendingPathComponent("themes/catalog.json")))
+        let bundled = Self.repoRoot.appendingPathComponent("themes/bundled", isDirectory: true)
+        var folders = 0
+        for name in try FileManager.default.contentsOfDirectory(atPath: bundled.path).sorted() {
+            let folder = bundled.appendingPathComponent(name, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            // A license file beside the folders is not a theme.
+            guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue else { continue }
+            let entry = try #require(catalog.themes.first { "\($0.id)-\($0.download.sha256.prefix(16))" == name },
+                                     "\(name) isn't named <id>-<first 16 of sha256> for any catalog entry (stale after a catalog change?)")
+            let marker = try String(contentsOf: folder.appendingPathComponent(".complete"), encoding: .utf8)
+            #expect(marker == ThemeFetcher.fingerprint(for: entry), "\(name): .complete is not the fingerprint of the entry's current recipe")
+            // What the app itself checks before trusting the folder: the marker and the files the settings name.
+            #expect(ThemeFetcher.isCurrent(folder, for: entry, fingerprint: ThemeFetcher.fingerprint(for: entry)), "\(name) wouldn't be used by the app")
+            folders += 1
+        }
+        #expect(folders >= 1, "the default theme ships inside the app")
+        // And the default theme is one of them.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: bundled.path).contains { $0.hasPrefix("catppuccin-mocha-") })
+    }
+
     @Test("the repo's catalog is valid and every theme has a preview")
     func realCatalog() throws {
         let url = Self.repoRoot.appendingPathComponent("themes/catalog.json")
