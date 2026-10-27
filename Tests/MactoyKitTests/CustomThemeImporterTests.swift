@@ -2,11 +2,7 @@ import Foundation
 import Testing
 @testable import MactoyKit
 
-// Serialized because every ZIP test blocks its thread in Subprocess.run, which
-// needs a free dispatch thread for its pipe readers. With a dozen of these
-// running at once the pool is full of waiting tests, the readers never start,
-// and unrelated tests (SubprocessTests) fail after Subprocess's 10 s limit.
-@Suite("Custom theme import", .serialized)
+@Suite("Custom theme import")
 struct CustomThemeImporterTests {
 
     private func tempDir() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("mactoy-import-\(UUID().uuidString)") }
