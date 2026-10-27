@@ -62,8 +62,17 @@ public enum ThemeInstaller {
     @discardableResult
     public static func apply(themeDirectory: URL, id: String, name: String, settings: ThemeEntry.Settings,
                              to volume: URL, isReadOnly: (URL) -> Bool = ThemeInstaller.isReadOnly) throws -> Outcome {
+        try install(themeDirectory: themeDirectory, id: id, name: name, settings: settings, to: volume,
+                    isReadOnly: isReadOnly, move: moveItem)
+    }
+
+    /// `move` is a seam so tests can make a rename fail.
+    @discardableResult
+    static func install(themeDirectory: URL, id: String, name: String, settings: ThemeEntry.Settings,
+                        to volume: URL, isReadOnly: (URL) -> Bool, move: (URL, URL) throws -> Void) throws -> Outcome {
         guard isValidID(id) else { throw ThemeError.unknownTheme(id) }
         guard !isReadOnly(volume) else { throw ThemeError.readOnlyVolume }
+        try requireNoLinks(on: volume)
         let folder = managedPrefix + id
         let original = try readConfig(volume)
         // Everything that can be checked without writing is checked first: if
@@ -71,7 +80,7 @@ public enum ThemeInstaller {
         // nothing on the drive changes (not even an empty themes folder).
         let updated = try VentoyConfigEditor.settingTheme(settingsValue(settings, folder: folder), in: original)
         let warnings = try modeWarnings(original) + caseWarnings(volume)
-        let files = try visibleFiles(in: themeDirectory)
+        let files = try installableFiles(in: themeDirectory)
         let present = Set(files.map(\.path))
         for needed in [settings.file] + (settings.fonts ?? []) where !present.contains(needed) {
             throw ThemeError.missingFile(needed)
@@ -80,22 +89,29 @@ public enum ThemeInstaller {
         let fm = FileManager.default
         let themes = volume.appendingPathComponent(themesPath, isDirectory: true)
         let destination = themes.appendingPathComponent(folder, isDirectory: true)
-        // attributesOfItem doesn't follow symlinks, so a link here counts too.
         // Only a folder with our marker is ours to replace.
-        if (try? fm.attributesOfItem(atPath: destination.path)) != nil, readMarker(destination) == nil {
-            throw ThemeError.destinationExists(destination.path)
+        let replacing = exists(destination)
+        if replacing {
+            if isSymlink(destination) { throw ThemeError.unsafeVolumeLayout("\(themesPath)/\(folder)") }
+            if readMarker(destination) == nil { throw ThemeError.destinationExists(destination.path) }
         }
         try fm.createDirectory(at: themes, withIntermediateDirectories: true)
         let staging = themes.appendingPathComponent(".mactoy-staging-\(UUID().uuidString)", isDirectory: true)
+        let old = themes.appendingPathComponent(".mactoy-old-\(UUID().uuidString)", isDirectory: true)
+        var setAside = false
         do {
-            try copyVisibleFiles(files, to: staging)
+            try copyFiles(files, to: staging)
             try JSONEncoder().encode(Marker(id: id, name: name)).write(to: staging.appendingPathComponent(markerName))
-            if (try? fm.attributesOfItem(atPath: destination.path)) != nil { try fm.removeItem(at: destination) }
-            try fm.moveItem(at: staging, to: destination)
+            // The installed copy is renamed aside, not deleted, until the new
+            // one is in place: ventoy.json may already point at it.
+            if replacing { try move(destination, old); setAside = true }
+            try move(staging, destination)
         } catch {
+            if setAside { try? move(old, destination) }
             try? fm.removeItem(at: staging)
             throw error
         }
+        defer { if setAside { try? fm.removeItem(at: old) } }
         // Settings go last, so a failure above never leaves ventoy.json
         // pointing at a theme that isn't there.
         try writeConfig(updated, original: original, volume: volume)
@@ -106,6 +122,7 @@ public enum ThemeInstaller {
     @discardableResult
     public static func removeTheme(from volume: URL, isReadOnly: (URL) -> Bool = ThemeInstaller.isReadOnly) throws -> Outcome {
         guard !isReadOnly(volume) else { throw ThemeError.readOnlyVolume }
+        try requireNoLinks(on: volume)
         let original = try readConfig(volume)
         if let updated = try VentoyConfigEditor.removingTheme(from: original), updated != original {
             try writeConfig(updated, original: original, volume: volume)
@@ -116,7 +133,31 @@ public enum ThemeInstaller {
 
     // MARK: Internals
 
+    static let tempName = ".ventoy.json.mactoy-tmp"
+
     static func configURL(_ volume: URL) -> URL { volume.appendingPathComponent("ventoy/ventoy.json") }
+
+    static func moveItem(_ from: URL, _ to: URL) throws { try FileManager.default.moveItem(at: from, to: to) }
+
+    /// Neither of these follows a symlink: `attributesOfItem` is an lstat.
+    static func exists(_ url: URL) -> Bool { (try? FileManager.default.attributesOfItem(atPath: url.path)) != nil }
+    static func isSymlink(_ url: URL) -> Bool {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType == .typeSymbolicLink
+    }
+
+    /// A drive that isn't ours can make any of the paths Mactoy writes to a
+    /// link to somewhere on this Mac, so none may be one. Checked before the
+    /// first write (and before reading) in both `apply` and `removeTheme`.
+    static func requireNoLinks(on volume: URL) throws {
+        for path in ["ventoy", themesPath, "ventoy/ventoy.json", "ventoy/\(backupName)", "ventoy/\(tempName)"]
+        where isSymlink(volume.appendingPathComponent(path)) {
+            throw ThemeError.unsafeVolumeLayout(path)
+        }
+        // Belt and braces: wherever the themes folder really is, it's inside the volume.
+        let root = volume.resolvingSymlinksInPath().standardizedFileURL.path
+        let themes = volume.appendingPathComponent(themesPath).resolvingSymlinksInPath().standardizedFileURL.path
+        guard themes.hasPrefix(root.hasSuffix("/") ? root : root + "/") else { throw ThemeError.unsafeVolumeLayout(themesPath) }
+    }
 
     /// `nil` only when the file doesn't exist; an unreadable file throws,
     /// so it's never mistaken for "no settings" and overwritten.
@@ -131,8 +172,10 @@ public enum ThemeInstaller {
         let url = configURL(volume)
         let dir = url.deletingLastPathComponent()
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        if let original { try original.write(to: dir.appendingPathComponent(backupName)) }
-        let temp = dir.appendingPathComponent(".ventoy.json.mactoy-tmp")
+        // The first file is the one worth keeping: later ones only differ by our own edits.
+        let backup = dir.appendingPathComponent(backupName)
+        if let original, !exists(backup) { try original.write(to: backup) }
+        let temp = dir.appendingPathComponent(tempName)
         do { try data.write(to: temp) } catch { try? fm.removeItem(at: temp); throw error }
         guard rename(temp.path, url.path) == 0 else {
             let reason = String(cString: strerror(errno))
@@ -147,24 +190,44 @@ public enum ThemeInstaller {
         return try? JSONDecoder().decode(Marker.self, from: data)
     }
 
+    /// Deletes folders Mactoy made: `mactoy-*` ones that carry our marker, and
+    /// the `.mactoy-staging-<uuid>` / `.mactoy-old-<uuid>` ones an interrupted
+    /// install can leave. Links are never followed or removed.
     static func removeManagedFolders(in themes: URL, except keep: String?) {
         let fm = FileManager.default
-        for name in (try? fm.contentsOfDirectory(atPath: themes.path)) ?? []
-        where name.hasPrefix(managedPrefix) && name != keep {
+        for name in (try? fm.contentsOfDirectory(atPath: themes.path)) ?? [] where name != keep {
             let folder = themes.appendingPathComponent(name, isDirectory: true)
-            if readMarker(folder) != nil { try? fm.removeItem(at: folder) }
+            guard !isSymlink(folder) else { continue }
+            if (name.hasPrefix(managedPrefix) && readMarker(folder) != nil) || isLeftover(name) {
+                try? fm.removeItem(at: folder)
+            }
         }
     }
 
-    /// The source folder's files, minus hidden ones (the cache's `.complete`
-    /// marker, `.DS_Store`, `._` files), which `isSafeRelative` rejects.
-    static func visibleFiles(in source: URL) throws -> [ThemeSourceFile] {
-        try ThemeAssembler.files(fromFolder: source).filter { ThemePath.isSafeRelative($0.path) }
+    static func isLeftover(_ name: String) -> Bool {
+        [".mactoy-staging-", ".mactoy-old-"].contains { prefix in
+            name.hasPrefix(prefix) && UUID(uuidString: String(name.dropFirst(prefix.count))) != nil
+        }
     }
 
-    /// Copies by writing the bytes already read, so no extended attributes
-    /// follow the files (on exFAT they'd become `._` files).
-    static func copyVisibleFiles(_ files: [ThemeSourceFile], to destination: URL) throws {
+    /// What may land on a drive, whoever prepared the folder: no hidden files
+    /// (the cache's `.complete` marker, `.DS_Store`, `._` files), only the
+    /// theme file types, and the same limits `ThemeAssembler.assemble` applies.
+    /// All checked before anything is written.
+    static func installableFiles(in source: URL) throws -> [ThemeSourceFile] {
+        let files = try ThemeAssembler.files(fromFolder: source).filter {
+            ThemePath.isSafeRelative($0.path)
+                && ThemeAssembler.allowedExtensions.contains(($0.path as NSString).pathExtension.lowercased())
+        }
+        guard files.count <= ThemeAssembler.maxFiles else { throw ThemeError.tooManyFiles(files.count) }
+        let total = files.reduce(0) { $0 + $1.data.count }
+        guard total <= ThemeAssembler.maxThemeBytes else { throw ThemeError.themeTooLarge(total) }
+        return files
+    }
+
+    /// Writes the bytes already read, so no extended attributes follow the
+    /// files (on exFAT they'd become `._` files).
+    static func copyFiles(_ files: [ThemeSourceFile], to destination: URL) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: destination, withIntermediateDirectories: true)
         for file in files {

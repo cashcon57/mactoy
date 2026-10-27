@@ -22,6 +22,7 @@ public enum ThemeError: Error, Equatable, LocalizedError {
     case writeFailed(String)
     case unknownTheme(String)
     case destinationExists(String)
+    case unsafeVolumeLayout(String)
 
     public var errorDescription: String? {
         switch self {
@@ -38,6 +39,7 @@ public enum ThemeError: Error, Equatable, LocalizedError {
         case .writeFailed(let why): return "Couldn't save the theme settings: \(why)"
         case .unknownTheme(let id): return "The theme \(id) isn't in Mactoy's theme list any more."
         case .destinationExists(let path): return "Couldn't save the theme because \(path) already exists."
+        case .unsafeVolumeLayout(let path): return "The drive has a link to somewhere else at \(path), so Mactoy won't write to it."
         }
     }
 }

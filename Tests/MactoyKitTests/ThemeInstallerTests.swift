@@ -52,6 +52,7 @@ struct ThemeInstallerTests {
         #expect(theme["gfxmode"] as? String == "1920x1080,auto")
         #expect(try ThemeInstaller.current(on: v) == .managed(id: "sample", name: "Sample"))
         #expect(outcome.warnings.isEmpty)
+        #expect(!exists(v, "ventoy/ventoy.json.mactoy-backup"), "nothing to back up")
     }
 
     @Test("existing settings are kept byte for byte, with a backup")
@@ -62,6 +63,19 @@ struct ThemeInstallerTests {
         let text = try String(contentsOf: v.appendingPathComponent("ventoy/ventoy.json"), encoding: .utf8)
         #expect(text.hasPrefix(#"{ "control": [ {"VTOY_DEFAULT_SEARCH_ROOT":"/iso"} ], "menu_alias": []"#))
         #expect(try String(contentsOf: v.appendingPathComponent("ventoy/ventoy.json.mactoy-backup"), encoding: .utf8) == original)
+    }
+
+    @Test("the backup stays the user's first file through later changes")
+    func backupKeepsFirst() throws {
+        let original = #"{ "control": [ {"VTOY_DEFAULT_SEARCH_ROOT":"/iso"} ] }"#
+        let v = try volume(json: original)
+        let backup = "ventoy/ventoy.json.mactoy-backup"
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "alpha", name: "A", settings: settings, to: v, isReadOnly: { _ in false })
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "bravo", name: "B", settings: settings, to: v, isReadOnly: { _ in false })
+        #expect(try text(v, backup) == original)
+        try ThemeInstaller.removeTheme(from: v, isReadOnly: { _ in false })
+        #expect(try text(v, backup) == original)
+        #expect(try json(v)["theme"] == nil)
     }
 
     @Test("nothing but the folder, config and backup is left behind")
@@ -113,6 +127,85 @@ struct ThemeInstallerTests {
         #expect(try text(v, "ventoy/ventoy.json") == original)
         #expect(!exists(v, "ventoy/ventoy.json.mactoy-backup"))
         #expect(listing(v, "ventoy/themes") == ["mactoy-sample"])
+    }
+
+    @Test("a failed reapply leaves the installed theme in place", arguments: [false, true])
+    func failedReapply(failAside: Bool) throws {
+        let v = try volume()
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "sample", name: "Old", settings: settings, to: v, isReadOnly: { _ in false })
+        let config = try text(v, "ventoy/ventoy.json")
+        let second = try themeFolder()
+        try Data([9]).write(to: second.appendingPathComponent("bg.png"))
+        // Fails either the move that sets the old folder aside or the one that puts the new folder in.
+        #expect(throws: InjectedFailure.self) {
+            try ThemeInstaller.install(themeDirectory: second, id: "sample", name: "New", settings: settings, to: v,
+                                       isReadOnly: { _ in false }, move: { from, to in
+                let name = from.lastPathComponent
+                if failAside ? name == "mactoy-sample" : name.hasPrefix(".mactoy-staging-") { throw InjectedFailure() }
+                try FileManager.default.moveItem(at: from, to: to)
+            })
+        }
+        #expect(try text(v, "ventoy/ventoy.json") == config)
+        #expect(try Data(contentsOf: v.appendingPathComponent("ventoy/themes/mactoy-sample/bg.png")) == Data([1]))
+        #expect(exists(v, "ventoy/themes/mactoy-sample/theme.txt"))
+        #expect(try ThemeInstaller.current(on: v) == .managed(id: "sample", name: "Old"))
+        #expect(listing(v, "ventoy/themes") == ["mactoy-sample"], "no staging or old copy left behind")
+    }
+
+    @Test("only theme file types reach the drive")
+    func onlyAllowedFiles() throws {
+        let v = try volume()
+        let source = try themeFolder()
+        for name in ["ventoy_grub.cfg", "run.sh", "NOTES", "logo.svg", "icons/x.cfg"] {
+            try Data("x".utf8).write(to: source.appendingPathComponent(name))
+        }
+        try Data([7]).write(to: source.appendingPathComponent("Extra.PNG"))
+        try ThemeInstaller.apply(themeDirectory: source, id: "sample", name: "Sample", settings: settings, to: v, isReadOnly: { _ in false })
+        let base = v.appendingPathComponent("ventoy/themes/mactoy-sample")
+        let found = (FileManager.default.enumerator(atPath: base.path)?.allObjects as? [String] ?? [])
+            .filter { !$0.hasSuffix("icons") }.sorted()
+        #expect(found == [".mactoy-theme.json", "Extra.PNG", "bg.png", "font.pf2", "icons/a.png", "theme.txt"])
+    }
+
+    @Test("a theme over the file or size limit is refused before anything is written")
+    func caps() throws {
+        let v = try volume()
+        let many = try themeFolder()
+        defer { try? FileManager.default.removeItem(at: many) }
+        for i in 0..<ThemeAssembler.maxFiles { try Data([0]).write(to: many.appendingPathComponent("n\(i).png")) }
+        #expect(throws: ThemeError.tooManyFiles(ThemeAssembler.maxFiles + 4)) {
+            try ThemeInstaller.apply(themeDirectory: many, id: "sample", name: "S", settings: settings, to: v, isReadOnly: { _ in false })
+        }
+        let big = try themeFolder()
+        defer { try? FileManager.default.removeItem(at: big) }
+        try Data(count: ThemeAssembler.maxThemeBytes + 1).write(to: big.appendingPathComponent("big.png"))
+        #expect { try ThemeInstaller.apply(themeDirectory: big, id: "sample", name: "S", settings: settings, to: v, isReadOnly: { _ in false }) }
+            throws: { if case ThemeError.themeTooLarge = $0 { return true } else { return false } }
+        #expect(!exists(v, "ventoy"))
+    }
+
+    @Test("files that are dropped don't count toward the limits")
+    func droppedFilesDontCount() throws {
+        let v = try volume()
+        let source = try themeFolder()
+        defer { try? FileManager.default.removeItem(at: source) }
+        try Data(count: ThemeAssembler.maxThemeBytes + 1).write(to: source.appendingPathComponent("payload.cfg"))
+        try ThemeInstaller.apply(themeDirectory: source, id: "sample", name: "S", settings: settings, to: v, isReadOnly: { _ in false })
+        #expect(!exists(v, "ventoy/themes/mactoy-sample/payload.cfg"))
+        #expect(exists(v, "ventoy/themes/mactoy-sample/theme.txt"))
+    }
+
+    @Test("leftover staging and old folders are cleaned up, other hidden folders are not")
+    func leftovers() throws {
+        let v = try volume()
+        let themes = v.appendingPathComponent("ventoy/themes")
+        let stale = [".mactoy-staging-\(UUID().uuidString)", ".mactoy-old-\(UUID().uuidString)"]
+        let keep = [".mactoy-staging-mine", ".mactoy-old-"]
+        for name in stale + keep {
+            try FileManager.default.createDirectory(at: themes.appendingPathComponent(name), withIntermediateDirectories: true)
+        }
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "sample", name: "S", settings: settings, to: v, isReadOnly: { _ in false })
+        #expect(listing(v, "ventoy/themes") == (keep + ["mactoy-sample"]).sorted())
     }
 
     @Test("remove returns to Ventoy's default")
@@ -184,6 +277,104 @@ struct ThemeInstallerTests {
             try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "alpha", name: "A", settings: bad, to: v, isReadOnly: { _ in false })
         }
         #expect(!exists(v, "ventoy"))
+    }
+
+    /// Where on a drive a link could send Mactoy's writes.
+    enum Link: String, CaseIterable, Sendable, CustomTestStringConvertible {
+        case ventoy, themes, config, backup, temp, destination
+        var testDescription: String { rawValue }
+        var path: String {
+            switch self {
+            case .ventoy: return "ventoy"
+            case .themes: return "ventoy/themes"
+            case .config: return "ventoy/ventoy.json"
+            case .backup: return "ventoy/ventoy.json.mactoy-backup"
+            case .temp: return "ventoy/.ventoy.json.mactoy-tmp"
+            case .destination: return "ventoy/themes/mactoy-sample"
+            }
+        }
+    }
+
+    /// A volume where `kind` is a symlink to a folder (or file) outside it.
+    private func linkedVolume(_ kind: Link) throws -> (volume: URL, elsewhere: URL) {
+        let fm = FileManager.default
+        let v = try volume()
+        let elsewhere = fm.temporaryDirectory.appendingPathComponent("mactoy-away-\(UUID().uuidString)")
+        try fm.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try Data(#"{"control":[]}"#.utf8).write(to: elsewhere.appendingPathComponent("keep.json"))
+        try Data(#"{"id":"sample","name":"Theirs"}"#.utf8).write(to: elsewhere.appendingPathComponent(".mactoy-theme.json"))
+        let ventoy = v.appendingPathComponent("ventoy")
+        let config = Data(#"{"control":[]}"#.utf8)
+        func symlink(_ path: String, to target: URL) throws {
+            try fm.createSymbolicLink(at: v.appendingPathComponent(path), withDestinationURL: target)
+        }
+        switch kind {
+        case .ventoy:
+            try symlink("ventoy", to: elsewhere)
+        case .themes:
+            try fm.createDirectory(at: ventoy, withIntermediateDirectories: true)
+            try config.write(to: ventoy.appendingPathComponent("ventoy.json"))
+            try symlink("ventoy/themes", to: elsewhere)
+        case .config:
+            try fm.createDirectory(at: ventoy, withIntermediateDirectories: true)
+            try symlink("ventoy/ventoy.json", to: elsewhere.appendingPathComponent("keep.json"))
+        case .backup, .temp:
+            try fm.createDirectory(at: ventoy, withIntermediateDirectories: true)
+            try config.write(to: ventoy.appendingPathComponent("ventoy.json"))
+            try symlink(kind == .backup ? "ventoy/ventoy.json.mactoy-backup" : "ventoy/.ventoy.json.mactoy-tmp",
+                        to: elsewhere.appendingPathComponent("keep.json"))
+        case .destination:
+            try fm.createDirectory(at: ventoy.appendingPathComponent("themes"), withIntermediateDirectories: true)
+            try config.write(to: ventoy.appendingPathComponent("ventoy.json"))
+            try symlink("ventoy/themes/mactoy-sample", to: elsewhere)
+        }
+        return (v, elsewhere)
+    }
+
+    /// Every file under `dir` with its bytes, plus the folders, to compare before and after.
+    private func snapshot(_ dir: URL) throws -> [String: Data?] {
+        var out: [String: Data?] = [:]
+        for case let path as String in FileManager.default.enumerator(atPath: dir.path)! {
+            var isDir: ObjCBool = false
+            FileManager.default.fileExists(atPath: dir.appendingPathComponent(path).path, isDirectory: &isDir)
+            out[path] = isDir.boolValue ? nil : try Data(contentsOf: dir.appendingPathComponent(path))
+        }
+        return out
+    }
+
+    @Test("a link to somewhere else is never written through", arguments: Link.allCases)
+    func applyRefusesLinks(link: Link) throws {
+        let (v, away) = try linkedVolume(link)
+        let before = try snapshot(away)
+        #expect(throws: ThemeError.unsafeVolumeLayout(link.path)) {
+            try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "sample", name: "S", settings: settings, to: v, isReadOnly: { _ in false })
+        }
+        #expect(try snapshot(away) == before)
+    }
+
+    @Test("remove doesn't follow a link either", arguments: Link.allCases.filter { $0 != .destination })
+    func removeRefusesLinks(link: Link) throws {
+        let (v, away) = try linkedVolume(link)
+        let before = try snapshot(away)
+        #expect(throws: ThemeError.unsafeVolumeLayout(link.path)) {
+            try ThemeInstaller.removeTheme(from: v, isReadOnly: { _ in false })
+        }
+        #expect(try snapshot(away) == before)
+    }
+
+    @Test("a linked mactoy- folder is left alone by remove and switching")
+    func linkedFolderSurvives() throws {
+        let (v, away) = try linkedVolume(.destination)
+        let before = try snapshot(away)
+        let link = v.appendingPathComponent(Link.destination.path).path
+        try ThemeInstaller.removeTheme(from: v, isReadOnly: { _ in false })
+        #expect(try snapshot(away) == before)
+        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: link)) != nil, "the link itself stays")
+        // Applying another theme sweeps old managed folders; the link is skipped too.
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "bravo", name: "B", settings: settings, to: v, isReadOnly: { _ in false })
+        #expect(try snapshot(away) == before)
+        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: link)) != nil, "the link itself stays")
+        #expect(exists(v, "ventoy/themes/mactoy-bravo/theme.txt"))
     }
 
     @Test("a failed copy leaves ventoy.json alone")
@@ -315,3 +506,5 @@ struct ThemeInstallerTests {
         #expect(outcome.warnings[0].contains("\"Ventoy\""))
     }
 }
+
+private struct InjectedFailure: Error {}
