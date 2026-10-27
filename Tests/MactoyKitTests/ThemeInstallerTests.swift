@@ -684,6 +684,87 @@ struct ThemeInstallerTests {
         #expect(throws: VentoyConfigEditor.Refusal.self) { _ = try ThemeInstaller.driveTheme(on: v) }
     }
 
+    // MARK: Looks freshly installed
+
+    @Test("a volume that was just formatted looks fresh, with or without an empty ventoy or themes folder")
+    func freshLooksFresh() throws {
+        let v = try volume()
+        #expect(ThemeInstaller.looksFreshlyInstalled(v), "no ventoy folder at all")
+        let fm = FileManager.default
+        try fm.createDirectory(at: v.appendingPathComponent("ventoy"), withIntermediateDirectories: true)
+        #expect(ThemeInstaller.looksFreshlyInstalled(v), "an empty ventoy folder")
+        try fm.createDirectory(at: v.appendingPathComponent("ventoy/themes"), withIntermediateDirectories: true)
+        #expect(ThemeInstaller.looksFreshlyInstalled(v), "an empty themes folder")
+        // Files elsewhere on the drive (an ISO, say) say nothing about the settings.
+        try Data([1]).write(to: v.appendingPathComponent("some.iso"))
+        #expect(ThemeInstaller.looksFreshlyInstalled(v))
+    }
+
+    @Test("a drive with a ventoy.json is not fresh, whatever is in it")
+    func existingConfigIsNotFresh() throws {
+        for json in [#"{"control":[]}"#, "", "{ not json", #"{"theme":null}"#] {
+            let v = try volume(json: json)
+            #expect(!ThemeInstaller.looksFreshlyInstalled(v), "\(json)")
+        }
+    }
+
+    @Test("a themes folder with anything in it is not fresh, hidden entries included")
+    func filledThemesIsNotFresh() throws {
+        let fm = FileManager.default
+        for entry in ["mactoy-x", "mine", ".DS_Store", "._junk"] {
+            let v = try volume()
+            let themes = v.appendingPathComponent("ventoy/themes")
+            try fm.createDirectory(at: themes, withIntermediateDirectories: true)
+            try fm.createDirectory(at: themes.appendingPathComponent(entry), withIntermediateDirectories: true)
+            #expect(!ThemeInstaller.looksFreshlyInstalled(v), "\(entry)")
+        }
+    }
+
+    @Test("links and files in the place of the settings folder, config or themes folder are not fresh")
+    func linksAreNotFresh() throws {
+        let fm = FileManager.default
+        let away = fm.temporaryDirectory.appendingPathComponent("mactoy-away-\(UUID().uuidString)")
+        try fm.createDirectory(at: away, withIntermediateDirectories: true)
+
+        // ventoy -> an empty folder elsewhere
+        var v = try volume()
+        try fm.createSymbolicLink(at: v.appendingPathComponent("ventoy"), withDestinationURL: away)
+        #expect(!ThemeInstaller.looksFreshlyInstalled(v), "ventoy is a link")
+
+        // ventoy is a plain file
+        v = try volume()
+        try Data([1]).write(to: v.appendingPathComponent("ventoy"))
+        #expect(!ThemeInstaller.looksFreshlyInstalled(v), "ventoy is a file")
+
+        // ventoy.json is a link that leads nowhere
+        v = try volume()
+        try fm.createDirectory(at: v.appendingPathComponent("ventoy"), withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: v.appendingPathComponent("ventoy/ventoy.json"), withDestinationURL: away.appendingPathComponent("gone.json"))
+        #expect(!ThemeInstaller.looksFreshlyInstalled(v), "a dangling ventoy.json link still counts as there")
+
+        // themes -> an empty folder elsewhere, and themes as a file
+        v = try volume()
+        try fm.createDirectory(at: v.appendingPathComponent("ventoy"), withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: v.appendingPathComponent("ventoy/themes"), withDestinationURL: away)
+        #expect(!ThemeInstaller.looksFreshlyInstalled(v), "themes is a link")
+        v = try volume()
+        try fm.createDirectory(at: v.appendingPathComponent("ventoy"), withIntermediateDirectories: true)
+        try Data([1]).write(to: v.appendingPathComponent("ventoy/themes"))
+        #expect(!ThemeInstaller.looksFreshlyInstalled(v), "themes is a file")
+    }
+
+    @Test("looking changes nothing on the drive")
+    func lookingIsReadOnly() throws {
+        let v = try volume(json: #"{"control":[]}"#)
+        let before = try Data(contentsOf: v.appendingPathComponent("ventoy/ventoy.json"))
+        _ = ThemeInstaller.looksFreshlyInstalled(v)
+        #expect(try Data(contentsOf: v.appendingPathComponent("ventoy/ventoy.json")) == before)
+        #expect(listing(v, "ventoy") == ["ventoy.json"])
+        let empty = try volume()
+        _ = ThemeInstaller.looksFreshlyInstalled(empty)
+        #expect(!exists(empty, "ventoy"), "it doesn't create the folders it looks for")
+    }
+
 }
 
 private struct InjectedFailure: Error {}

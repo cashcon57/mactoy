@@ -40,6 +40,36 @@ public enum ThemeInstaller {
         return alnum(scalars[0]) && scalars.dropFirst().allSatisfy { alnum($0) || $0 == "-" }
     }
 
+    /// Whether `volume` looks like a drive Mactoy has only just installed Ventoy
+    /// on: no `ventoy/ventoy.json`, and `ventoy/themes` missing or empty.
+    ///
+    /// The install-time theme is applied to whatever Ventoy volume shows up on
+    /// the installed disk's number, and macOS can hand that number to a different
+    /// stick if the user swaps drives meanwhile. A drive someone has used already
+    /// has settings or themes, and applying would replace the user's own theme
+    /// and delete `mactoy-*` folders on a drive they never agreed to change.
+    ///
+    /// Reads only, and without following links (`attributesOfItem` is an lstat):
+    /// a link where a folder or file should be is not a fresh drive.
+    public static func looksFreshlyInstalled(_ volume: URL) -> Bool {
+        let ventoy = volume.appendingPathComponent("ventoy", isDirectory: true)
+        switch fileType(ventoy) {
+        case nil: return true            // a brand new Ventoy volume has no settings folder yet
+        case .typeDirectory?: break
+        default: return false            // a link or a file: not ours to look through
+        }
+        guard !exists(configURL(volume)) else { return false }
+        let themes = volume.appendingPathComponent(themesPath, isDirectory: true)
+        switch fileType(themes) {
+        case nil: return true
+        case .typeDirectory?:
+            // A listing that fails is not "empty".
+            guard let entries = try? FileManager.default.contentsOfDirectory(atPath: themes.path) else { return false }
+            return entries.isEmpty
+        default: return false
+        }
+    }
+
     public static func current(on volume: URL) throws -> Current {
         let config = try readConfig(volume)
         // Any `theme` member that isn't Mactoy's is the user's: apply and remove

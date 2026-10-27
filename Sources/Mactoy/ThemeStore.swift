@@ -251,9 +251,29 @@ final class ThemeStore: ObservableObject {
 
     /// For a fresh install: wait for macOS to mount the new volume, then
     /// apply. Returns a problem to report, or nil when it worked cleanly.
-    func applyAfterInstall(_ choice: ThemeChoice, disk: DiskTarget) async -> String? {
-        guard let volume = await VentoyVolumeLocator.waitForVolume(onDisk: disk.bsdName) else {
+    ///
+    /// The volume is found by disk number, and macOS reuses numbers: if the user
+    /// swapped sticks while this waited, the Ventoy volume that appears may be
+    /// another drive, with a theme of its own. So nothing is applied unless the
+    /// volume still looks freshly installed (`ThemeInstaller.looksFreshlyInstalled`).
+    /// `findVolume` and `looksFresh` are seams for tests.
+    func applyAfterInstall(
+        _ choice: ThemeChoice, disk: DiskTarget,
+        findVolume: @escaping @Sendable (String) async -> URL? = { await VentoyVolumeLocator.waitForVolume(onDisk: $0) },
+        looksFresh: @escaping @Sendable (URL) -> Bool = ThemeInstaller.looksFreshlyInstalled
+    ) async -> String? {
+        guard let volume = await findVolume(disk.bsdName) else {
             return "the new Ventoy volume didn't appear."
+        }
+        // A catalog theme is downloaded first, so the drive is checked right before it is
+        // written, not before a download that can take a while. A failure here is reported
+        // by `apply` below, which asks for the same download again.
+        if case .catalog(let id) = choice, let entry = catalog.first(where: { $0.id == id }) {
+            _ = try? await fetcher.themeDirectory(for: entry)
+        }
+        // File system calls stay off the main actor: a drive mid-eject could stall it.
+        guard await Task.detached(priority: .userInitiated, operation: { looksFresh(volume) }).value else {
+            return "the drive in that slot doesn't look like the one Mactoy just set up, so the theme wasn't added."
         }
         do {
             let warnings = try await apply(choice, to: volume)
