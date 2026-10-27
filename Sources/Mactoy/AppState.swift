@@ -169,6 +169,16 @@ final class AppState: ObservableObject {
             }
         }
     }
+
+    /// Puts the pick back to `defaultInstallTheme` when what it names is gone: a saved
+    /// theme removed from My Themes, or a catalog theme that isn't in the catalog
+    /// that has loaded. The app calls it whenever either list changes.
+    func resetInstallThemeIfUnavailable(_ available: ThemeAvailability) {
+        let valid = available.validated(installTheme, fallback: Self.defaultInstallTheme)
+        // Only a real change, so a pick that is fine is never written again.
+        if valid != installTheme { installTheme = valid }
+    }
+
     /// Adds a theme to a freshly installed disk; returns a problem to
     /// report, or nil. Set by the app to `ThemeStore.applyAfterInstall`;
     /// a seam so tests don't touch disks or the network.
@@ -182,11 +192,11 @@ final class AppState: ObservableObject {
     /// Keeps the theme on that volume in My Themes. Set by the app to
     /// `ThemeStore.saveDriveTheme`; throws if it can't.
     var driveThemeSaver: @MainActor (URL) async throws -> Void = { _ in }
-    /// Which disk a mounted volume is on ("disk7s2"), read off the main
-    /// actor (diskutil can stall on a drive mid-eject). Seam for tests.
     /// How long the erase sheet waits for `driveThemeProbe` before it lets the
     /// user go ahead without the offer. Seam for tests.
     var driveThemeProbeCap: UInt64 = 3_000_000_000
+    /// Which disk a mounted volume is on ("disk7s2"), read off the main
+    /// actor (diskutil can stall on a drive mid-eject). Seam for tests.
     var driveVolumeIdentifier: @Sendable (URL) async -> String? = { volume in
         await Task.detached(priority: .userInitiated) { VentoyVolumeLocator.deviceIdentifier(of: volume) }.value
     }
@@ -206,6 +216,8 @@ final class AppState: ObservableObject {
     @Published var selectedImagePath: String?
 
     // helper lifecycle
+    /// Takes the helper off the Mac after a run (the "remove helper after this run" choice). Seam for tests.
+    var helperRemover: @MainActor () async -> Void = { try? await HelperLifecycle.unregister() }
     @Published var helperStatus: HelperStatus = .notRegistered
     @Published var uninstallHelperAfterRun: Bool = true  // default: leave system clean
     @Published var showHelperExplainer: Bool = false     // drives the pre-register sheet
@@ -1015,13 +1027,23 @@ final class AppState: ObservableObject {
         // is cleared once saved, so Retry after a failed erase can't save
         // from a half-erased drive.
         if confirmedMode == .installVentoy, let themeVolume = confirmedSaveThemeFrom {
-            guard await saveDriveThemeBeforeErase(from: themeVolume, on: target) else { return }
+            // The helper is enabled by now, so a run that stops here still owes
+            // the user's "remove helper after this run" choice.
+            guard await saveDriveThemeBeforeErase(from: themeVolume, on: target) else {
+                await removeHelperIfAsked()
+                return
+            }
             // The save can take a while on a slow stick, and Layer 4 is meant
             // to run immediately before the plan goes to the helper: check
             // the selection and the live disk again. Only after a save; a run
-            // without one has nothing between the checks and the helper but
-            // the plan.
-            guard passesBSDNameGuard(target), passesLiveFingerprintCheck(target) else { return }
+            // without one has only the plan, version lookup and helper gate in
+            // between, as before.
+            guard passesBSDNameGuard(target), passesLiveFingerprintCheck(target) else {
+                await removeHelperIfAsked()
+                return
+            }
+            // "Saving the drive's boot theme…" is over; it must not stay up while the helper erases.
+            status = .preparing("Preparing install plan...")
         }
 
         do {
@@ -1151,10 +1173,7 @@ final class AppState: ObservableObject {
         // whether the install succeeded or failed so the system is left
         // in a clean state. Silent failure on unregister is fine — the
         // daemon may already be gone (e.g. user toggled off manually).
-        if uninstallHelperAfterRun {
-            try? await HelperLifecycle.unregister()
-            helperStatus = HelperLifecycle.status
-        }
+        await removeHelperIfAsked()
 
         // Clear the captured target/mode now — with one exception.
         // On terminal .failed we KEEP them so the "Retry" button in
@@ -1283,6 +1302,17 @@ final class AppState: ObservableObject {
             secureBoot: secureBoot,
             partitionStyle: partitionStyle
         )
+    }
+
+    /// Honours the "remove helper after this run" checkbox, for a run that has
+    /// got past the helper gate: the end of `run()` and its early exits after
+    /// the gate all use this. Silent failure on unregister is fine; the daemon
+    /// may already be gone (e.g. the user toggled it off manually).
+    /// Internal so tests can check it.
+    func removeHelperIfAsked() async {
+        guard uninstallHelperAfterRun else { return }
+        await helperRemover()
+        helperStatus = HelperLifecycle.status
     }
 
     func reset() {

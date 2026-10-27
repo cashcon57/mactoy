@@ -715,7 +715,7 @@ struct InstallThemeRunSourceTests {
         return String(source[start.lowerBound..<end.lowerBound])
     }
 
-    @Test("Layer 6, Time Machine and Layer 4 come first, then the save, then Layer 6 and Layer 4 again, then the helper")
+    @Test("Layer 6, Time Machine and Layer 4 come first, then the helper gate, then the save, then Layer 6 and Layer 4 again, then the helper")
     func saveOrder() throws {
         let body = try runBody()
         let steps = [
@@ -723,8 +723,9 @@ struct InstallThemeRunSourceTests {
             "try await timeMachineLookup()",
             "isLockedBackup(target)",
             "guard passesLiveFingerprintCheck(target) else { return }",
-            "guard await saveDriveThemeBeforeErase(from: themeVolume, on: target) else { return }",
-            "guard passesBSDNameGuard(target), passesLiveFingerprintCheck(target) else { return }",
+            "if helperStatus != .enabled {",
+            "guard await saveDriveThemeBeforeErase(from: themeVolume, on: target) else {",
+            "guard passesBSDNameGuard(target), passesLiveFingerprintCheck(target) else {",
             "try await HelperInvoker.run(",
         ]
         var positions: [String.Index] = []
@@ -735,12 +736,100 @@ struct InstallThemeRunSourceTests {
         #expect(positions == positions.sorted(), "the order of the checks, the save and the helper call changed")
         // The second pair of checks, and the save, are for a run that saves, and only then.
         #expect(body.contains("if confirmedMode == .installVentoy, let themeVolume = confirmedSaveThemeFrom {"))
-        let recheck = try #require(body.range(of: steps[5]))
-        let after = body[recheck.upperBound...].drop(while: { $0 == " " || $0 == "\n" })
-        #expect(after.hasPrefix("}"), "the second check must end the save block, so it runs only after a save")
         // Each guard appears once at the top and once after the save, and nowhere else in run().
         #expect(body.components(separatedBy: "passesBSDNameGuard(target)").count - 1 == 2)
         #expect(body.components(separatedBy: "passesLiveFingerprintCheck(target)").count - 1 == 2)
+    }
+
+    /// The text of the `else { ... }` that follows `guard`, up to its closing brace (no nested braces in these).
+    private func elseBlock(after guardLine: String, in body: String) throws -> String {
+        let start = try #require(body.range(of: guardLine), "missing in run(): \(guardLine)")
+        let rest = body[start.upperBound...]
+        let end = try #require(rest.firstIndex(of: "}"))
+        return String(rest[rest.startIndex..<end])
+    }
+
+    @Test("a run that stops after the helper gate, on a failed save or a failed re-check, still honours 'remove helper after this run'")
+    func earlyExitsRemoveTheHelper() throws {
+        let body = try runBody()
+        let save = try elseBlock(after: "guard await saveDriveThemeBeforeErase(from: themeVolume, on: target) else {", in: body)
+        #expect(save.contains("await removeHelperIfAsked()") && save.contains("return"))
+        #expect(try #require(save.range(of: "await removeHelperIfAsked()")).lowerBound < (try #require(save.range(of: "return")).lowerBound),
+                "the helper is dealt with before the run returns")
+        let recheck = try elseBlock(after: "guard passesBSDNameGuard(target), passesLiveFingerprintCheck(target) else {", in: body)
+        #expect(recheck.contains("await removeHelperIfAsked()") && recheck.contains("return"))
+        #expect(try #require(recheck.range(of: "await removeHelperIfAsked()")).lowerBound < (try #require(recheck.range(of: "return")).lowerBound))
+
+        // Exits before the gate have no helper to remove and are not changed.
+        let gate = try #require(body.range(of: "if helperStatus != .enabled {"))
+        for before in ["guard passesBSDNameGuard(target) else { return }", "guard passesLiveFingerprintCheck(target) else { return }"] {
+            #expect(try #require(body.range(of: before)).lowerBound < gate.lowerBound)
+        }
+        // The call is used in exactly three places: those two exits and the end of the run.
+        #expect(body.components(separatedBy: "removeHelperIfAsked()").count - 1 == 3)
+        // The choice itself is read in one place, the shared helper, not in run().
+        #expect(!body.contains("if uninstallHelperAfterRun"))
+        // The one remaining direct unregister is the re-register path of a version mismatch.
+        #expect(body.components(separatedBy: "HelperLifecycle.unregister()").count - 1 == 1)
+        let reregister = try #require(body.range(of: "try? await HelperLifecycle.unregister()"))
+        #expect(body[reregister.upperBound...].prefix(80).contains("HelperLifecycle.register()"))
+        // The end of the run calls it before it clears or keeps the captured target.
+        let end = try #require(body.range(of: "        await removeHelperIfAsked()\n\n        // Clear the captured target/mode now"))
+        #expect(end.lowerBound > (try #require(body.range(of: "Self.log.error(\"run() failed: ")).lowerBound))
+    }
+
+    @Test("removeHelperIfAsked takes the helper off only when the user left the box ticked")
+    func removeHelperIfAsked() async {
+        let d = TempDefaults(); defer { d.remove() }
+        let s = Fixture.state(d)
+        let removals = Counter()
+        s.helperRemover = { removals.n += 1 }
+        #expect(s.uninstallHelperAfterRun, "ticked by default")
+        await s.removeHelperIfAsked()
+        #expect(removals.n == 1)
+        s.uninstallHelperAfterRun = false
+        s.helperStatus = .enabled
+        await s.removeHelperIfAsked()
+        #expect(removals.n == 1, "unticked: the helper stays")
+        #expect(s.helperStatus == .enabled, "and nothing about it is changed")
+    }
+
+    @Test("the status goes back to the plain text once the save and the re-check are done")
+    func statusAfterTheSave() throws {
+        let body = try runBody()
+        let neutral = "status = .preparing(\"Preparing install plan...\")"
+        // Once at the top, as before, and once after the save.
+        #expect(body.components(separatedBy: neutral).count - 1 == 2)
+        let recheck = try #require(body.range(of: "guard passesBSDNameGuard(target), passesLiveFingerprintCheck(target) else {"))
+        let helper = try #require(body.range(of: "try await HelperInvoker.run("))
+        let again = try #require(body.range(of: neutral, range: recheck.upperBound..<body.endIndex))
+        #expect(again.lowerBound < helper.lowerBound, "the status is reset before the helper starts erasing")
+        // It ends the save block, so it only happens in a run that saved.
+        let after = body[again.upperBound...].drop(while: { $0 == " " || $0 == "\n" })
+        #expect(after.hasPrefix("}"))
+        // And it is the same text the run used before the save.
+        let first = try #require(body.range(of: neutral))
+        #expect(first.lowerBound < recheck.lowerBound)
+        // The "Saving…" text is set in the save step, not in run().
+        #expect(!body.contains("status = .preparing(\"Saving"))
+    }
+
+    @Test("the doc comments of the theme seams sit on the property they describe, and the re-check comment says what is in between")
+    func comments() throws {
+        let source = try source()
+        func docComment(above declaration: String) throws -> String {
+            let at = try #require(source.range(of: declaration), "missing: \(declaration)")
+            let lines = source[..<at.lowerBound].split(separator: "\n", omittingEmptySubsequences: false).dropLast()
+            return lines.reversed().prefix(while: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("///") })
+                .reversed().joined(separator: "\n")
+        }
+        let cap = try docComment(above: "var driveThemeProbeCap: UInt64")
+        #expect(cap.contains("How long the erase sheet waits for `driveThemeProbe`"))
+        #expect(!cap.contains("Which disk"))
+        let identifier = try docComment(above: "var driveVolumeIdentifier:")
+        #expect(identifier.contains("Which disk a mounted volume is on"))
+        #expect(!identifier.contains("How long"))
+        #expect(try runBody().contains("without one has only the plan, version lookup and helper gate in\n            // between, as before."))
     }
 
     @Test("the two layers keep their code and messages when run again after a save")
@@ -844,5 +933,137 @@ struct InstallThemeDriveProbeTests {
         _ = try await store().savableDriveTheme(onDisk: "disk97", volumesDirectory: root, deviceIdentifier: { _ in "disk97s2" })
         #expect(try Data(contentsOf: config) == before)
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("Ventoy/ventoy/themes").path))
+    }
+}
+
+// MARK: A pick that is gone
+
+@MainActor
+@Suite("A theme that no longer exists is not the pick for the next install")
+struct InstallThemeGoneTests {
+
+    private func available(saved: [String] = [], catalog: [String] = [], source: ThemeCatalogLoader.Source = .remote) -> ThemeAvailability {
+        ThemeAvailability(savedIDs: Set(saved), catalogIDs: Set(catalog), catalogSource: source)
+    }
+
+    private let fallback = AppState.defaultInstallTheme
+
+    @Test("a saved theme that left My Themes goes back to the default; one that is still there stays")
+    func removedSavedTheme() {
+        let pick = ThemeChoice.custom(id: "custom-night-12345678")
+        #expect(available(saved: ["custom-night-12345678"]).validated(pick, fallback: fallback) == pick)
+        #expect(available(saved: ["custom-other-87654321"]).validated(pick, fallback: fallback) == fallback)
+        #expect(available().validated(pick, fallback: fallback) == fallback)
+        // Whatever the catalog is doing, a saved theme depends on My Themes only.
+        for source: ThemeCatalogLoader.Source in [.none, .bundled, .cached, .remote] {
+            #expect(available(source: source).validated(pick, fallback: fallback) == fallback)
+        }
+    }
+
+    @Test("a catalog theme that isn't in a loaded catalog goes back to the default, whichever catalog loaded")
+    func missingCatalogTheme() {
+        let pick = ThemeChoice.catalog(id: "tela")
+        for source: ThemeCatalogLoader.Source in [.bundled, .cached, .remote] {
+            #expect(available(catalog: ["tela", "dracula"], source: source).validated(pick, fallback: fallback) == pick)
+            #expect(available(catalog: ["dracula"], source: source).validated(pick, fallback: fallback) == fallback, "\(source)")
+            #expect(available(catalog: [], source: source).validated(pick, fallback: fallback) == fallback)
+        }
+    }
+
+    @Test("before any catalog has loaded the catalog pick is left alone")
+    func catalogNotLoadedYet() {
+        let pick = ThemeChoice.catalog(id: "tela")
+        #expect(available(source: .none).validated(pick, fallback: fallback) == pick)
+        // A saved pick can't be a custom theme here: only a loaded My Themes can name one.
+        #expect(available(saved: ["custom-x-12345678"], source: .none).validated(pick, fallback: fallback) == pick)
+    }
+
+    @Test("Ventoy's own theme is always there, and the default stays the default")
+    func alwaysThere() {
+        for source: ThemeCatalogLoader.Source in [.none, .bundled, .remote] {
+            #expect(available(source: source).validated(.ventoyDefault, fallback: fallback) == .ventoyDefault)
+        }
+        #expect(available(catalog: [], source: .remote).validated(fallback, fallback: fallback) == fallback)
+    }
+
+    @Test("the app state resets a gone pick, saves the reset, and leaves a good pick unwritten")
+    func appStateResets() {
+        let d = TempDefaults(); defer { d.remove() }
+        let s = AppState(defaults: d.defaults)
+
+        s.installTheme = .custom(id: "custom-night-12345678")
+        s.resetInstallThemeIfUnavailable(available(saved: ["custom-night-12345678"]))
+        #expect(s.installTheme == .custom(id: "custom-night-12345678"))
+        s.resetInstallThemeIfUnavailable(available(saved: []))
+        #expect(s.installTheme == AppState.defaultInstallTheme)
+
+        s.installTheme = .catalog(id: "tela")
+        s.resetInstallThemeIfUnavailable(available(catalog: ["tela"], source: .bundled))
+        #expect(s.installTheme == .catalog(id: "tela"))
+        s.resetInstallThemeIfUnavailable(available(catalog: [], source: .none))
+        #expect(s.installTheme == .catalog(id: "tela"), "no catalog yet")
+        s.resetInstallThemeIfUnavailable(available(catalog: ["dracula"], source: .bundled))
+        #expect(s.installTheme == AppState.defaultInstallTheme)
+        // The next launch starts from the reset pick, not from the theme that is gone.
+        #expect(AppState(defaults: d.defaults).installTheme == AppState.defaultInstallTheme)
+
+        // The user's opt-out is theirs to keep.
+        s.installTheme = .ventoyDefault
+        s.resetInstallThemeIfUnavailable(available(catalog: [], source: .remote))
+        #expect(s.installTheme == .ventoyDefault)
+        #expect(d.defaults.string(forKey: "installTheme") == "ventoy-default")
+    }
+
+    @Test("a good pick is not written again")
+    func goodPickNotRewritten() {
+        let d = TempDefaults(); defer { d.remove() }
+        let s = AppState(defaults: d.defaults)
+        #expect(d.defaults.string(forKey: "installTheme") == nil)
+        s.resetInstallThemeIfUnavailable(available(catalog: ["catppuccin-mocha"], source: .bundled))
+        #expect(d.defaults.string(forKey: "installTheme") == nil, "the untouched default stays unsaved")
+        // Even the default itself missing from the catalog changes nothing: it is already the fallback.
+        s.resetInstallThemeIfUnavailable(available(catalog: ["tela"], source: .remote))
+        #expect(s.installTheme == AppState.defaultInstallTheme)
+        #expect(d.defaults.string(forKey: "installTheme") == nil)
+    }
+
+    @Test("the store reports what can be chosen, and it follows My Themes and the catalog")
+    func storeAvailability() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("mactoy-avail-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let theme = dir.appendingPathComponent("Night")
+        try FileManager.default.createDirectory(at: theme, withIntermediateDirectories: true)
+        try Data("title-text: \"x\"\n".utf8).write(to: theme.appendingPathComponent("theme.txt"))
+        let entry = ThemeEntry(id: "from-catalog", name: "From Catalog", author: "a", homepage: URL(string: "https://github.com/a/b")!,
+                               license: "MIT", showsVentoyHotkeys: true, notes: nil,
+                               download: .init(url: URL(string: "https://github.com/a/b/releases/download/v1/x.zip")!,
+                                               sha256: String(repeating: "b", count: 64), root: ""),
+                               files: nil, settings: .init(file: "theme.txt"))
+        let bundled = dir.appendingPathComponent("bundled.json")
+        try JSONEncoder().encode(ThemeCatalog(schema: ThemeCatalog.supportedSchema, themes: [entry])).write(to: bundled)
+
+        struct Offline: ThemeTransport {
+            func data(from url: URL, maxBytes: Int) async throws -> Data { throw URLError(.notConnectedToInternet) }
+        }
+        let store = ThemeStore(loader: ThemeCatalogLoader(transport: Offline(), cacheDirectory: dir.appendingPathComponent("cache"),
+                                                          bundledCatalog: bundled, bundledPreviews: nil),
+                               fetcher: ThemeFetcher(transport: Offline(), cacheRoot: dir.appendingPathComponent("themes"), bundledRoot: nil),
+                               library: ThemeLibrary(root: dir.appendingPathComponent("My Themes")))
+        #expect(store.availability == available(source: .none))
+
+        let choice = try await store.importCustom(from: theme)
+        guard case .custom(let id) = choice else { Issue.record("not a saved theme"); return }
+        await store.load()
+        #expect(store.availability == available(saved: [id], catalog: ["from-catalog"], source: .bundled))
+
+        // Removing it from My Themes is what makes an app state holding it let go.
+        let d = TempDefaults(); defer { d.remove() }
+        let s = AppState(defaults: d.defaults)
+        s.installTheme = choice
+        s.resetInstallThemeIfUnavailable(store.availability)
+        #expect(s.installTheme == choice)
+        try await store.removeSaved(id: id)
+        s.resetInstallThemeIfUnavailable(store.availability)
+        #expect(s.installTheme == AppState.defaultInstallTheme)
     }
 }

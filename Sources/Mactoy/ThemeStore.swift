@@ -9,6 +9,32 @@ enum ThemeChoice: Hashable, Sendable {
     case custom(id: String)
 }
 
+/// What can be chosen right now, for checking a choice that was made earlier.
+struct ThemeAvailability: Equatable, Sendable {
+    var savedIDs: Set<String>
+    var catalogIDs: Set<String>
+    /// `.none` until some catalog (bundled, cached or online) has loaded.
+    var catalogSource: ThemeCatalogLoader.Source
+
+    /// `choice` when what it names still exists, else `fallback`.
+    ///
+    /// A saved theme can be removed from My Themes while it is the pick for the
+    /// next install, and a remembered catalog theme can leave the catalog; either
+    /// would be a pick that fails after the drive has been erased. A catalog pick
+    /// is judged only once a catalog has loaded: before that, an empty list says
+    /// nothing. Ventoy's own theme is always there.
+    func validated(_ choice: ThemeChoice, fallback: ThemeChoice) -> ThemeChoice {
+        switch choice {
+        case .ventoyDefault:
+            return choice
+        case .custom(let id):
+            return savedIDs.contains(id) ? choice : fallback
+        case .catalog(let id):
+            return catalogSource == .none || catalogIDs.contains(id) ? choice : fallback
+        }
+    }
+}
+
 enum ThemeStoreError: Error, Equatable, LocalizedError {
     /// Another theme change is still running on the same drive.
     case busy
@@ -41,6 +67,11 @@ final class ThemeStore: ObservableObject {
     let loader: ThemeCatalogLoader
     let fetcher: ThemeFetcher
     let library: ThemeLibrary
+
+    /// The themes that can be chosen now. Changes when My Themes or the catalog does.
+    var availability: ThemeAvailability {
+        ThemeAvailability(savedIDs: Set(savedThemes.map(\.id)), catalogIDs: Set(catalog.map(\.id)), catalogSource: catalogSource)
+    }
 
     private var previewsInFlight = Set<String>()
     /// A listing that finishes after a newer one started is dropped, so a slow

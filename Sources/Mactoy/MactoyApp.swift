@@ -20,6 +20,8 @@ struct MactoyApp: App {
                 .environmentObject(appState)
                 .environmentObject(themeStore)
                 .frame(minWidth: 880, minHeight: 600)
+                // A theme removed from My Themes, or gone from the catalog, must not stay the pick for the next install.
+                .onChange(of: themeStore.availability) { appState.resetInstallThemeIfUnavailable($0) }
                 .task {
                     appLog.info("first-window task: starting disk enumeration")
                     wireThemes()
