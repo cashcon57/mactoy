@@ -40,6 +40,10 @@ the image.
 `e2e scan /Volumes/Ventoy` prints what Manage Disk will list for a mounted
 Ventoy volume, to compare with the boot menu.
 
+`MACTOY_QEMU_VGA` replaces QEMU's display adapter (default `-vga std`). For
+example `MACTOY_QEMU_VGA="-device VGA,vgamem_mb=4"` mimics a low-VRAM adapter,
+to check that a boot theme falls back to a lower resolution.
+
 To test Update Ventoy, re-attach the image and run `e2e <diskN> update <on|off>`.
 To get an MBR-style stick (Ventoy2Disk's default), install with `mbr`.
 
