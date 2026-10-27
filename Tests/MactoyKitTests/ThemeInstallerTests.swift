@@ -800,6 +800,235 @@ struct ThemeInstallerTests {
         #expect(throws: VentoyConfigEditor.Refusal.self) { _ = try ThemeInstaller.current(on: v) }
     }
 
+    // MARK: AppleDouble clutter (exFAT keeps extended attributes in `._` files)
+
+    /// What macOS writes for a file whose only attribute is `com.apple.provenance`: the AppleDouble magic,
+    /// version 2, the "Mac OS X" filler, then entries. Only the start matters to Mactoy; the rest is padding.
+    private func appleDoubleBytes(size: Int = 82) -> Data {
+        var bytes: [UInt8] = [0x00, 0x05, 0x16, 0x07, 0x00, 0x02, 0x00, 0x00]
+        bytes += Array("Mac OS X        ".utf8)
+        bytes += [UInt8](repeating: 0, count: max(0, size - bytes.count))
+        return Data(bytes)
+    }
+
+    /// Plants `._<name>` (or any file) the way exFAT would have, since APFS temp folders never get one.
+    private func plant(_ url: URL, _ data: Data? = nil) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try (data ?? appleDoubleBytes()).write(to: url)
+    }
+
+    private func fileExists(_ v: URL, _ p: String) -> Bool {
+        (try? FileManager.default.attributesOfItem(atPath: v.appendingPathComponent(p).path)) != nil
+    }
+
+    @Test("apply removes the AppleDouble files of what it wrote, and no other `._` file")
+    func applyTidiesItsOwnClutter() throws {
+        let fm = FileManager.default
+        let v = try volume(json: #"{"control":[]}"#)
+        // Already on the drive and not Mactoy's: the user's folder, a file of theirs, and their companions.
+        try plant(v.appendingPathComponent("ventoy/themes/mine/theme.txt"), Data("x".utf8))
+        try plant(v.appendingPathComponent("ventoy/themes/._mine"))
+        try plant(v.appendingPathComponent("ventoy/notes.txt"), Data("n".utf8))
+        try plant(v.appendingPathComponent("ventoy/._notes.txt"))
+        // Beside what Mactoy writes or replaces: the settings file, the folder it creates (`themes` already exists here),
+        // and the backup it makes. They were there before, so they have to go too.
+        try plant(v.appendingPathComponent("ventoy/._ventoy.json"))
+        try plant(v.appendingPathComponent("ventoy/._ventoy.json.mactoy-backup"))
+
+        let source = try themeFolder()
+        try ThemeInstaller.install(themeDirectory: source, id: "sample", name: "Sample", settings: settings, to: v,
+                                   isReadOnly: { _ in false }, move: { from, to in
+            if from.lastPathComponent.hasPrefix(".mactoy-staging-") {
+                // The new folder, as exFAT would have left it: a companion for every file and folder, the marker included.
+                for file in ["theme.txt", "bg.png", "font.pf2", "icons/a.png", ".mactoy-theme.json", "icons"] {
+                    try self.plant(from.appendingPathComponent((file as NSString).deletingLastPathComponent)
+                        .appendingPathComponent("._" + (file as NSString).lastPathComponent))
+                }
+                // Look-alikes that are not Mactoy's to touch.
+                try self.plant(from.appendingPathComponent("icons/._notes.txt"), Data("not appledouble".utf8))   // no magic
+                try self.plant(from.appendingPathComponent("icons/notes.txt"), Data("n".utf8))
+                try self.plant(from.appendingPathComponent("._orphan.png"))                                      // nothing beside it
+                try self.plant(from.appendingPathComponent("._big.png"), self.appleDoubleBytes(size: 64 * 1024 + 1))
+                try self.plant(from.appendingPathComponent("big.png"), Data([1]))
+                try self.plant(from.appendingPathComponent("._small.png"), Data([0x00, 0x05, 0x16]))              // shorter than the magic
+                try self.plant(from.appendingPathComponent("small.png"), Data([1]))
+            }
+            try fm.moveItem(at: from, to: to)
+            if to.lastPathComponent == "mactoy-sample" {
+                try self.plant(to.deletingLastPathComponent().appendingPathComponent("._mactoy-sample"))
+            }
+        })
+
+        for gone in ["ventoy/._ventoy.json", "ventoy/._ventoy.json.mactoy-backup", "ventoy/themes/._mactoy-sample",
+                     "ventoy/themes/mactoy-sample/._theme.txt", "ventoy/themes/mactoy-sample/._bg.png",
+                     "ventoy/themes/mactoy-sample/._font.pf2", "ventoy/themes/mactoy-sample/icons/._a.png",
+                     "ventoy/themes/mactoy-sample/._.mactoy-theme.json", "ventoy/themes/mactoy-sample/._icons"] {
+            #expect(!fileExists(v, gone), "\(gone) should have been removed")
+        }
+        for kept in ["ventoy/themes/._mine", "ventoy/._notes.txt", "ventoy/themes/mactoy-sample/icons/._notes.txt",
+                     "ventoy/themes/mactoy-sample/._orphan.png", "ventoy/themes/mactoy-sample/._big.png",
+                     "ventoy/themes/mactoy-sample/._small.png"] {
+            #expect(fileExists(v, kept), "\(kept) is not Mactoy's and should still be there")
+        }
+        // What it installed is untouched.
+        #expect(exists(v, "ventoy/themes/mactoy-sample/theme.txt"))
+        #expect(exists(v, "ventoy/themes/mactoy-sample/icons/a.png"))
+        #expect(try ThemeInstaller.current(on: v) == .managed(id: "sample", name: "Sample"))
+    }
+
+    @Test("on a brand new drive the companions of the folders Mactoy made go too, but not other root files'")
+    func applyTidiesFreshDrive() throws {
+        let v = try volume()
+        try plant(v.appendingPathComponent("._ventoy"))        // Mactoy creates `ventoy`, so this is its companion
+        try plant(v.appendingPathComponent("._themes"))        // not Mactoy's
+        try plant(v.appendingPathComponent("themes"), Data([1]))
+        try ThemeInstaller.install(themeDirectory: themeFolder(), id: "sample", name: "Sample", settings: settings, to: v,
+                                   isReadOnly: { _ in false }, move: { from, to in
+            try FileManager.default.moveItem(at: from, to: to)
+            // macOS makes these when it creates `ventoy` and `themes`.
+            try self.plant(v.appendingPathComponent("ventoy/._themes"))
+        })
+        #expect(!fileExists(v, "._ventoy"))
+        #expect(!fileExists(v, "ventoy/._themes"))
+        #expect(fileExists(v, "._themes"))
+        #expect(try ThemeInstaller.current(on: v) == .managed(id: "sample", name: "Sample"))
+    }
+
+    @Test("an existing ventoy folder's own companion is not Mactoy's")
+    func applyLeavesAnOlderVentoyFoldersCompanion() throws {
+        let v = try volume(json: #"{"control":[]}"#)
+        try plant(v.appendingPathComponent("._ventoy"))
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "sample", name: "Sample", settings: settings, to: v, isReadOnly: { _ in false })
+        #expect(fileExists(v, "._ventoy"))
+    }
+
+    @Test("a companion that is a link, a folder or empty is never removed", arguments: ["link", "folder", "empty"])
+    func applyKeepsOddCompanions(kind: String) throws {
+        let fm = FileManager.default
+        let v = try volume(json: #"{"control":[]}"#)
+        let companion = v.appendingPathComponent("ventoy/._ventoy.json")
+        switch kind {
+        case "link":
+            let real = fm.temporaryDirectory.appendingPathComponent("mactoy-ad-\(UUID().uuidString)")
+            try appleDoubleBytes().write(to: real)
+            try fm.createSymbolicLink(at: companion, withDestinationURL: real)
+        case "folder":
+            try fm.createDirectory(at: companion, withIntermediateDirectories: true)
+        default:
+            try Data().write(to: companion)
+        }
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "sample", name: "Sample", settings: settings, to: v, isReadOnly: { _ in false })
+        #expect(fileExists(v, "ventoy/._ventoy.json"))
+    }
+
+    @Test("a companion of exactly 64 KiB is removed; one byte more is kept")
+    func appleDoubleSizeLimit() throws {
+        let v = try volume(json: #"{"control":[]}"#)
+        try plant(v.appendingPathComponent("ventoy/._ventoy.json"), appleDoubleBytes(size: 64 * 1024))
+        try plant(v.appendingPathComponent("ventoy/._ventoy.json.mactoy-backup"), appleDoubleBytes(size: 64 * 1024 + 1))
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "sample", name: "Sample", settings: settings, to: v, isReadOnly: { _ in false })
+        #expect(!fileExists(v, "ventoy/._ventoy.json"))
+        #expect(fileExists(v, "ventoy/._ventoy.json.mactoy-backup"))
+    }
+
+    @Test("a failed change tidies nothing")
+    func failedChangeLeavesCompanions() throws {
+        let v = try volume(json: #"{"control":[]}"#)
+        try plant(v.appendingPathComponent("ventoy/._ventoy.json"))
+        struct Boom: Error {}
+        #expect(throws: Boom.self) {
+            try ThemeInstaller.install(themeDirectory: themeFolder(), id: "sample", name: "S", settings: settings, to: v,
+                                       isReadOnly: { _ in false }, move: { _, _ in throw Boom() })
+        }
+        #expect(fileExists(v, "ventoy/._ventoy.json"))
+    }
+
+    @Test("removeTheme removes the companions of the folders it removed and of the settings it rewrote, and no others")
+    func removeTidiesItsOwnClutter() throws {
+        let v = try volume(json: #"{"control":[]}"#)
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "sample", name: "Sample", settings: settings, to: v, isReadOnly: { _ in false })
+        try plant(v.appendingPathComponent("ventoy/themes/mine/theme.txt"), Data("x".utf8))
+        try plant(v.appendingPathComponent("ventoy/themes/._mine"))
+        try plant(v.appendingPathComponent("ventoy/themes/._mactoy-sample"))
+        try plant(v.appendingPathComponent("ventoy/._ventoy.json"))
+        try plant(v.appendingPathComponent("ventoy/._ventoy.json.mactoy-backup"))
+        try plant(v.appendingPathComponent("ventoy/._themes"))
+        try ThemeInstaller.removeTheme(from: v, isReadOnly: { _ in false })
+        #expect(!exists(v, "ventoy/themes/mactoy-sample"))
+        #expect(!fileExists(v, "ventoy/themes/._mactoy-sample"))
+        #expect(!fileExists(v, "ventoy/._ventoy.json"))
+        #expect(!fileExists(v, "ventoy/._ventoy.json.mactoy-backup"))
+        // Beside `themes`, which it emptied of its own folder (`._themes` is Mactoy's to tidy either way).
+        #expect(!fileExists(v, "ventoy/._themes"))
+        // `mine` is still in `themes`, so the folder stays, and so does the user's companion.
+        #expect(exists(v, "ventoy/themes/mine/theme.txt"))
+        #expect(fileExists(v, "ventoy/themes/._mine"))
+    }
+
+    // MARK: Empty themes folder
+
+    @Test("removeTheme removes the themes folder when nothing is left in it, and its companion with it")
+    func removeDropsEmptyThemesFolder() throws {
+        let v = try volume(json: #"{"control":[]}"#)
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "sample", name: "Sample", settings: settings, to: v, isReadOnly: { _ in false })
+        // Companions of what is about to be removed don't keep the folder alive.
+        try plant(v.appendingPathComponent("ventoy/themes/._mactoy-sample"))
+        try plant(v.appendingPathComponent("ventoy/._themes"))
+        try ThemeInstaller.removeTheme(from: v, isReadOnly: { _ in false })
+        #expect(!fileExists(v, "ventoy/themes"))
+        #expect(!fileExists(v, "ventoy/._themes"))
+        #expect(listing(v, "ventoy") == ["ventoy.json", "ventoy.json.mactoy-backup"])
+        #expect(try json(v)["theme"] == nil)
+        #expect(try json(v)["control"] != nil)
+    }
+
+    @Test("removeTheme keeps a themes folder that holds anything else", arguments: ["folder", "file", "hidden", "notAppleDouble", "orphanAppleDouble"])
+    func removeKeepsThemesFolderWithOtherThings(other: String) throws {
+        let v = try volume()
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "sample", name: "Sample", settings: settings, to: v, isReadOnly: { _ in false })
+        let themes = v.appendingPathComponent("ventoy/themes")
+        switch other {
+        case "folder": try FileManager.default.createDirectory(at: themes.appendingPathComponent("mine"), withIntermediateDirectories: true)
+        case "file": try Data([1]).write(to: themes.appendingPathComponent("readme.txt"))
+        case "hidden": try Data([1]).write(to: themes.appendingPathComponent(".DS_Store"))
+        case "notAppleDouble": try plant(themes.appendingPathComponent("._mactoy-sample"), Data("hello there".utf8))
+        default: try plant(themes.appendingPathComponent("._stranger"))      // an AppleDouble file, but of nothing Mactoy removed
+        }
+        try ThemeInstaller.removeTheme(from: v, isReadOnly: { _ in false })
+        #expect(exists(v, "ventoy/themes"))
+        #expect(!exists(v, "ventoy/themes/mactoy-sample"))
+    }
+
+    @Test("removeTheme on a drive whose themes folder is already empty removes it, and leaves the rest of ventoy alone")
+    func removeDropsAlreadyEmptyThemesFolder() throws {
+        let v = try volume(json: #"{"control":[]}"#)
+        try FileManager.default.createDirectory(at: v.appendingPathComponent("ventoy/themes"), withIntermediateDirectories: true)
+        try ThemeInstaller.removeTheme(from: v, isReadOnly: { _ in false })
+        #expect(!exists(v, "ventoy/themes"))
+        #expect(exists(v, "ventoy/ventoy.json"))
+    }
+
+    @Test("apply never removes the themes folder")
+    func applyKeepsThemesFolder() throws {
+        let v = try volume()
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "alpha", name: "A", settings: settings, to: v, isReadOnly: { _ in false })
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "bravo", name: "B", settings: settings, to: v, isReadOnly: { _ in false })
+        #expect(listing(v, "ventoy/themes") == ["mactoy-bravo"])
+    }
+
+    @Test("the one-time backup is written atomically")
+    func backupIsAtomic() throws {
+        // A cut-short write can't be seen from a test; this reads the call so it can't be dropped unnoticed.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Sources/MactoyKit/ThemeInstaller.swift"), encoding: .utf8)
+        #expect(source.contains("try original.write(to: backup, options: .atomic)"))
+        // And it still writes the backup.
+        let v = try volume(json: #"{"control":[]}"#)
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "sample", name: "S", settings: settings, to: v, isReadOnly: { _ in false })
+        #expect(try text(v, "ventoy/ventoy.json.mactoy-backup") == #"{"control":[]}"#)
+        #expect(listing(v, "ventoy") == ["themes", "ventoy.json", "ventoy.json.mactoy-backup"], "no temp file from the atomic write is left")
+    }
+
     // MARK: Looks freshly installed
 
     @Test("a volume that was just formatted looks fresh, with or without an empty ventoy or themes folder")

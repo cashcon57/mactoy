@@ -63,8 +63,8 @@ public enum ThemeInstaller {
         switch fileType(themes) {
         case nil: return true
         case .typeDirectory?:
-            // A listing that fails is not "empty".
-            guard let entries = try? FileManager.default.contentsOfDirectory(atPath: themes.path) else { return false }
+            // A listing that fails is not "empty". Raw, so a stray `._` file counts as something being there.
+            guard let entries = rawEntries(of: themes) else { return false }
             return entries.isEmpty
         default: return false
         }
@@ -261,6 +261,7 @@ public enum ThemeInstaller {
             if isSymlink(destination) { throw ThemeError.unsafeVolumeLayout("\(themesPath)/\(folder)") }
             if readMarker(destination) == nil { throw ThemeError.destinationExists(destination.path) }
         }
+        let createdVentoyFolder = !exists(volume.appendingPathComponent("ventoy", isDirectory: true))
         try fm.createDirectory(at: themes, withIntermediateDirectories: true)
         let staging = themes.appendingPathComponent(".mactoy-staging-\(UUID().uuidString)", isDirectory: true)
         let old = themes.appendingPathComponent(".mactoy-old-\(UUID().uuidString)", isDirectory: true)
@@ -281,7 +282,10 @@ public enum ThemeInstaller {
         // Settings go last, so a failure above never leaves ventoy.json
         // pointing at a theme that isn't there.
         try writeConfig(updated, original: original, volume: volume)
-        removeManagedFolders(in: themes, except: folder)
+        let removed = removeManagedFolders(in: themes, except: folder)
+        // The staging and old folders are renamed or removed by now (or just about to be).
+        removeAppleDoubleClutter(on: volume, installed: folder, gone: removed + [staging.lastPathComponent, old.lastPathComponent],
+                                 createdVentoyFolder: createdVentoyFolder, removeEmptyThemesFolder: false)
         return Outcome(warnings: warnings)
     }
 
@@ -293,7 +297,8 @@ public enum ThemeInstaller {
         if let updated = try VentoyConfigEditor.removingTheme(from: original), updated != original {
             try writeConfig(updated, original: original, volume: volume)
         }
-        removeManagedFolders(in: volume.appendingPathComponent(themesPath, isDirectory: true), except: nil)
+        let removed = removeManagedFolders(in: volume.appendingPathComponent(themesPath, isDirectory: true), except: nil)
+        removeAppleDoubleClutter(on: volume, installed: nil, gone: removed, createdVentoyFolder: false, removeEmptyThemesFolder: true)
         return Outcome(warnings: try modeWarnings(original))
     }
 
@@ -344,7 +349,8 @@ public enum ThemeInstaller {
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         // The first file is the one worth keeping: later ones only differ by our own edits.
         let backup = dir.appendingPathComponent(backupName)
-        if let original, !exists(backup) { try original.write(to: backup) }
+        // Atomic: a write cut short must not leave a half file that `exists` then protects forever as "the user's first file".
+        if let original, !exists(backup) { try original.write(to: backup, options: .atomic) }
         let temp = dir.appendingPathComponent(tempName)
         do { try data.write(to: temp) } catch { try? fm.removeItem(at: temp); throw error }
         guard rename(temp.path, url.path) == 0 else {
@@ -363,15 +369,118 @@ public enum ThemeInstaller {
     /// Deletes folders Mactoy made: `mactoy-*` ones that carry our marker, and
     /// the `.mactoy-staging-<uuid>` / `.mactoy-old-<uuid>` ones an interrupted
     /// install can leave. Links are never followed or removed.
-    static func removeManagedFolders(in themes: URL, except keep: String?) {
+    /// Returns the names of the folders it removed.
+    @discardableResult
+    static func removeManagedFolders(in themes: URL, except keep: String?) -> [String] {
         let fm = FileManager.default
+        var removed: [String] = []
         for name in (try? fm.contentsOfDirectory(atPath: themes.path)) ?? [] where name != keep {
             let folder = themes.appendingPathComponent(name, isDirectory: true)
             guard !isSymlink(folder) else { continue }
             if (name.hasPrefix(managedPrefix) && readMarker(folder) != nil) || isLeftover(name) {
-                try? fm.removeItem(at: folder)
+                if (try? fm.removeItem(at: folder)) != nil { removed.append(name) }
             }
         }
+        return removed
+    }
+
+    // MARK: AppleDouble clutter
+
+    /// The first four bytes of every AppleDouble file.
+    static let appleDoubleMagic: [UInt8] = [0x00, 0x05, 0x16, 0x07]
+    /// A companion that only carries extended attributes is tiny; a bigger one holds something else.
+    static let maxAppleDoubleBytes = 64 * 1024
+
+    /// On exFAT, macOS keeps a file's extended attributes (the `com.apple.provenance`
+    /// it puts on every file an app writes) in a hidden `._<name>` beside it, so one
+    /// theme install can leave over a hundred of them on a user's stick. Removes the
+    /// ones that belong to what Mactoy just wrote or removed, and nothing else.
+    ///
+    /// Best effort: the change itself already succeeded, so a failure here is ignored.
+    /// Never reads or follows anything but plain files, and a `._X` goes only when
+    /// `isAppleDouble` agrees and `X` is there or was removed by Mactoy:
+    /// - everything under the installed theme folder, and the folder's own;
+    /// - those of the folders removed (`gone`) from `ventoy/themes`;
+    /// - beside `ventoy/themes`, `ventoy.json` and its backup (and `ventoy`, if Mactoy made it).
+    ///
+    /// With `removeEmptyThemesFolder`, `ventoy/themes` goes too once nothing is left in it.
+    static func removeAppleDoubleClutter(on volume: URL, installed: String?, gone: [String],
+                                         createdVentoyFolder: Bool, removeEmptyThemesFolder: Bool) {
+        let ventoy = volume.appendingPathComponent("ventoy", isDirectory: true)
+        let themes = ventoy.appendingPathComponent("themes", isDirectory: true)
+        if let installed {
+            let folder = themes.appendingPathComponent(installed, isDirectory: true)
+            removeCompanions(under: folder)
+            removeCompanion(of: installed, in: themes, counterpartRemoved: false)
+        }
+        for name in gone { removeCompanion(of: name, in: themes, counterpartRemoved: true) }
+
+        // "Empty" is measured after the companions of what was removed are gone.
+        var themesRemoved = false
+        if removeEmptyThemesFolder, fileType(themes) == .typeDirectory,
+           let left = rawEntries(of: themes), left.isEmpty {
+            // rmdir, not removeItem: it refuses a folder that has anything in it.
+            themesRemoved = rmdir(themes.path) == 0
+        }
+
+        removeCompanion(of: "themes", in: ventoy, counterpartRemoved: themesRemoved)
+        removeCompanion(of: "ventoy.json", in: ventoy, counterpartRemoved: false)
+        removeCompanion(of: backupName, in: ventoy, counterpartRemoved: false)
+        // Renamed over ventoy.json, so a companion left under this name has no file left.
+        removeCompanion(of: tempName, in: ventoy, counterpartRemoved: true)
+        if createdVentoyFolder { removeCompanion(of: "ventoy", in: volume, counterpartRemoved: false) }
+    }
+
+    /// Deletes `directory/._<name>` when it is an AppleDouble file and `name` is
+    /// beside it (or Mactoy has just removed it).
+    private static func removeCompanion(of name: String, in directory: URL, counterpartRemoved: Bool) {
+        guard counterpartRemoved || exists(directory.appendingPathComponent(name)) else { return }
+        let companion = directory.appendingPathComponent("._" + name)
+        if isAppleDouble(companion) { _ = unlink(companion.path) }
+    }
+
+    /// Every name in a folder, `._` files included. `FileManager.contentsOfDirectory`
+    /// leaves out a `._X` that sits beside an `X`, which is exactly what is wanted here.
+    /// Nil when the folder can't be read.
+    static func rawEntries(of directory: URL) -> [String]? {
+        guard let stream = opendir(directory.path) else { return nil }
+        defer { closedir(stream) }
+        var names: [String] = []
+        while let entry = readdir(stream) {
+            let name = withUnsafeBytes(of: &entry.pointee.d_name) { raw in
+                String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
+            }
+            if name != "." && name != ".." { names.append(name) }
+        }
+        return names
+    }
+
+    /// Every `._X` under a folder Mactoy just built whose `X` is beside it.
+    private static func removeCompanions(under folder: URL) {
+        let names = rawEntries(of: folder) ?? []
+        let present = Set(names)
+        for name in names {
+            if name.hasPrefix("._"), name.count > 2 {
+                if present.contains(String(name.dropFirst(2))) { removeCompanion(of: String(name.dropFirst(2)), in: folder, counterpartRemoved: false) }
+            } else if fileType(folder.appendingPathComponent(name)) == .typeDirectory {
+                removeCompanions(under: folder.appendingPathComponent(name, isDirectory: true))
+            }
+        }
+    }
+
+    /// A regular file (not a link), at most `maxAppleDoubleBytes`, that starts with the AppleDouble magic.
+    static func isAppleDouble(_ url: URL) -> Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              let size = (attributes[.size] as? NSNumber)?.intValue,
+              size >= appleDoubleMagic.count, size <= maxAppleDoubleBytes
+        else { return false }
+        // O_NOFOLLOW: a link put there after the check above is not opened.
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW)
+        guard descriptor >= 0 else { return false }
+        defer { close(descriptor) }
+        var head = [UInt8](repeating: 0, count: appleDoubleMagic.count)
+        return read(descriptor, &head, head.count) == head.count && head == appleDoubleMagic
     }
 
     static func isLeftover(_ name: String) -> Bool {
