@@ -1,0 +1,42 @@
+name: Themes
+
+# Checks boot-theme pull requests: the catalog, every download against its checksum,
+# the bundled copy that ships in the app, and that the gallery page is regenerated.
+# The path lists are repeated under `pull_request` and `push` on purpose (no YAML anchors).
+on:
+  pull_request:
+    paths:
+      - "themes/**"
+      - "scripts/themes/**"
+      - "Sources/MactoyKit/Theme*.swift"
+      - "Sources/MactoyKit/VentoyConfigEditor.swift"
+      - ".github/workflows/themes.yml"
+  push:
+    branches: [main]
+    paths:
+      - "themes/**"
+      - "scripts/themes/**"
+      - "Sources/MactoyKit/Theme*.swift"
+      - "Sources/MactoyKit/VentoyConfigEditor.swift"
+      - ".github/workflows/themes.yml"
+  schedule:
+    # Weekly: catches a theme whose download changed upstream.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the themes tool
+        run: swift test --package-path scripts/themes
+      # No --only: the bundled-folder byte checks run only with --download, and they need the whole catalog.
+      - name: Validate the catalog and download every theme
+        run: swift run --package-path scripts/themes mactoy-themes validate themes/catalog.json --download
+      - name: Check the gallery page is up to date
+        run: swift run --package-path scripts/themes mactoy-themes gallery themes/catalog.json themes/README.md --check

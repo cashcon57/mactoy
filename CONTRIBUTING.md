@@ -100,6 +100,46 @@ without the change:
   entry in `CHANGELOG.md`). Don't remove or weaken any layer, even if it looks
   redundant.
 
+## Adding a boot theme
+
+Mactoy's theme picker lists the themes in [`themes/catalog.json`](themes/catalog.json). The app reads that file from `main`, so once a theme PR is merged it appears for everyone without a new Mactoy release. Theme PRs are welcome, and they need a screenshot.
+
+1. Find a fixed download of the theme: a release asset, or a commit archive (`https://codeload.github.com/<owner>/<repo>/zip/<full commit SHA>`). Branch archives change, so they aren't accepted.
+2. Get its checksum and the folder that holds `theme.txt`:
+
+   ```sh
+   swift run --package-path scripts/themes mactoy-themes hash <url>
+   ```
+
+3. Add an entry to `themes/catalog.json`. Copy an existing entry, set `download.root` to the folder from step 2, and set `settings`:
+   - `file` (usually `theme.txt`);
+   - any `fonts` (`.pf2`) the theme needs;
+   - `gfxmode` (`1920x1080,auto` unless the theme is designed for another size);
+   - optionally `ventoy_left`, `ventoy_top`, `ventoy_color`.
+
+   Set `showsVentoyHotkeys` to `false` for general GRUB themes that don't show Ventoy's F1–F6 bar.
+4. Add a screenshot of the theme booted in Ventoy as `themes/previews/<id>.jpg` (16:9, at least 1280 px wide, at most 600 KB). `scripts/themes/render-preview.sh <id>` makes one in QEMU (`brew install qemu`); a photo or capture from a real machine is fine too.
+5. Check it and regenerate the gallery:
+
+   ```sh
+   swift run --package-path scripts/themes mactoy-themes validate themes/catalog.json --download --only <id>
+   swift run --package-path scripts/themes mactoy-themes gallery themes/catalog.json themes/README.md
+   ```
+
+6. Try it on a Ventoy drive that is mounted on your Mac. The theme isn't on `main` yet, so install it from your local catalog:
+
+   ```sh
+   swift run --package-path scripts/themes mactoy-themes install themes/catalog.json /Volumes/<your Ventoy drive> <id>
+   ```
+
+7. Open the PR with the theme template (add `?template=theme.md` to the new-PR URL) and paste the screenshot. CI runs `validate --download` on the whole catalog and `gallery --check`, and the maintainer reviews the screenshot and the download before merging.
+
+What Mactoy copies to a drive: only `.txt`, `.png`, `.jpg`, `.jpeg`, `.tga` and `.pf2` files, never hidden files, at most 40 MB. It never copies `.cfg` files, because Ventoy runs `ventoy_grub.cfg` as a script at boot. The only settings Mactoy writes are the six `settings` keys above, and it changes nothing else in the user's `ventoy.json`.
+
+The default theme, Catppuccin Mocha, ships inside the app under `themes/bundled/`, so installing it needs no download. A PR that touches `themes/bundled/` gets extra scrutiny, because those bytes ship in the app. CI checks each bundled folder byte for byte against its pinned download. Folders there are made with `swift run --package-path scripts/themes mactoy-themes bundle themes/catalog.json <id> themes/bundled`, never by hand, and a folder is only used while its name and marker match the catalog entry, so changing that entry means running `bundle` again.
+
+If you're only adding a theme to the picker, leave `themes/bundled/` alone.
+
 ## AI-assisted contributions
 
 These are welcome. Please say in the PR that you used an AI tool.
