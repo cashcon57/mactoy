@@ -244,6 +244,7 @@ The [original proof-of-concept](https://gist.github.com/VladimirMakaev/93503ab7c
 - Ventoy tarballs are SHA-256-verified against the `sha256.txt` file published alongside each Ventoy release before the bytes are handed to the driver. Cache reuse re-verifies on every install. The cached tarball (current version only, ~20 MB) lives in `/Library/Application Support/Mactoy/Cache/`; delete that folder if you remove Mactoy.
 - The helper has a narrow entitlement set (`com.apple.security.network.client` only, to fetch the Ventoy tarball).
 - **Boot themes.** The theme list is [`themes/catalog.json`](themes/catalog.json) on `main`, and changes to it go through review. Each theme is pinned to one exact download by SHA-256, and Mactoy refuses a download that doesn't match. From a download, only `.txt`, `.png`, `.jpg`, `.jpeg`, `.tga` and `.pf2` files are copied, and never `.cfg` files, which Ventoy would run as boot scripts. A `.zip` you add yourself is unpacked in a separate process with size and file-name checks, then passes the same file filter. On the drive, Mactoy changes only the `theme` setting in `ventoy.json`, keeps a copy of your original `ventoy.json` (from before Mactoy first changed it) as `ventoy.json.mactoy-backup`, never follows links, and only ever deletes theme folders it created. Catppuccin Mocha ships inside the app, and CI checks it byte for byte against its pinned download.
+- **What the theme feature fetches.** Mactoy fetches the theme list and theme previews from this repository on GitHub (raw.githubusercontent.com) when it starts and when you open the theme picker, and downloads a theme from its author's release or commit archive when you choose it. Nothing about you or your drives is sent.
 - See [`SECURITY.md`](SECURITY.md) for the full threat model and the remaining known limitations.
 
 ## Building from source
@@ -291,7 +292,7 @@ Mactoy/
 ├── app-support/             Info.plist (outside SPM resources)
 ├── scripts/                 build-app.sh, build-dmg.sh
 ├── themes/                  Boot theme catalog, previews and generated gallery
-├── scripts/themes/          mactoy-themes tool (validate, hash, gallery, install) and preview renderer
+├── scripts/themes/          mactoy-themes tool (validate, hash, gallery, credits, install) and preview renderer
 ├── docs/specs/              design specs
 └── build/                   (git-ignored) .app + .dmg output
 ```

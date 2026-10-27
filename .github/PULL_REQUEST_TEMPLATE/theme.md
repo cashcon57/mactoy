@@ -21,6 +21,7 @@ How I made it: <!-- real machine (which?) / render-preview.sh -->
 - [ ] Added `themes/previews/<id>.jpg`: JPEG, 16:9, at least 1280 px wide, at most 600 KB
 - [ ] `swift run --package-path scripts/themes mactoy-themes validate themes/catalog.json --download --only <id>` passes
 - [ ] Regenerated the gallery: `swift run --package-path scripts/themes mactoy-themes gallery themes/catalog.json themes/README.md`
+- [ ] Regenerated the preview credits: `swift run --package-path scripts/themes mactoy-themes credits themes/catalog.json themes/previews/CREDITS.md`
 - [ ] The theme's license allows people to download and use it
 - [ ] I tried it on a Ventoy drive (Mactoy's Manage Disk → Theme → Add Theme from File…, or the `install` command)
 - [ ] AI tools used? Say which, here:

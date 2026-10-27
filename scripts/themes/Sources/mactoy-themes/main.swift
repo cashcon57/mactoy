@@ -75,18 +75,23 @@ func hash(_ rest: [String]) async {
     } catch { fail("\(error)") }
 }
 
-func gallery(_ rest: [String]) {
-    guard rest.count >= 2 else { fail("usage: gallery <catalog.json> <out.md> [--check]") }
-    let text = galleryMarkdown(loadCatalog(rest[0]))
+/// Writes a page made from the catalog, or with `--check` says whether the file is what the catalog would make now.
+func writeGenerated(_ command: String, _ rest: [String], page: (ThemeCatalog) -> String) {
+    guard rest.count >= 2 else { fail("usage: \(command) <catalog.json> <out.md> [--check]") }
+    let text = page(loadCatalog(rest[0]))
     let out = URL(fileURLWithPath: rest[1])
     if rest.contains("--check") {
-        guard (try? String(contentsOf: out, encoding: .utf8)) == text else { fail("\(rest[1]) is out of date; run the gallery command") }
-        print("gallery up to date")
+        guard (try? String(contentsOf: out, encoding: .utf8)) == text else { fail("\(rest[1]) is out of date; run the \(command) command") }
+        print("\(command) up to date")
     } else {
         do { try text.write(to: out, atomically: true, encoding: .utf8) } catch { fail("\(error)") }
         print("wrote \(rest[1])")
     }
 }
+
+func gallery(_ rest: [String]) { writeGenerated("gallery", rest, page: galleryMarkdown) }
+
+func credits(_ rest: [String]) { writeGenerated("credits", rest, page: creditsMarkdown) }
 
 func install(_ rest: [String]) async {
     guard rest.count >= 3 else { fail("usage: install <catalog.json> <volume> <id>") }
@@ -136,7 +141,8 @@ switch args.first {
 case "validate": await validate(Array(args.dropFirst()))
 case "hash": await hash(Array(args.dropFirst()))
 case "gallery": gallery(Array(args.dropFirst()))
+case "credits": credits(Array(args.dropFirst()))
 case "install": await install(Array(args.dropFirst()))
 case "bundle": await bundle(Array(args.dropFirst()))
-default: fail("usage: mactoy-themes validate|hash|gallery|install|bundle …")
+default: fail("usage: mactoy-themes validate|hash|gallery|credits|install|bundle …")
 }

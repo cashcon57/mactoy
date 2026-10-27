@@ -115,6 +115,38 @@ struct ThemesToolTests {
         #expect(md.contains("by Someone · MIT"))
     }
 
+    // MARK: Preview credits
+
+    @Test func creditsNameEachPreviewsAuthorLicenseAndHomepage() {
+        let md = creditsMarkdown(ThemeCatalog(schema: 1, themes: [Self.entry(name: "Demo Theme", author: "Diego Duarte", license: "GPL-3.0")]))
+        #expect(md.contains("| demo.jpg | Demo Theme | Diego Duarte | GPL-3.0 | [https://github.com/someone/demo](https://github.com/someone/demo) |"))
+    }
+
+    @Test func creditsIncludeVentoysOwnMenuAfterTheThemes() {
+        let md = creditsMarkdown(ThemeCatalog(schema: 1, themes: [Self.entry()]))
+        let rows = md.split(separator: "\n").filter { $0.hasPrefix("| ") && !$0.hasPrefix("| Picture") }
+        #expect(rows.count == 2)
+        #expect(rows.last == "| ventoy-default.jpg | Ventoy's own menu | Ventoy | GPL-3.0 | [https://www.ventoy.net](https://www.ventoy.net) |")
+    }
+
+    @Test func aHostileEntryKeepsTheCreditsTableAndAddsNoLink() {
+        let md = creditsMarkdown(ThemeCatalog(schema: 1, themes: [
+            Self.entry(name: Self.evil, author: Self.evil, license: Self.evil, homepage: "https://example.com/a(b)"),
+        ]))
+        let row = Array(md.split(separator: "\n").first { $0.hasPrefix("| demo.jpg") }!)
+        // Five columns: six pipes that aren't escaped.
+        var bare = 0
+        for (i, c) in row.enumerated() where c == "|" && (i == 0 || row[i - 1] != "\\") { bare += 1 }
+        #expect(bare == 6)
+        #expect(!String(row).contains("<b>"))
+        #expect(String(row).contains("](https://example.com/a%28b%29)"))
+    }
+
+    @Test func creditsLinkOnlyHttpsHomepages() {
+        let md = creditsMarkdown(ThemeCatalog(schema: 1, themes: [Self.entry(homepage: "http://example.com")]))
+        #expect(md.contains("| MIT | http://example.com |"))
+    }
+
     // MARK: Previews
 
     @Test func aSymlinkedPreviewIsRejected() throws {
@@ -158,7 +190,8 @@ struct ThemesToolTests {
         #expect(previewProblemsFor(scratch).isEmpty, "optional: a catalog without it is fine")
         try Self.writeJPEG(width: 1600, height: 900, to: scratch.url.appendingPathComponent("previews/ventoy-default.jpg"))
         try scratch.write("previews/README.txt", "other files in previews are left alone")
-        #expect(previewProblemsFor(scratch).isEmpty, "present, with no catalog entry of that name, is accepted")
+        try scratch.write("previews/CREDITS.md", "# Preview credits\n")
+        #expect(previewProblemsFor(scratch).isEmpty, "present, with no catalog entry of that name, is accepted; so are files that aren't pictures")
     }
 
     @Test func theVentoyDefaultPictureIsHeldToTheSameRulesAsAnyPreview() throws {

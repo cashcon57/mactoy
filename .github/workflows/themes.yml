@@ -2,7 +2,7 @@ name: Themes
 
 # Checks boot-theme pull requests: the app's own tests (they also check the bundled copy
 # against the catalog), the catalog, every download against its checksum, the bundled copy
-# that ships in the app, and that the gallery page is regenerated.
+# that ships in the app, and that the gallery page and the preview credits are regenerated.
 # The path lists are repeated under `pull_request` and `push` on purpose (no YAML anchors).
 on:
   pull_request:
@@ -44,3 +44,5 @@ jobs:
         run: swift run --package-path scripts/themes mactoy-themes validate themes/catalog.json --download
       - name: Check the gallery page is up to date
         run: swift run --package-path scripts/themes mactoy-themes gallery themes/catalog.json themes/README.md --check
+      - name: Check the preview credits are up to date
+        run: swift run --package-path scripts/themes mactoy-themes credits themes/catalog.json themes/previews/CREDITS.md --check
