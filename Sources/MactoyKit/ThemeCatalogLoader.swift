@@ -36,6 +36,14 @@ public struct ThemeCatalogLoader: Sendable {
             Self.writeAtomically(data, to: cachedCatalogURL)
             return (catalog, .remote)
         }
+        return loadLocal()
+    }
+
+    /// The copies already on this Mac, with no network: the one the last
+    /// good `load()` cached, else the one bundled in the app, else nothing.
+    /// Lets the app show themes right away while `load()` waits on a slow
+    /// connection.
+    public func loadLocal() -> (catalog: ThemeCatalog, source: Source) {
         if let data = try? Data(contentsOf: cachedCatalogURL), let catalog = Self.decode(data) { return (catalog, .cached) }
         if let url = bundledCatalog, let data = try? Data(contentsOf: url), let catalog = Self.decode(data) { return (catalog, .bundled) }
         return (ThemeCatalog(schema: ThemeCatalog.supportedSchema, themes: []), .none)

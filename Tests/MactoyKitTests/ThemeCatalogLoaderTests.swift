@@ -72,6 +72,36 @@ struct ThemeCatalogLoaderTests {
         #expect(source == .cached)
     }
 
+    @Test("loadLocal: cache, else bundle, else nothing, and never the network")
+    func localOnly() async throws {
+        let dir = tempDir()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let t = Transport()
+        t.responses[ThemeCatalogLoader.remoteCatalogURL] = try catalogData(ids: ["from-remote"])
+
+        // Nothing on disk yet, even though the network would answer.
+        var (catalog, source) = makeLoader(t, in: dir).loadLocal()
+        #expect(source == .none && catalog.themes.isEmpty)
+
+        let bundled = dir.appendingPathComponent("bundled.json")
+        try catalogData(ids: ["from-bundle"]).write(to: bundled)
+        let loader = makeLoader(t, in: dir, bundled: bundled)
+        (catalog, source) = loader.loadLocal()
+        #expect(source == .bundled && catalog.themes.map(\.id) == ["from-bundle"])
+
+        // A successful load() leaves a cached copy, which now wins over the bundle.
+        _ = await loader.load()
+        t.requested = []
+        (catalog, source) = loader.loadLocal()
+        #expect(source == .cached && catalog.themes.map(\.id) == ["from-remote"])
+
+        // A damaged cache falls through to the bundle.
+        try Data("garbage".utf8).write(to: dir.appendingPathComponent("cache/catalog.json"))
+        (catalog, source) = loader.loadLocal()
+        #expect(source == .bundled && catalog.themes.map(\.id) == ["from-bundle"])
+        #expect(t.requested.isEmpty)
+    }
+
     @Test("nothing anywhere gives an empty catalog")
     func nothing() async throws {
         let loader = makeLoader(Transport(), in: tempDir())
