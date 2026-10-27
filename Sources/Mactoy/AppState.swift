@@ -71,6 +71,11 @@ struct EraseConfirmation: Identifiable {
     /// The sheet's "save it first" box, ticked unless the user clears it.
     /// Only means something while `driveThemeName` is set.
     var saveDriveThemeFirst: Bool = true
+    /// The drive-theme probe for this confirmation hasn't answered yet (and
+    /// its cap hasn't run out). The sheet keeps Erase disabled meanwhile,
+    /// so a theme the user would have wanted kept can't be erased before
+    /// the offer to save it has had its chance.
+    var driveThemeProbePending: Bool = false
 }
 
 @MainActor
@@ -167,7 +172,9 @@ final class AppState: ObservableObject {
     /// Adds a theme to a freshly installed disk; returns a problem to
     /// report, or nil. Set by the app to `ThemeStore.applyAfterInstall`;
     /// a seam so tests don't touch disks or the network.
-    var installThemeApplier: @MainActor (ThemeChoice, DiskTarget) async -> String? = { _, _ in nil }
+    /// Until the app sets it, it reports a problem: a missing hookup must show
+    /// up, not claim a theme that was never added.
+    var installThemeApplier: @MainActor (ThemeChoice, DiskTarget) async -> String? = { _, _ in "theme support isn't set up." }
     /// Looks for a theme worth keeping on the disk an Install is about to
     /// erase. Set by the app to `ThemeStore.savableDriveTheme`; a seam so
     /// tests touch no disks. It reads a drive, so it never runs on the main actor.
@@ -177,6 +184,9 @@ final class AppState: ObservableObject {
     var driveThemeSaver: @MainActor (URL) async throws -> Void = { _ in }
     /// Which disk a mounted volume is on ("disk7s2"), read off the main
     /// actor (diskutil can stall on a drive mid-eject). Seam for tests.
+    /// How long the erase sheet waits for `driveThemeProbe` before it lets the
+    /// user go ahead without the offer. Seam for tests.
+    var driveThemeProbeCap: UInt64 = 3_000_000_000
     var driveVolumeIdentifier: @Sendable (URL) async -> String? = { volume in
         await Task.detached(priority: .userInitiated) { VentoyVolumeLocator.deviceIdentifier(of: volume) }.value
     }
@@ -793,7 +803,8 @@ final class AppState: ObservableObject {
             secureBoot: mode == .updateVentoy ? updateSecureBoot : installSecureBoot,
             partitionStyle: effectiveInstallPartitionStyle(for: target),
             isTimeMachineBackup: isTimeMachineBackup(target),
-            theme: mode == .installVentoy ? installTheme : .ventoyDefault
+            theme: mode == .installVentoy ? installTheme : .ventoyDefault,
+            driveThemeProbePending: mode == .installVentoy
         )
         pendingEraseConfirmation = confirmation
         // The sheet opens now; the used-space line fills in when the
@@ -810,9 +821,19 @@ final class AppState: ObservableObject {
         let probe = driveThemeProbe
         Task { [weak self] in
             let found = await probe(target)
-            guard let found, let self, self.pendingEraseConfirmation?.id == confirmation.id else { return }
+            guard let self, self.pendingEraseConfirmation?.id == confirmation.id else { return }
+            self.pendingEraseConfirmation?.driveThemeProbePending = false
+            guard let found else { return }
             self.pendingEraseConfirmation?.driveThemeName = found.name
             self.pendingEraseConfirmation?.driveThemeVolume = found.volume
+        }
+        // A drive that never answers must not hold Erase shut. After the cap
+        // the button works; an answer that comes later still adds the box.
+        let cap = driveThemeProbeCap
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: cap)
+            guard let self, self.pendingEraseConfirmation?.id == confirmation.id else { return }
+            self.pendingEraseConfirmation?.driveThemeProbePending = false
         }
     }
 
@@ -899,21 +920,9 @@ final class AppState: ObservableObject {
             saveThemeFrom: confirmedSaveThemeFrom
         )
 
-        // Layer 6 (BSD-name guard): even if the rest of the
-        // fingerprint coincidentally matches a different live disk
-        // with the same `bsdName`, refuse if the captured BSD name
-        // differs from what the disk list currently believes is
-        // selected. The selection-freeze in `applyDiskList` should
-        // already prevent drift, but defense-in-depth wins here.
-        if let liveSelection = selectedDiskBSD, liveSelection != target.bsdName {
-            status = .failed(
-                "Refusing to run: the selected disk changed between confirmation and execution. " +
-                "Confirmed /dev/\(target.bsdName), but the sidebar now shows /dev/\(liveSelection) selected. " +
-                "This usually means a USB drive was plugged or unplugged during the confirmation. Please re-select the disk and try again."
-            )
-            Self.log.error("run() aborted: selection drifted (confirmed=\(target.bsdName, privacy: .public), live=\(liveSelection, privacy: .public))")
-            return
-        }
+        // Layer 6 (BSD-name guard), in `passesBSDNameGuard`. Also run
+        // again after a pre-erase theme save, which can take a while.
+        guard passesBSDNameGuard(target) else { return }
 
         // Time Machine guard (PR #13, v0.6.0): never write to a backup
         // drive the user hasn't unlocked. `canRun` already hides the
@@ -950,30 +959,9 @@ final class AppState: ObservableObject {
         status = .preparing("Preparing install plan...")
         Self.log.info("run() begin: mode=\(confirmedMode.rawValue, privacy: .public) target=/dev/\(target.bsdName, privacy: .public) secureBoot=\(confirmedSecureBoot, privacy: .public) partitionStyle=\(confirmedPartitionStyle.rawValue, privacy: .public)")
 
-        // Layer 4 (app-side re-verification): probe the live disk and
-        // assert its identity matches what the user confirmed.
-        // Anything mismatched (size, mediaName, external/removable
-        // flags, BSD name) means the disk that's at /dev/<bsd> right
-        // now is NOT the disk the user confirmed. Abort hard — better
-        // a clear error than a silent wrong-disk write.
-        do {
-            let live = try DiskInfo.probe(bsdName: target.bsdName)
-            if let mismatch = target.fingerprintMismatch(against: live) {
-                status = .failed(
-                    "Refusing to run: the disk at /dev/\(target.bsdName) is not the same disk you confirmed. \(mismatch). " +
-                    "This typically means a USB device was unplugged or replugged after you clicked the confirm button. Please re-select your target disk and try again."
-                )
-                Self.log.error("run() aborted: fingerprint mismatch — \(mismatch, privacy: .public)")
-                return
-            }
-        } catch {
-            status = .failed(
-                "Refusing to run: could not re-verify /dev/\(target.bsdName) before writing. \(error.localizedDescription) " +
-                "Please re-select the disk and try again."
-            )
-            Self.log.error("run() aborted: probe failed — \(error.localizedDescription, privacy: .private)")
-            return
-        }
+        // Layer 4 (app-side re-verification), in `passesLiveFingerprintCheck`.
+        // Also run again after a pre-erase theme save.
+        guard passesLiveFingerprintCheck(target) else { return }
 
         guard var plan = makePlan(
             target: target,
@@ -1028,6 +1016,12 @@ final class AppState: ObservableObject {
         // from a half-erased drive.
         if confirmedMode == .installVentoy, let themeVolume = confirmedSaveThemeFrom {
             guard await saveDriveThemeBeforeErase(from: themeVolume, on: target) else { return }
+            // The save can take a while on a slow stick, and Layer 4 is meant
+            // to run immediately before the plan goes to the helper: check
+            // the selection and the live disk again. Only after a save; a run
+            // without one has nothing between the checks and the helper but
+            // the plan.
+            guard passesBSDNameGuard(target), passesLiveFingerprintCheck(target) else { return }
         }
 
         do {
@@ -1190,6 +1184,55 @@ final class AppState: ObservableObject {
         // poll resume path needs them.
     }
 
+    /// Layer 6 (BSD-name guard): even if the rest of the
+    /// fingerprint coincidentally matches a different live disk
+    /// with the same `bsdName`, refuse if the captured BSD name
+    /// differs from what the disk list currently believes is
+    /// selected. The selection-freeze in `applyDiskList` should
+    /// already prevent drift, but defense-in-depth wins here.
+    /// Sets `.failed` and returns false when it refuses.
+    private func passesBSDNameGuard(_ target: DiskTarget) -> Bool {
+        if let liveSelection = selectedDiskBSD, liveSelection != target.bsdName {
+            status = .failed(
+                "Refusing to run: the selected disk changed between confirmation and execution. " +
+                "Confirmed /dev/\(target.bsdName), but the sidebar now shows /dev/\(liveSelection) selected. " +
+                "This usually means a USB drive was plugged or unplugged during the confirmation. Please re-select the disk and try again."
+            )
+            Self.log.error("run() aborted: selection drifted (confirmed=\(target.bsdName, privacy: .public), live=\(liveSelection, privacy: .public))")
+            return false
+        }
+        return true
+    }
+
+    /// Layer 4 (app-side re-verification): probe the live disk and
+    /// assert its identity matches what the user confirmed.
+    /// Anything mismatched (size, mediaName, external/removable
+    /// flags, BSD name) means the disk that's at /dev/<bsd> right
+    /// now is NOT the disk the user confirmed. Abort hard — better
+    /// a clear error than a silent wrong-disk write.
+    /// Sets `.failed` and returns false when it refuses.
+    private func passesLiveFingerprintCheck(_ target: DiskTarget) -> Bool {
+        do {
+            let live = try DiskInfo.probe(bsdName: target.bsdName)
+            if let mismatch = target.fingerprintMismatch(against: live) {
+                status = .failed(
+                    "Refusing to run: the disk at /dev/\(target.bsdName) is not the same disk you confirmed. \(mismatch). " +
+                    "This typically means a USB device was unplugged or replugged after you clicked the confirm button. Please re-select your target disk and try again."
+                )
+                Self.log.error("run() aborted: fingerprint mismatch — \(mismatch, privacy: .public)")
+                return false
+            }
+        } catch {
+            status = .failed(
+                "Refusing to run: could not re-verify /dev/\(target.bsdName) before writing. \(error.localizedDescription) " +
+                "Please re-select the disk and try again."
+            )
+            Self.log.error("run() aborted: probe failed — \(error.localizedDescription, privacy: .private)")
+            return false
+        }
+        return true
+    }
+
     /// The plan `run(...)` hands to the helper, built from the choices
     /// captured at confirmation. `nil` for modes that don't run (Manage
     /// Disk) or a Flash Image run with no image picked. Internal so
@@ -1270,7 +1313,7 @@ final class AppState: ObservableObject {
             // The reason is spliced into a sentence of its own.
             var reason = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
             while reason.hasSuffix(".") { reason.removeLast() }
-            status = .failed("Couldn't save the drive's boot theme: \(reason). Nothing was erased. To erase without saving, untick the option and try again.")
+            status = .failed("Couldn't save the drive's boot theme: \(reason). Nothing was erased. Choose Retry to try saving again, or choose Done and start the install again with the option unticked to erase without saving.")
             Self.log.error("run() aborted: couldn't save the drive's theme before the erase")
             return false
         }

@@ -100,6 +100,16 @@ struct EraseConfirmationSheet: View {
                 tint: isUpdate ? .accentColor.opacity(0.15) : .red.opacity(0.15)
             )
 
+            // Erase waits (briefly) for the look at the drive's theme, so a theme
+            // the user would want kept isn't erased before the offer can appear.
+            if info.mode == .installVentoy, liveConfirmation.driveThemeProbePending {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking this drive for a boot theme to keep…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             if info.mode == .installVentoy, let name = liveConfirmation.driveThemeName {
                 Toggle(isOn: saveThemeFirst) {
                     Text("Save this drive's boot theme (“\(name)”) to My Themes first")
@@ -133,6 +143,7 @@ struct EraseConfirmationSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.large)
                 .tint(isUpdate ? .accentColor : .red)
+                .disabled(liveConfirmation.driveThemeProbePending)
             }
         }
         .padding(26)

@@ -164,6 +164,21 @@ struct InstallThemeTests {
         #expect(!s.canRetryRun, "a Retry here would erase the drive again")
     }
 
+    @Test("with no applier wired in, the success message says so instead of claiming a theme")
+    func unwiredApplier() async {
+        let d = TempDefaults(); defer { d.remove() }
+        let s = Fixture.state(d)
+        s.status = .success("Install complete")
+        await s.addThemeAfterInstall(.catalog(id: "tela"), mode: .installVentoy, to: disk())
+        guard case .success(let m) = s.status else { Issue.record("not success"); return }
+        #expect(m == "Install complete. The boot theme wasn't added: theme support isn't set up. You can add it from Manage Disk.")
+        // Ventoy's own theme needs no applier, so nothing is reported.
+        s.status = .success("Install complete")
+        await s.addThemeAfterInstall(.ventoyDefault, mode: .installVentoy, to: disk())
+        guard case .success(let m2) = s.status else { Issue.record("not success"); return }
+        #expect(m2 == "Install complete")
+    }
+
     @Test("default theme, update and flash skip the applier")
     func skipped() async {
         let d = TempDefaults(); defer { d.remove() }
@@ -350,6 +365,92 @@ struct InstallThemeSaveFirstTests {
         #expect(probes.n == 1)
     }
 
+    // MARK: Erase waits for the probe
+
+    @Test("Erase is held until the probe answers, whether it finds a theme or not")
+    func eraseHeldUntilProbeAnswers() async {
+        let d = TempDefaults(); defer { d.remove() }
+        let url = volume
+        for found in [true, false] {
+            let s = Fixture.state(d)
+            s.driveThemeProbeCap = 600_000_000_000     // only the answer may release it here, not the cap
+            s.driveThemeProbe = { _ in
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                return found ? (name: "Sunset", volume: url) : nil
+            }
+            s.mode = .installVentoy
+            s.requestRun()
+            #expect(s.pendingEraseConfirmation?.driveThemeProbePending == true, "held from the moment the sheet opens")
+            await Fixture.wait { s.pendingEraseConfirmation?.driveThemeProbePending == false }
+            #expect(s.pendingEraseConfirmation?.driveThemeProbePending == false)
+            #expect((s.pendingEraseConfirmation?.driveThemeName != nil) == found)
+        }
+    }
+
+    @Test("a drive that never answers holds Erase only for the cap; a later answer still adds the box")
+    func eraseHeldOnlyForTheCap() async {
+        let d = TempDefaults(); defer { d.remove() }
+        let s = Fixture.state(d)
+        let url = volume
+        s.driveThemeProbeCap = 100_000_000
+        s.driveThemeProbe = { _ in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            return (name: "Sunset", volume: url)
+        }
+        s.mode = .installVentoy
+        s.requestRun()
+        #expect(s.pendingEraseConfirmation?.driveThemeProbePending == true)
+        await Fixture.wait { s.pendingEraseConfirmation?.driveThemeProbePending == false }
+        #expect(s.pendingEraseConfirmation?.driveThemeProbePending == false, "the cap released it")
+        #expect(s.pendingEraseConfirmation?.driveThemeName == nil, "the probe hasn't answered; no box yet")
+        await Fixture.wait { s.pendingEraseConfirmation?.driveThemeName != nil }
+        #expect(s.pendingEraseConfirmation?.driveThemeName == "Sunset")
+        #expect(s.pendingEraseConfirmation?.driveThemeProbePending == false)
+    }
+
+    @Test("the default cap is 3 seconds")
+    func defaultCap() {
+        let d = TempDefaults(); defer { d.remove() }
+        #expect(Fixture.state(d).driveThemeProbeCap == 3_000_000_000)
+    }
+
+    @Test("only an Install's sheet is held, and an old probe or cap never releases a newer one")
+    func heldPerConfirmation() async throws {
+        let d = TempDefaults(); defer { d.remove() }
+        let s = Fixture.state(d)
+        let url = volume
+
+        s.mode = .updateVentoy
+        s.applyProbeResult(Fixture.probe("disk97"))
+        s.requestRun()
+        #expect(s.pendingEraseConfirmation?.driveThemeProbePending == false, "Update has nothing to wait for")
+        s.cancelRun()
+        s.mode = .flashImage
+        s.selectedImagePath = "/tmp/x.iso"
+        s.requestRun()
+        #expect(s.pendingEraseConfirmation?.driveThemeProbePending == false, "nor does Flash Image")
+        s.cancelRun()
+
+        // The first confirmation's probe and cap both run out while the second is open.
+        s.mode = .installVentoy
+        s.driveThemeProbeCap = 150_000_000
+        s.driveThemeProbe = { _ in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            return (name: "Old", volume: url)
+        }
+        s.requestRun()
+        s.cancelRun()
+        s.driveThemeProbeCap = 5_000_000_000
+        s.driveThemeProbe = { _ in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            return (name: "New", volume: url)
+        }
+        s.requestRun()
+        try await Task.sleep(nanoseconds: 450_000_000)
+        #expect(s.pendingEraseConfirmation?.driveThemeProbePending == true, "the first sheet's answer and cap don't release this one")
+        #expect(s.pendingEraseConfirmation?.driveThemeName == nil)
+    }
+
     // MARK: Capture at confirmation
 
     @Test("the box as it stood at confirmation is what run() is given, and Retry keeps it until a save has happened")
@@ -476,7 +577,7 @@ struct InstallThemeSaveFirstTests {
         let d = TempDefaults(); defer { d.remove() }
         let s = Fixture.state(d)
         s.driveVolumeIdentifier = { _ in "disk97s2" }
-        let expected = "Couldn't save the drive's boot theme: the library is read-only. Nothing was erased. To erase without saving, untick the option and try again."
+        let expected = "Couldn't save the drive's boot theme: the library is read-only. Nothing was erased. Choose Retry to try saving again, or choose Done and start the install again with the option unticked to erase without saving."
         for reason in ["the library is read-only", "the library is read-only."] {
             s.driveThemeSaver = { _ in throw SaveFailure(errorDescription: reason) }
             s.status = .idle
@@ -501,7 +602,7 @@ struct InstallThemeSaveFirstTests {
             #expect(!ok, "\(String(describing: id))")
             guard case .failed(let m) = s.status else { Issue.record("not failed: \(s.status)"); return }
             #expect(m.hasPrefix("Couldn't save the drive's boot theme: the drive's Ventoy volume is no longer mounted from /dev/disk97."))
-            #expect(m.hasSuffix("Nothing was erased. To erase without saving, untick the option and try again."))
+            #expect(m.hasSuffix("Nothing was erased. Choose Retry to try saving again, or choose Done and start the install again with the option unticked to erase without saving."))
         }
         #expect(saves.n == 0)
     }
@@ -602,33 +703,66 @@ struct InstallThemeSaveFirstTests {
 @Suite("run() call sites for the theme steps (source order)")
 struct InstallThemeRunSourceTests {
 
-    private func runBody() throws -> String {
+    private func source() throws -> String {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("Sources/Mactoy/AppState.swift"), encoding: .utf8)
+        return try String(contentsOf: root.appendingPathComponent("Sources/Mactoy/AppState.swift"), encoding: .utf8)
+    }
+
+    private func runBody() throws -> String {
+        let source = try source()
         let start = try #require(source.range(of: "    func run(\n"))
-        let end = try #require(source.range(of: "    /// The plan `run(...)` hands to the helper", range: start.upperBound..<source.endIndex))
+        let end = try #require(source.range(of: "    /// Layer 6 (BSD-name guard): even if", range: start.upperBound..<source.endIndex))
         return String(source[start.lowerBound..<end.lowerBound])
     }
 
-    @Test("the save comes after the wrong-disk layers and the Time Machine check, and before the helper is called")
+    @Test("Layer 6, Time Machine and Layer 4 come first, then the save, then Layer 6 and Layer 4 again, then the helper")
     func saveOrder() throws {
         let body = try runBody()
-        func index(_ needle: String) throws -> String.Index {
-            try #require(body.range(of: needle)?.lowerBound, "missing in run(): \(needle)")
-        }
         let steps = [
-            "Layer 6 (BSD-name guard)",
+            "guard passesBSDNameGuard(target) else { return }",
             "try await timeMachineLookup()",
             "isLockedBackup(target)",
-            "DiskInfo.probe(bsdName: target.bsdName)",
-            "fingerprintMismatch(against: live)",
+            "guard passesLiveFingerprintCheck(target) else { return }",
             "guard await saveDriveThemeBeforeErase(from: themeVolume, on: target) else { return }",
+            "guard passesBSDNameGuard(target), passesLiveFingerprintCheck(target) else { return }",
             "try await HelperInvoker.run(",
         ]
-        let positions = try steps.map(index)
+        var positions: [String.Index] = []
+        for step in steps {
+            let range = try #require(body.range(of: step), "missing in run(): \(step)")
+            positions.append(range.lowerBound)
+        }
         #expect(positions == positions.sorted(), "the order of the checks, the save and the helper call changed")
-        // Only for an Install, and only when the box was ticked.
+        // The second pair of checks, and the save, are for a run that saves, and only then.
         #expect(body.contains("if confirmedMode == .installVentoy, let themeVolume = confirmedSaveThemeFrom {"))
+        let recheck = try #require(body.range(of: steps[5]))
+        let after = body[recheck.upperBound...].drop(while: { $0 == " " || $0 == "\n" })
+        #expect(after.hasPrefix("}"), "the second check must end the save block, so it runs only after a save")
+        // Each guard appears once at the top and once after the save, and nowhere else in run().
+        #expect(body.components(separatedBy: "passesBSDNameGuard(target)").count - 1 == 2)
+        #expect(body.components(separatedBy: "passesLiveFingerprintCheck(target)").count - 1 == 2)
+    }
+
+    @Test("the two layers keep their code and messages when run again after a save")
+    func layersKeepTheirCode() throws {
+        let source = try source()
+        func body(of function: String, until next: String) throws -> String {
+            let start = try #require(source.range(of: function))
+            let end = try #require(source.range(of: next, range: start.upperBound..<source.endIndex))
+            return String(source[start.lowerBound..<end.lowerBound])
+        }
+        let layer6 = try body(of: "private func passesBSDNameGuard", until: "    /// Layer 4 (app-side re-verification)")
+        #expect(layer6.contains("if let liveSelection = selectedDiskBSD, liveSelection != target.bsdName {"))
+        #expect(layer6.contains("Refusing to run: the selected disk changed between confirmation and execution. "))
+        #expect(layer6.contains("status = .failed("))
+        #expect(layer6.contains("return false"))
+        let layer4 = try body(of: "private func passesLiveFingerprintCheck", until: "    /// The plan `run(...)` hands to the helper")
+        #expect(layer4.contains("let live = try DiskInfo.probe(bsdName: target.bsdName)"))
+        #expect(layer4.contains("if let mismatch = target.fingerprintMismatch(against: live) {"))
+        #expect(layer4.contains("Refusing to run: the disk at /dev/"))
+        #expect(layer4.contains("Refusing to run: could not re-verify /dev/"))
+        #expect(layer4.components(separatedBy: "status = .failed(").count - 1 == 2)
+        #expect(layer4.components(separatedBy: "return false").count - 1 == 2)
     }
 
     @Test("both success sites add the confirmed theme")
