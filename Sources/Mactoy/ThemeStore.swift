@@ -60,6 +60,8 @@ final class ThemeStore: ObservableObject {
     /// dropped per theme when one is removed. A catalog entry can't take a `custom-` id
     /// (`ThemeEntry.problems()`), so the two never share a key anyway.
     @Published private(set) var customPreviews: [String: NSImage] = [:]
+    /// Ventoy's own menu, for the "Ventoy default" tile. Bundled in the app, so no download.
+    @Published private(set) var ventoyDefaultPreview: NSImage?
     /// "My Themes": kept on this Mac, so they outlive the session and the drive they came from.
     @Published private(set) var savedThemes: [SavedTheme] = []
     /// Files a file import left out, by saved id. Not stored with the theme, so only
@@ -101,6 +103,7 @@ final class ThemeStore: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
+        await loadVentoyDefaultPreview()
         await loadSavedThemes()
         let loader = self.loader
         // Only before anything is shown: once an online list is in, falling
@@ -116,6 +119,15 @@ final class ThemeStore: ObservableObject {
         guard remote.source == .remote, !themes.isEmpty else { return }
         catalog = themes
         catalogSource = .remote
+    }
+
+    /// Reads the bundled picture off the main actor; only the image is made here. Asked for
+    /// by every view that shows the default theme, and only the first call reads anything.
+    func loadVentoyDefaultPreview() async {
+        guard ventoyDefaultPreview == nil else { return }
+        let loader = self.loader
+        let data = await Task.detached(priority: .userInitiated) { loader.ventoyDefaultPreviewData() }.value
+        if ventoyDefaultPreview == nil, let data, let image = NSImage(data: data) { ventoyDefaultPreview = image }
     }
 
     func loadPreview(for entry: ThemeEntry) async {

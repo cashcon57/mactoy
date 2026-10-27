@@ -318,6 +318,39 @@ struct ThemeCatalogLoaderTests {
         #expect(t.requested.isEmpty)
     }
 
+    @Test("the picture of Ventoy's own menu comes from the bundle, with no request")
+    func ventoyDefaultPreview() throws {
+        let (loader, t, dir) = try previewSetup()
+        // Nothing bundled under that name yet.
+        #expect(loader.ventoyDefaultPreviewData() == nil)
+        try jpeg("stock-menu").write(to: dir.appendingPathComponent("bundled-previews/ventoy-default.jpg"))
+        #expect(loader.ventoyDefaultPreviewData() == jpeg("stock-menu"))
+        #expect(t.requested.isEmpty, "it is never fetched")
+        #expect(ThemeCatalogLoader.ventoyDefaultPreviewID == "ventoy-default")
+    }
+
+    @Test("a bundled Ventoy default picture that isn't a JPEG, or no bundle at all, gives nothing")
+    func ventoyDefaultPreviewNotUsable() throws {
+        let (loader, _, dir) = try previewSetup()
+        let file = dir.appendingPathComponent("bundled-previews/ventoy-default.jpg")
+        for junk in [Data("<html></html>".utf8), Data()] {
+            try junk.write(to: file)
+            #expect(loader.ventoyDefaultPreviewData() == nil)
+        }
+        let t = Transport()
+        #expect(makeLoader(t, in: dir).ventoyDefaultPreviewData() == nil, "no bundled previews folder")
+    }
+
+    @Test("an entry can't ask for the Ventoy default picture's file, so a catalog can't replace it")
+    func ventoyDefaultIsNotACatalogPreview() async throws {
+        let (loader, t, dir) = try previewSetup()
+        try jpeg("stock-menu").write(to: dir.appendingPathComponent("bundled-previews/ventoy-default.jpg"))
+        t.responses[ThemeCatalogLoader.remotePreviewURL(for: "ventoy-default")] = jpeg("evil")
+        #expect(await loader.previewData(for: entry("ventoy-default")) == nil)
+        #expect(t.requested.isEmpty)
+        #expect(loader.ventoyDefaultPreviewData() == jpeg("stock-menu"))
+    }
+
     @Test("a preview for an entry with an unsafe id touches nothing")
     func unsafePreviewID() async throws {
         let dir = tempDir()

@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import Testing
 import MactoyKit
 @testable import mactoy_themes
@@ -133,6 +134,51 @@ struct ThemesToolTests {
                                                    withDestinationURL: scratch.url.appendingPathComponent("elsewhere"))
         let problems = previewProblems(ThemeCatalog(schema: 1, themes: [Self.entry()]), catalogPath: scratch.url.appendingPathComponent("catalog.json").path)
         #expect(problems == ["previews is a symlink; it must be a folder"])
+    }
+
+    /// A real JPEG of the given size, so the checks read it the way they read a contributor's file.
+    static func writeJPEG(width: Int, height: Int, to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                             space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try #require(context.makeImage()), nil)
+        #expect(CGImageDestinationFinalize(destination))
+    }
+
+    private func previewProblemsFor(_ scratch: Scratch) -> [String] {
+        previewProblems(ThemeCatalog(schema: 1, themes: [Self.entry()]), catalogPath: scratch.url.appendingPathComponent("catalog.json").path)
+    }
+
+    @Test func theVentoyDefaultPictureIsNotAnOrphanAndNeedsNoCatalogEntry() throws {
+        let scratch = Scratch()
+        try Self.writeJPEG(width: 1600, height: 900, to: scratch.url.appendingPathComponent("previews/demo.jpg"))
+        #expect(previewProblemsFor(scratch).isEmpty, "optional: a catalog without it is fine")
+        try Self.writeJPEG(width: 1600, height: 900, to: scratch.url.appendingPathComponent("previews/ventoy-default.jpg"))
+        try scratch.write("previews/README.txt", "other files in previews are left alone")
+        #expect(previewProblemsFor(scratch).isEmpty, "present, with no catalog entry of that name, is accepted")
+    }
+
+    @Test func theVentoyDefaultPictureIsHeldToTheSameRulesAsAnyPreview() throws {
+        let scratch = Scratch()
+        try Self.writeJPEG(width: 1600, height: 900, to: scratch.url.appendingPathComponent("previews/demo.jpg"))
+        let stock = scratch.url.appendingPathComponent("previews/ventoy-default.jpg")
+
+        try Self.writeJPEG(width: 1024, height: 768, to: stock)
+        #expect(previewProblemsFor(scratch).contains { $0.hasPrefix("ventoy-default: preview is 1024x768") })
+        try scratch.write("previews/ventoy-default.jpg", "not a jpeg")
+        #expect(previewProblemsFor(scratch) == ["ventoy-default: preview isn't a readable JPEG"])
+        try FileManager.default.removeItem(at: stock)
+        try FileManager.default.createSymbolicLink(at: stock, withDestinationURL: scratch.url.appendingPathComponent("previews/demo.jpg"))
+        #expect(previewProblemsFor(scratch).contains { $0.hasPrefix("ventoy-default: previews/ventoy-default.jpg must be a regular file") })
+    }
+
+    @Test func aThemesOwnPreviewStillMustExist() throws {
+        let scratch = Scratch()
+        try FileManager.default.createDirectory(at: scratch.url.appendingPathComponent("previews"), withIntermediateDirectories: true)
+        #expect(previewProblemsFor(scratch) == ["demo: missing previews/demo.jpg"])
     }
 
     // MARK: Bundled folders

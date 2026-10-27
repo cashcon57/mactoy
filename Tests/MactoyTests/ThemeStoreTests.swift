@@ -332,6 +332,60 @@ struct ThemeStoreTests {
         #expect(store.isSavable(driveTheme(managedID: id)))
     }
 
+    // MARK: Ventoy default picture
+
+    private func jpegData() throws -> Data {
+        let image = NSImage(size: NSSize(width: 16, height: 9), flipped: false) { rect in
+            NSColor.systemTeal.setFill(); rect.fill(); return true
+        }
+        let tiff = try #require(image.tiffRepresentation)
+        return try #require(NSBitmapImageRep(data: tiff)?.representation(using: .jpeg, properties: [:]))
+    }
+
+    private func storeWithBundledPreviews(_ previews: URL?) async throws -> ThemeStore {
+        let offline = GatedTransport()
+        await offline.open()
+        let dir = try tempDir()
+        let loader = ThemeCatalogLoader(transport: offline, cacheDirectory: dir.appendingPathComponent("cache"),
+                                        bundledCatalog: nil, bundledPreviews: previews)
+        return ThemeStore(loader: loader, fetcher: ThemeFetcher(transport: offline, cacheRoot: dir.appendingPathComponent("themes"), bundledRoot: nil),
+                          library: ThemeLibrary(root: dir.appendingPathComponent("My Themes")))
+    }
+
+    @Test("the Ventoy default tile gets the bundled picture, once, with no network")
+    func ventoyDefaultPicture() async throws {
+        let previews = try tempDir()
+        try jpegData().write(to: previews.appendingPathComponent("ventoy-default.jpg"))
+        let store = try await storeWithBundledPreviews(previews)
+        #expect(store.ventoyDefaultPreview == nil)
+        await store.loadVentoyDefaultPreview()
+        let first = try #require(store.ventoyDefaultPreview)
+        #expect(first.size.width > 0)
+        await store.loadVentoyDefaultPreview()
+        #expect(store.ventoyDefaultPreview === first, "asked for again, nothing is read again")
+    }
+
+    @Test("load() brings the Ventoy default picture in with the rest")
+    func loadFetchesTheVentoyDefaultPicture() async throws {
+        let previews = try tempDir()
+        try jpegData().write(to: previews.appendingPathComponent("ventoy-default.jpg"))
+        let store = try await storeWithBundledPreviews(previews)
+        await store.load()
+        #expect(store.ventoyDefaultPreview != nil)
+    }
+
+    @Test("without a usable bundled picture the tile keeps its placeholder")
+    func ventoyDefaultPictureMissing() async throws {
+        let store = try await storeWithBundledPreviews(nil)
+        await store.loadVentoyDefaultPreview()
+        #expect(store.ventoyDefaultPreview == nil)
+        let previews = try tempDir()
+        try Data("<html></html>".utf8).write(to: previews.appendingPathComponent("ventoy-default.jpg"))
+        let junk = try await storeWithBundledPreviews(previews)
+        await junk.loadVentoyDefaultPreview()
+        #expect(junk.ventoyDefaultPreview == nil)
+    }
+
     // MARK: Theme after an install
 
     private func installedDisk(_ bsd: String = "disk97") -> DiskTarget {

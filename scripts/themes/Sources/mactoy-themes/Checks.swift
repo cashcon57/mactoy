@@ -11,26 +11,40 @@ func fileType(_ url: URL) -> FileAttributeType? {
     (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType
 }
 
+/// `previews/ventoy-default.jpg` is the picture of Ventoy's own menu, for the picker's "Ventoy default"
+/// tile. It sits beside the theme previews but belongs to no catalog entry (the catalog refuses that id),
+/// so it is not looked up by theme and is never an orphan. When it is there it has to meet the same rules
+/// as any preview, because it ships in the app the same way.
 func previewProblems(_ catalog: ThemeCatalog, catalogPath: String) -> [String] {
     let dir = URL(fileURLWithPath: catalogPath).deletingLastPathComponent().appendingPathComponent("previews")
     if fileType(dir) == .typeSymbolicLink { return ["previews is a symlink; it must be a folder"] }
     var out: [String] = []
     for theme in catalog.themes {
-        let url = dir.appendingPathComponent("\(theme.id).jpg")
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attrs[.size] as? Int else { out.append("\(theme.id): missing previews/\(theme.id).jpg"); continue }
-        // CGImageSource would follow a link, while the size above is the link's own.
-        guard attrs[.type] as? FileAttributeType == .typeRegular else {
-            out.append("\(theme.id): previews/\(theme.id).jpg must be a regular file, not a link or folder"); continue
-        }
-        if size > 600 * 1024 { out.append("\(theme.id): preview is \(size / 1024) KB (max 600 KB)") }
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
-              (CGImageSourceGetType(src) as String?) == "public.jpeg",
-              let p = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
-              let w = p[kCGImagePropertyPixelWidth] as? Int, let h = p[kCGImagePropertyPixelHeight] as? Int
-        else { out.append("\(theme.id): preview isn't a readable JPEG"); continue }
-        if w < 1280 || abs(Double(w) / Double(h) - 16.0 / 9.0) >= 0.02 { out.append("\(theme.id): preview is \(w)x\(h); needs 16:9, at least 1280 wide") }
+        out += previewFileProblems(dir.appendingPathComponent("\(theme.id).jpg"), label: theme.id, mustExist: true)
     }
+    // Any other file in previews/ is left alone: only what a catalog entry or the app names is checked.
+    out += previewFileProblems(dir.appendingPathComponent("\(ThemeCatalogLoader.ventoyDefaultPreviewID).jpg"),
+                               label: ThemeCatalogLoader.ventoyDefaultPreviewID, mustExist: false)
+    return out
+}
+
+/// The rules for one preview: a regular file (not a link or folder), at most 600 KB, a readable JPEG, 16:9, at least 1280 wide.
+func previewFileProblems(_ url: URL, label: String, mustExist: Bool) -> [String] {
+    let name = url.lastPathComponent
+    guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+          let size = attrs[.size] as? Int else { return mustExist ? ["\(label): missing previews/\(name)"] : [] }
+    // CGImageSource would follow a link, while the size above is the link's own.
+    guard attrs[.type] as? FileAttributeType == .typeRegular else {
+        return ["\(label): previews/\(name) must be a regular file, not a link or folder"]
+    }
+    var out: [String] = []
+    if size > 600 * 1024 { out.append("\(label): preview is \(size / 1024) KB (max 600 KB)") }
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+          (CGImageSourceGetType(src) as String?) == "public.jpeg",
+          let p = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+          let w = p[kCGImagePropertyPixelWidth] as? Int, let h = p[kCGImagePropertyPixelHeight] as? Int
+    else { return out + ["\(label): preview isn't a readable JPEG"] }
+    if w < 1280 || abs(Double(w) / Double(h) - 16.0 / 9.0) >= 0.02 { out.append("\(label): preview is \(w)x\(h); needs 16:9, at least 1280 wide") }
     return out
 }
 

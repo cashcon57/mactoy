@@ -34,6 +34,7 @@ struct BootThemeCard: View {
         .task(id: chosenEntry?.id) {
             if let entry = chosenEntry { await themes.loadPreview(for: entry) }
         }
+        .task { await themes.loadVentoyDefaultPreview() }
         .sheet(isPresented: $showPicker) {
             ThemePickerSheet(initial: state.installTheme, confirmTitle: "Use Theme") { choice in
                 state.installTheme = choice
@@ -58,7 +59,8 @@ struct BootThemeCard: View {
             if let image = themes.customPreviews[id] { Image(nsImage: image).resizable().aspectRatio(contentMode: .fill) }
             else { Color.black.opacity(0.85) }
         case .ventoyDefault:
-            ZStack { Color.black.opacity(0.85); Image(systemName: "paintpalette").foregroundStyle(.white.opacity(0.6)) }
+            if let image = themes.ventoyDefaultPreview { Image(nsImage: image).resizable().aspectRatio(contentMode: .fill) }
+            else { ZStack { Color.black.opacity(0.85); Image(systemName: "paintpalette").foregroundStyle(.white.opacity(0.6)) } }
         }
     }
 }

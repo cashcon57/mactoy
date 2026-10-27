@@ -77,9 +77,10 @@ struct ThemePickerSheet: View {
     private var tiles: some View {
         VStack(alignment: .leading, spacing: 16) {
             LazyVGrid(columns: Self.columns, spacing: 12) {
-                ThemeTile(title: "Ventoy default", subtitle: "Ventoy's own theme", image: nil,
+                ThemeTile(title: "Ventoy default", subtitle: "Ventoy's own theme", image: themes.ventoyDefaultPreview,
                           chips: [], isSelected: selection == .ventoyDefault) { selection = .ventoyDefault }
                     .id(ThemeChoice.ventoyDefault)
+                    .task { await themes.loadVentoyDefaultPreview() }
                 ForEach(themes.catalog) { entry in
                     ThemeTile(title: entry.name, subtitle: "by \(entry.author)", image: themes.previews[entry.id],
                               chips: [entry.license, entry.showsVentoyHotkeys ? "F1–F6 key bar" : "No key bar"],
@@ -195,6 +196,7 @@ private struct ThemeDetail: View {
             VStack(alignment: .leading, spacing: 10) {
                 switch selection {
                 case .ventoyDefault:
+                    preview(themes.ventoyDefaultPreview)
                     Text("Ventoy default").font(.headline)
                     Text("The theme Ventoy ships with. On a drive that already has a theme, this removes it.")
                         .font(.callout).foregroundStyle(.secondary)

@@ -8,6 +8,9 @@ public struct ThemeCatalogLoader: Sendable {
     public static func remotePreviewURL(for id: String) -> URL {
         URL(string: "https://raw.githubusercontent.com/cashcon57/mactoy/main/themes/previews/\(id).jpg")!
     }
+    /// The name of the picture of Ventoy's own menu, `previews/ventoy-default.jpg`. It isn't a
+    /// catalog entry (`ThemeEntry` refuses this id), so it is shipped in the app and never fetched.
+    public static let ventoyDefaultPreviewID = "ventoy-default"
     static let maxCatalogBytes = 1024 * 1024
     static let maxPreviewBytes = 2 * 1024 * 1024
 
@@ -94,6 +97,12 @@ public struct ThemeCatalogLoader: Sendable {
             return data
         }
         return bundledPreview(named: entry.id)
+    }
+
+    /// The picture for the "Ventoy default" tile: the copy bundled in the app, if it is there and is a JPEG.
+    public func ventoyDefaultPreviewData() -> Data? {
+        guard let data = bundledPreview(named: Self.ventoyDefaultPreviewID), Self.isJPEG(data) else { return nil }
+        return data
     }
 
     /// A JPEG starts with FF D8 FF. An empty body has no start, so it fails too.

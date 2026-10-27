@@ -120,7 +120,7 @@ Mactoy's theme picker lists the themes in [`themes/catalog.json`](themes/catalog
    Set `showsVentoyHotkeys` to `false` for general GRUB themes that don't show Ventoy's F1–F6 bar.
 
    The `id` can't start with `custom-` (Mactoy names the themes people save on their own Mac that way) or be `ventoy-default`; `validate` rejects both.
-4. Add a screenshot of the theme booted in Ventoy as `themes/previews/<id>.jpg` (16:9, at least 1280 px wide, at most 600 KB). `scripts/themes/render-preview.sh <id>` makes one in QEMU (`brew install qemu`); a photo or capture from a real machine is fine too.
+4. Add a screenshot of the theme booted in Ventoy as `themes/previews/<id>.jpg` (16:9, at least 1280 px wide, at most 600 KB). `scripts/themes/render-preview.sh <id>` makes one in QEMU (`brew install qemu`); a photo or capture from a real machine is fine too. (`themes/previews/ventoy-default.jpg` is the picture of Ventoy's own menu for the picker's "Ventoy default" tile. It isn't a theme, so leave it alone.)
 5. Check it and regenerate the gallery:
 
    ```sh

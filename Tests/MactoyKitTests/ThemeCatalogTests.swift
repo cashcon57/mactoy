@@ -266,6 +266,26 @@ struct ThemeCatalogTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: bundled.path).contains { $0.hasPrefix("catppuccin-mocha-") })
     }
 
+    @Test("the picture of Ventoy's own menu ships with the previews and is a proper preview")
+    func ventoyDefaultPreviewFile() throws {
+        let preview = Self.repoRoot.appendingPathComponent("themes/previews/\(ThemeCatalogLoader.ventoyDefaultPreviewID).jpg")
+        let data = try Data(contentsOf: preview)
+        #expect(ThemeCatalogLoader.isJPEG(data))
+        #expect(data.count > 0 && data.count <= 600 * 1024, "\(data.count) bytes")
+        let source = try #require(CGImageSourceCreateWithURL(preview as CFURL, nil))
+        let props = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+        let w = props[kCGImagePropertyPixelWidth] as? Int ?? 0
+        let h = props[kCGImagePropertyPixelHeight] as? Int ?? 0
+        #expect(w >= 1280 && abs(Double(w) / Double(h) - 16.0 / 9.0) < 0.02, "\(w)x\(h)")
+        // It is not a catalog theme.
+        let catalog = try JSONDecoder().decode(ThemeCatalog.self, from: Data(contentsOf: Self.repoRoot.appendingPathComponent("themes/catalog.json")))
+        #expect(!catalog.themes.contains { $0.id == ThemeCatalogLoader.ventoyDefaultPreviewID })
+        // And the loader reads exactly this file from a previews folder laid out like the app's.
+        let loader = ThemeCatalogLoader(transport: URLSessionThemeTransport(), cacheDirectory: FileManager.default.temporaryDirectory,
+                                        bundledCatalog: nil, bundledPreviews: Self.repoRoot.appendingPathComponent("themes/previews"))
+        #expect(loader.ventoyDefaultPreviewData() == data)
+    }
+
     @Test("the repo's catalog is valid and every theme has a preview")
     func realCatalog() throws {
         let url = Self.repoRoot.appendingPathComponent("themes/catalog.json")
