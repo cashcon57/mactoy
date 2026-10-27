@@ -118,6 +118,8 @@ Mactoy's theme picker lists the themes in [`themes/catalog.json`](themes/catalog
    - optionally `ventoy_left`, `ventoy_top`, `ventoy_color`.
 
    Set `showsVentoyHotkeys` to `false` for general GRUB themes that don't show Ventoy's F1–F6 bar.
+
+   The `id` can't start with `custom-` (Mactoy names the themes people save on their own Mac that way) or be `ventoy-default`; `validate` rejects both.
 4. Add a screenshot of the theme booted in Ventoy as `themes/previews/<id>.jpg` (16:9, at least 1280 px wide, at most 600 KB). `scripts/themes/render-preview.sh <id>` makes one in QEMU (`brew install qemu`); a photo or capture from a real machine is fine too.
 5. Check it and regenerate the gallery:
 
@@ -131,6 +133,8 @@ Mactoy's theme picker lists the themes in [`themes/catalog.json`](themes/catalog
    ```sh
    swift run --package-path scripts/themes mactoy-themes install themes/catalog.json /Volumes/<your Ventoy drive> <id>
    ```
+
+   This replaces the drive's current theme and removes any other theme folders Mactoy added to it. Use a spare stick or a Ventoy disk image, not a drive you rely on.
 
 7. Open the PR with the theme template (add `?template=theme.md` to the new-PR URL) and paste the screenshot. CI runs `validate --download` on the whole catalog and `gallery --check`, and the maintainer reviews the screenshot and the download before merging.
 

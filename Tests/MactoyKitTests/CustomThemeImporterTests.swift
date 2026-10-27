@@ -132,9 +132,19 @@ struct CustomThemeImporterTests {
         try handle.truncate(atOffset: UInt64(CustomThemeImporter.maxZipBytes + 1))   // sparse: costs no disk
         try handle.close()
         // The contents aren't a ZIP, so reading it first would give a different error.
-        #expect(throws: ThemeError.downloadTooLarge(CustomThemeImporter.maxZipBytes + 1)) {
+        #expect(throws: ThemeError.fileTooLarge(CustomThemeImporter.maxZipBytes + 1)) {
             _ = try CustomThemeImporter.importTheme(from: big, cacheRoot: tempDir())
         }
+    }
+
+    @Test("the refusal of a big file the user picked doesn't talk about a download")
+    func oversizedZipWording() {
+        let message = ThemeError.fileTooLarge(CustomThemeImporter.maxZipBytes + 1).errorDescription
+        #expect(message == "That file is too large to be a theme (65 MB).")
+        #expect(ThemeError.fileTooLarge(200 * 1_048_576).errorDescription == "That file is too large to be a theme (200 MB).")
+        #expect(message?.localizedCaseInsensitiveContains("download") == false)
+        // A real download still says what it is.
+        #expect(ThemeError.downloadTooLarge(70 * 1_048_576).errorDescription == "The theme download is too large (70 MB).")
     }
 
     @Test("a file that isn't a zip is an error with a reason, and leaves nothing behind")

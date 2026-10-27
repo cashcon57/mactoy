@@ -91,7 +91,7 @@ public enum CustomThemeImporter {
         // Size of the file itself, not of a link to it.
         let resolved = zip.resolvingSymlinksInPath()
         let size = (try? resolved.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        guard size <= maxZipBytes else { throw ThemeError.downloadTooLarge(size) }
+        guard size <= maxZipBytes else { throw ThemeError.fileTooLarge(size) }
         try checkArchive(resolved)
 
         let fm = FileManager.default

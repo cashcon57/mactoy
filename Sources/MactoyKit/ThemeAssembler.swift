@@ -10,6 +10,8 @@ public struct ThemeSourceFile: Sendable, Equatable {
 
 public enum ThemeError: Error, Equatable, LocalizedError {
     case downloadTooLarge(Int)
+    /// A ZIP file the user picked (`downloadTooLarge` is for a download, which this wasn't).
+    case fileTooLarge(Int)
     case checksumMismatch(expected: String, actual: String)
     case unreadableArchive(String)
     case rootNotFound(String)
@@ -27,6 +29,8 @@ public enum ThemeError: Error, Equatable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .downloadTooLarge(let n): return "The theme download is too large (\(n / 1_048_576) MB)."
+        // Rounded up, so a file just over the limit doesn't say it is as big as the limit.
+        case .fileTooLarge(let n): return "That file is too large to be a theme (\((n + 1_048_575) / 1_048_576) MB)."
         case .checksumMismatch: return "The theme download doesn't match the checksum in Mactoy's theme list, so it wasn't used. The theme's author may have changed the file."
         case .unreadableArchive(let why): return "Couldn't open the theme's ZIP file (\(why))."
         case .rootNotFound(let root): return "The theme download doesn't contain the folder \(root)."

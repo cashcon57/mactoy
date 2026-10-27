@@ -8,7 +8,7 @@
       "homepage": "https://github.com/catppuccin/grub",
       "license": "MIT",
       "showsVentoyHotkeys": true,
-      "notes": "Minimal dark theme. Shows seven menu entries before it scrolls.",
+      "notes": "Minimal dark theme. Shows seven menu entries before it scrolls. Shows a placeholder where the countdown would be if the drive sets a menu timeout.",
       "download": {
         "url": "https://codeload.github.com/catppuccin/grub/zip/0a37ab19f654e77129b409fed371891c01ffd0b9",
         "sha256": "113d3bb53dc95e5e432806f5e85af34a65dbaf5676159814199e4725328c6a53",
@@ -23,7 +23,7 @@
       "homepage": "https://github.com/catppuccin/grub",
       "license": "MIT",
       "showsVentoyHotkeys": true,
-      "notes": "Light version of Catppuccin Mocha, with the same layout.",
+      "notes": "Light version of Catppuccin Mocha, with the same layout. Shows a placeholder where the countdown would be if the drive sets a menu timeout.",
       "download": {
         "url": "https://codeload.github.com/catppuccin/grub/zip/0a37ab19f654e77129b409fed371891c01ffd0b9",
         "sha256": "113d3bb53dc95e5e432806f5e85af34a65dbaf5676159814199e4725328c6a53",
