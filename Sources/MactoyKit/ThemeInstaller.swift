@@ -54,6 +54,114 @@ public enum ThemeInstaller {
         return .other(file: file)
     }
 
+    /// The theme a drive is set to use, found on the drive, so it can be kept
+    /// before something else replaces it.
+    public struct DriveTheme: Sendable, Equatable {
+        /// The theme's folder on the drive.
+        public let folder: URL
+        public let name: String
+        /// Paths are relative to `folder`. Not checked: `ThemeLibrary.save` does that.
+        public let settings: ThemeEntry.Settings
+        /// The id in the marker when `folder` is one Mactoy installed (`mactoy-<id>`).
+        public let managedID: String?
+
+        public init(folder: URL, name: String, settings: ThemeEntry.Settings, managedID: String?) {
+            self.folder = folder; self.name = name; self.settings = settings; self.managedID = managedID
+        }
+    }
+
+    /// The theme `ventoy.json` points at, or nil when there is nothing safe to
+    /// keep: the default theme, a `theme` setting with no usable `file`, or a
+    /// theme file that is missing, sits at the volume root, or reaches outside
+    /// the volume or through a link. A drive that isn't ours can name any path,
+    /// and the answer is read and copied, so only a plain folder inside it counts.
+    /// Throws only when `ventoy.json` can't be read.
+    ///
+    /// The folder is the theme file's own folder, except for one Mactoy
+    /// installed: that is the whole `mactoy-<id>` folder, so a theme file in a
+    /// subfolder keeps the pictures beside that subfolder.
+    public static func driveTheme(on volume: URL) throws -> DriveTheme? {
+        let config = try readConfig(volume)
+        guard try VentoyConfigEditor.hasTheme(in: config),
+              let file = try VentoyConfigEditor.themeFiles(in: config).first,
+              let parts = pathParts(file), parts.count >= 2
+        else { return nil }
+        func url(_ parts: some Sequence<String>) -> URL { parts.reduce(volume) { $0.appendingPathComponent($1) } }
+
+        // Each step down must be a real folder, and the file a real file.
+        let folders = Array(parts.dropLast())
+        for depth in 1...folders.count where fileType(url(folders.prefix(depth))) != .typeDirectory {
+            return nil
+        }
+        guard fileType(url(parts)) == .typeRegular else { return nil }
+
+        let managedRoot = parts.count >= 4 && parts[0] == "ventoy" && parts[1] == "themes" && parts[2].hasPrefix(managedPrefix)
+        let marker = managedRoot ? markerIfPlain(url(parts.prefix(3))) : nil
+        let folderParts = marker == nil ? folders : Array(parts.prefix(3))
+        let folder = url(folderParts)
+
+        // Belt and braces: wherever the folder really is, it's inside the volume and isn't the volume.
+        let root = volume.resolvingSymlinksInPath().standardizedFileURL.path
+        let resolved = folder.resolvingSymlinksInPath().standardizedFileURL.path
+        guard resolved.hasPrefix(root.hasSuffix("/") ? root : root + "/"), resolved != root else { return nil }
+
+        var settings = ThemeEntry.Settings(file: parts.dropFirst(folderParts.count).joined(separator: "/"))
+        if let theme = try themeObject(in: config) {
+            settings.fonts = fontPaths(theme["fonts"]).compactMap { font -> String? in
+                guard let fontParts = pathParts(font), fontParts.count > folderParts.count,
+                      zip(fontParts, folderParts).allSatisfy({ $0.caseInsensitiveCompare($1) == .orderedSame })
+                else { return nil }
+                return fontParts.dropFirst(folderParts.count).joined(separator: "/")
+            }
+            if settings.fonts?.isEmpty == true { settings.fonts = nil }
+            settings.gfxmode = theme["gfxmode"] as? String
+            settings.ventoyLeft = theme["ventoy_left"] as? String
+            settings.ventoyTop = theme["ventoy_top"] as? String
+            settings.ventoyColor = theme["ventoy_color"] as? String
+        }
+
+        let name: String
+        if let marker {
+            name = ThemeLibrary.cleaned(marker.name, limit: ThemeLibrary.maxNameLength, fallback: marker.id)
+        } else if folderParts.last?.lowercased() == "ventoy" {
+            // `/ventoy/theme.txt`: the folder's own name says nothing about the theme.
+            name = ThemeLibrary.cleaned("Theme from \(volume.lastPathComponent)", limit: ThemeLibrary.maxNameLength)
+        } else {
+            name = ThemeLibrary.cleaned(folderParts.last ?? "", limit: ThemeLibrary.maxNameLength, fallback: "Theme")
+        }
+        return DriveTheme(folder: folder, name: name, settings: settings, managedID: marker?.id)
+    }
+
+    /// `/ventoy/themes/x/theme.txt` as its parts. nil for a name that could
+    /// leave the volume (`..`, `.`), for a backslash, and for no parts at all.
+    private static func pathParts(_ path: String) -> [String]? {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard !parts.isEmpty, !parts.contains(where: { $0 == "." || $0 == ".." || $0.contains("\\") }) else { return nil }
+        return parts
+    }
+
+    /// The marker of a folder Mactoy installed, only from a plain file with a usable id:
+    /// what a drive says about itself is not trusted past this point.
+    private static func markerIfPlain(_ folder: URL) -> Marker? {
+        guard fileType(folder.appendingPathComponent(markerName)) == .typeRegular,
+              let marker = readMarker(folder), isValidID(marker.id)
+        else { return nil }
+        return marker
+    }
+
+    /// The `theme` object in `ventoy.json`, if it is one.
+    private static func themeObject(in config: Data?) throws -> [String: Any]? {
+        guard let config, !VentoyConfigEditor.isBlank(config) else { return nil }
+        let parsed = try VentoyConfigEditor.parse(config)
+        guard let member = parsed.members.first(where: { $0.key == "theme" }) else { return nil }
+        return try? JSONSerialization.jsonObject(with: Data(parsed.bytes[member.valueStart..<member.valueEnd])) as? [String: Any]
+    }
+
+    private static func fontPaths(_ value: Any?) -> [String] {
+        if let one = value as? String { return [one] }
+        return (value as? [Any])?.compactMap { $0 as? String } ?? []
+    }
+
     /// The `theme` object for a folder installed at `ventoy/themes/<folder>`.
     public static func settingsValue(_ s: ThemeEntry.Settings, folder: String) -> [String: Any] {
         let base = "/\(themesPath)/\(folder)/"
@@ -149,6 +257,10 @@ public enum ThemeInstaller {
     static func exists(_ url: URL) -> Bool { (try? FileManager.default.attributesOfItem(atPath: url.path)) != nil }
     static func isSymlink(_ url: URL) -> Bool {
         (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType == .typeSymbolicLink
+    }
+    /// What is at `url`, or nil when nothing is. A link is reported as a link, not followed.
+    static func fileType(_ url: URL) -> FileAttributeType? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType
     }
 
     /// A drive that isn't ours can make any of the paths Mactoy writes to a
@@ -257,3 +369,6 @@ public enum ThemeInstaller {
         return ["The drive's settings folder is named \"\(wrong)\". Ventoy only reads a folder named \"ventoy\" in lowercase, so rename it or the theme won't load."]
     }
 }
+
+/// `ThemeInstaller.DriveTheme`, spelled the way callers read it.
+public typealias DriveTheme = ThemeInstaller.DriveTheme

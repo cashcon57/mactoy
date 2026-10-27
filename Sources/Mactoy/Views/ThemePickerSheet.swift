@@ -9,8 +9,15 @@ struct ThemePickerSheet: View {
     let confirmTitle: String
     let onChoose: (ThemeChoice) -> Void
     @State private var selection: ThemeChoice
-    @State private var importError: String?
+    @State private var problem: Problem?
     @State private var isImporting = false
+    /// The saved theme the user asked to remove; removed only after they confirm.
+    @State private var pendingRemoval: SavedTheme?
+
+    private struct Problem {
+        let title: String
+        let message: String
+    }
 
     init(initial: ThemeChoice, confirmTitle: String, onChoose: @escaping (ThemeChoice) -> Void) {
         self.confirmTitle = confirmTitle
@@ -23,25 +30,25 @@ struct ThemePickerSheet: View {
             Text("Boot Menu Theme").font(.title2.bold())
             catalogCaption
             HStack(alignment: .top, spacing: 16) {
-                ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 12)], spacing: 12) {
-                        ThemeTile(title: "Ventoy default", subtitle: "Ventoy's own theme", image: nil,
-                                  chips: [], isSelected: selection == .ventoyDefault) { selection = .ventoyDefault }
-                        ForEach(themes.catalog) { entry in
-                            ThemeTile(title: entry.name, subtitle: "by \(entry.author)", image: themes.previews[entry.id],
-                                      chips: [entry.license, entry.showsVentoyHotkeys ? "F1–F6 key bar" : "No key bar"],
-                                      isSelected: selection == .catalog(id: entry.id)) { selection = .catalog(id: entry.id) }
-                                .task { await themes.loadPreview(for: entry) }
-                        }
-                        ForEach(themes.customThemes) { custom in
-                            ThemeTile(title: custom.name, subtitle: "Added from file", image: themes.customPreviews[custom.id],
-                                      chips: ["Custom"], isSelected: selection == .custom(id: custom.id)) { selection = .custom(id: custom.id) }
-                        }
-                    }
-                    .padding(2)
+                ScrollViewReader { proxy in
+                    ScrollView { tiles.padding(2) }
+                        // My Themes sits below the catalog, so what was just added or opened has to be brought into view.
+                        .onAppear { proxy.scrollTo(selection) }
+                        .onChange(of: selection) { proxy.scrollTo($0) }
                 }
                 .frame(minWidth: 420)
-                ThemeDetail(selection: selection).frame(width: 340)
+                ThemeDetail(selection: selection) { pendingRemoval = $0 }.frame(width: 340)
+            }
+            .confirmationDialog(
+                pendingRemoval.map { "Remove “\($0.name)” from My Themes?" } ?? "",
+                isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }),
+                titleVisibility: .visible,
+                presenting: pendingRemoval
+            ) { saved in
+                Button("Remove", role: .destructive) { remove(saved) }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("Drives that already use it keep it.")
             }
             HStack {
                 Button("Add Theme from File…") { addFromFile() }
@@ -60,9 +67,41 @@ struct ThemePickerSheet: View {
         .frame(minWidth: 820, minHeight: 560)
         // Also retries when the app started offline and kept a local copy.
         .task { if themes.catalogSource != .remote { await themes.load() } }
-        .alert("Couldn't add that theme", isPresented: Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })) {
-            Button("OK") { importError = nil }
-        } message: { Text(importError ?? "") }
+        .alert(problem?.title ?? "", isPresented: Binding(get: { problem != nil }, set: { if !$0 { problem = nil } })) {
+            Button("OK") { problem = nil }
+        } message: { Text(problem?.message ?? "") }
+    }
+
+    private static let columns = [GridItem(.adaptive(minimum: 190), spacing: 12)]
+
+    private var tiles: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            LazyVGrid(columns: Self.columns, spacing: 12) {
+                ThemeTile(title: "Ventoy default", subtitle: "Ventoy's own theme", image: nil,
+                          chips: [], isSelected: selection == .ventoyDefault) { selection = .ventoyDefault }
+                    .id(ThemeChoice.ventoyDefault)
+                ForEach(themes.catalog) { entry in
+                    ThemeTile(title: entry.name, subtitle: "by \(entry.author)", image: themes.previews[entry.id],
+                              chips: [entry.license, entry.showsVentoyHotkeys ? "F1–F6 key bar" : "No key bar"],
+                              isSelected: selection == .catalog(id: entry.id)) { selection = .catalog(id: entry.id) }
+                        .id(ThemeChoice.catalog(id: entry.id))
+                        .task { await themes.loadPreview(for: entry) }
+                }
+            }
+            if !themes.savedThemes.isEmpty {
+                Text("My Themes").font(.headline)
+                LazyVGrid(columns: Self.columns, spacing: 12) {
+                    ForEach(themes.savedThemes) { saved in
+                        ThemeTile(title: saved.name, subtitle: saved.origin, image: themes.customPreviews[saved.id],
+                                  chips: [], isSelected: selection == .custom(id: saved.id)) { selection = .custom(id: saved.id) }
+                            .id(ThemeChoice.custom(id: saved.id))
+                            // The subtitle is cut short in a tile; the whole line is here and in the detail pane.
+                            .help(saved.origin)
+                            .contextMenu { Button("Remove from My Themes") { pendingRemoval = saved } }
+                    }
+                }
+            }
+        }
     }
 
     /// The online list can take a while to answer, so the local copy shows
@@ -91,7 +130,19 @@ struct ThemePickerSheet: View {
         Task {
             defer { isImporting = false }
             do { selection = try await themes.importCustom(from: url) }
-            catch { importError = error.localizedDescription }
+            catch { problem = Problem(title: "Couldn't add that theme", message: error.localizedDescription) }
+        }
+    }
+
+    private func remove(_ saved: SavedTheme) {
+        Task {
+            do {
+                try await themes.removeSaved(id: saved.id)
+                // The tile is gone, so nothing may stay selected on it.
+                if selection == .custom(id: saved.id) { selection = .ventoyDefault }
+            } catch {
+                problem = Problem(title: "Couldn't remove that theme", message: error.localizedDescription)
+            }
         }
     }
 }
@@ -137,6 +188,7 @@ private struct ThemeTile: View {
 private struct ThemeDetail: View {
     @EnvironmentObject private var themes: ThemeStore
     let selection: ThemeChoice
+    let onRemove: (SavedTheme) -> Void
 
     var body: some View {
         ScrollView {
@@ -156,13 +208,21 @@ private struct ThemeDetail: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 case .custom(let id):
-                    if let custom = themes.customThemes.first(where: { $0.id == id }) {
+                    if let saved = themes.savedThemes.first(where: { $0.id == id }) {
                         preview(themes.customPreviews[id])
-                        Text(custom.name).font(.headline)
-                        if !custom.skippedFiles.isEmpty {
-                            Text("Not copied (only images, fonts and theme files are): \(custom.skippedFiles.joined(separator: ", "))")
+                        Text(saved.name).font(.headline)
+                        Text(saved.origin).font(.callout).foregroundStyle(.secondary)
+                        Text("Saved \(saved.savedAt.formatted(date: .abbreviated, time: .omitted))")
+                            .font(.callout).foregroundStyle(.secondary)
+                        Text("Kept on this Mac, so it's here whenever you want it again.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if let skipped = themes.importSkipped[id] {
+                            Text("Not copied (only images, fonts and theme files are): \(skipped.joined(separator: ", "))")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
+                        // The tile's context menu does the same; this one can be reached without a right click.
+                        Button("Remove from My Themes…") { onRemove(saved) }
+                            .controlSize(.small)
                     }
                 }
             }
@@ -199,7 +259,8 @@ private struct NoNetwork: ThemeTransport {
     try? JSONEncoder().encode(catalog).write(to: bundled)
     let loader = ThemeCatalogLoader(transport: NoNetwork(), cacheDirectory: dir.appendingPathComponent("cache"),
                                     bundledCatalog: bundled, bundledPreviews: nil)
-    return ThemeStore(loader: loader, fetcher: ThemeFetcher(transport: NoNetwork(), cacheRoot: dir.appendingPathComponent("themes"), bundledRoot: nil))
+    return ThemeStore(loader: loader, fetcher: ThemeFetcher(transport: NoNetwork(), cacheRoot: dir.appendingPathComponent("themes"), bundledRoot: nil),
+                      library: ThemeLibrary(root: dir.appendingPathComponent("My Themes")))
 }
 
 #Preview {

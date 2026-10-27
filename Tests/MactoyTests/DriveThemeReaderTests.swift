@@ -35,6 +35,27 @@ struct DriveThemeReaderTests {
         #expect(snapshot.error == nil)
     }
 
+    @Test("the theme on the drive comes with the snapshot, ready to be kept")
+    func driveThemeInSnapshot() throws {
+        let v = try volume(json: #"{ "theme": { "file": "/ventoy/mytheme/theme.txt", "gfxmode": "1280x720" } }"#)
+        try FileManager.default.createDirectory(at: v.appendingPathComponent("ventoy/mytheme"), withIntermediateDirectories: true)
+        try Data([1]).write(to: v.appendingPathComponent("ventoy/mytheme/theme.txt"))
+        let snapshot = DriveThemeReader.read(v)
+        #expect(snapshot.current == .other(file: "/ventoy/mytheme/theme.txt"))
+        #expect(snapshot.driveTheme?.name == "mytheme")
+        #expect(snapshot.driveTheme?.settings == .init(file: "theme.txt", gfxmode: "1280x720"))
+    }
+
+    @Test("there is no theme to keep on a default drive, for settings only, or when the theme file is missing")
+    func noDriveTheme() throws {
+        #expect(DriveThemeReader.read(try volume()).driveTheme == nil)
+        #expect(DriveThemeReader.read(try volume(json: #"{ "theme": { "gfxmode": "1280x720" } }"#)).driveTheme == nil)
+        let missing = DriveThemeReader.read(try volume(json: #"{ "theme": { "file": "/ventoy/gone/theme.txt" } }"#))
+        #expect(missing.current == .other(file: "/ventoy/gone/theme.txt"))
+        #expect(missing.driveTheme == nil)
+        #expect(DriveThemeReader.read(try volume(json: #"{ "theme": "#)).driveTheme == nil)
+    }
+
     @Test("a damaged ventoy.json is an error, not the Ventoy default")
     func damagedConfig() throws {
         let snapshot = DriveThemeReader.read(try volume(json: #"{ "theme": "#))
@@ -57,10 +78,39 @@ struct DriveThemeCopyTests {
 
     @Test("settings with no theme file are described without a path")
     func noFile() {
-        #expect(DriveThemeCopy.replaceMessage(file: "", toDefault: false).hasPrefix("This drive has theme settings you set up yourself. Mactoy will point"))
-        #expect(DriveThemeCopy.replaceMessage(file: "", toDefault: true).hasPrefix("This drive has theme settings you set up yourself. Mactoy will switch"))
+        #expect(DriveThemeCopy.replaceMessage(file: "", toDefault: false)
+            == "This drive has theme settings you set up yourself. Mactoy will replace them with the new theme.")
+        #expect(DriveThemeCopy.replaceMessage(file: "", toDefault: true)
+            == "This drive has theme settings you set up yourself. Mactoy will remove them and switch the drive back to Ventoy's own theme.")
         #expect(DriveThemeCopy.ownTheme(file: "") == "Your own theme settings")
         #expect(DriveThemeCopy.ownTheme(file: "/a/theme.txt") == "Your own theme (/a/theme.txt)")
+    }
+
+    @Test("the offer to keep a copy names the theme and says where it goes")
+    func keepCopy() {
+        #expect(DriveThemeCopy.keepCopyTitle == "Keep a copy of this drive's theme?")
+        #expect(DriveThemeCopy.keepCopyMessage(name: "Mine")
+            == "This drive uses “Mine”, which isn't in Mactoy's theme list. Save it to My Themes first so you can put it back later.")
+        #expect(DriveThemeCopy.saveButton == "Save to My Themes")
+        #expect(DriveThemeCopy.saved(name: "Mine") == "Saved “Mine” to My Themes.")
+    }
+
+    @Test("a failed save says the drive was left alone; a failed change says the copy is safe")
+    func failures() {
+        #expect(DriveThemeCopy.saveFailed("No space.") == "Couldn't save this drive's theme to My Themes, so the drive was left as it was. No space.")
+        #expect(DriveThemeCopy.changeFailed(savedName: "Mine", reason: "Read-only.") == "Saved “Mine” to My Themes. The drive's theme wasn't changed: Read-only.")
+        #expect(DriveThemeCopy.changeFailed(savedName: nil, reason: "Read-only.") == "Read-only.")
+    }
+
+    @Test("no wording uses an em-dash")
+    func noEmDashes() {
+        let all = [DriveThemeCopy.replaceTitle, DriveThemeCopy.keepCopyTitle, DriveThemeCopy.keepCopyMessage(name: "X"),
+                   DriveThemeCopy.saveButton, DriveThemeCopy.saveHint, DriveThemeCopy.saved(name: "X"), DriveThemeCopy.saveFailed("x"),
+                   DriveThemeCopy.changeFailed(savedName: "X", reason: "x"), DriveThemeCopy.success(removed: true), DriveThemeCopy.success(removed: false),
+                   DriveThemeCopy.ownTheme(file: ""), DriveThemeCopy.ownTheme(file: "/a"), ThemeStoreError.nothingToSave.errorDescription ?? "",
+                   ThemeStoreError.busy.errorDescription ?? ""]
+            + [true, false].flatMap { [DriveThemeCopy.replaceMessage(file: "", toDefault: $0), DriveThemeCopy.replaceMessage(file: "/a", toDefault: $0)] }
+        #expect(all.allSatisfy { !$0.contains("\u{2014}") })
     }
 
     @Test("removing says so, and nothing promises a backup")

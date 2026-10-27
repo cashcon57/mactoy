@@ -527,6 +527,163 @@ struct ThemeInstallerTests {
         #expect(outcome.warnings.count == 1)
         #expect(outcome.warnings[0].contains("\"Ventoy\""))
     }
+
+    // MARK: driveTheme
+
+    /// A volume whose ventoy.json is `json`, with each of `files` present (one byte each).
+    private func volume(json: String?, files: [String]) throws -> URL {
+        let v = try volume(json: json)
+        for path in files {
+            let url = v.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data([1]).write(to: url)
+        }
+        return v
+    }
+
+    private func samePath(_ a: URL, _ b: URL) -> Bool { a.standardizedFileURL.path == b.standardizedFileURL.path }
+
+    @Test("a theme the user set up is found, with the fonts inside its folder and nothing else")
+    func driveHandTheme() throws {
+        let v = try volume(json: #"""
+            {"control":[],"theme":{"file":"/ventoy/mytheme/theme.txt",
+             "fonts":["/ventoy/mytheme/fonts/f.pf2","/ventoy/other/o.pf2","/ventoy/mytheme/../o2.pf2","/ventoy/MYTHEME/g.pf2"],
+             "gfxmode":"1280x720","ventoy_left":"5%","ventoy_top":"10%","ventoy_color":"#112233","display_mode":"CLI"}}
+            """#, files: ["ventoy/mytheme/theme.txt"])
+        let theme = try #require(try ThemeInstaller.driveTheme(on: v))
+        #expect(samePath(theme.folder, v.appendingPathComponent("ventoy/mytheme")))
+        #expect(theme.name == "mytheme")
+        #expect(theme.managedID == nil)
+        // FAT paths ignore case, so MYTHEME is the same folder; ".." and other folders are not inside it.
+        #expect(theme.settings == .init(file: "theme.txt", fonts: ["fonts/f.pf2", "g.pf2"], gfxmode: "1280x720",
+                                        ventoyLeft: "5%", ventoyTop: "10%", ventoyColor: "#112233"))
+    }
+
+    @Test("fonts given as a single string, and values that aren't strings, are handled")
+    func driveOddValues() throws {
+        let v = try volume(json: ##"{"theme":{"file":"/ventoy/t/theme.txt","fonts":"/ventoy/t/f.pf2","gfxmode":5,"ventoy_color":["#111111"]}}"##,
+                           files: ["ventoy/t/theme.txt"])
+        let theme = try #require(try ThemeInstaller.driveTheme(on: v))
+        #expect(theme.settings == .init(file: "theme.txt", fonts: ["f.pf2"]))
+    }
+
+    @Test("a theme straight under ventoy/ is named after the drive")
+    func driveThemeInVentoyFolder() throws {
+        let v = try volume(json: #"{"theme":{"file":"/ventoy/theme.txt"}}"#, files: ["ventoy/theme.txt"])
+        let theme = try #require(try ThemeInstaller.driveTheme(on: v))
+        #expect(samePath(theme.folder, v.appendingPathComponent("ventoy")))
+        #expect(theme.name == "Theme from \(v.lastPathComponent)")
+        #expect(theme.settings.file == "theme.txt")
+    }
+
+    @Test("a folder Mactoy installed reports its marker's id and name")
+    func driveManagedTheme() throws {
+        let v = try volume()
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "custom-night-1a2b3c4d", name: "Night", settings: settings, to: v, isReadOnly: { _ in false })
+        let theme = try #require(try ThemeInstaller.driveTheme(on: v))
+        #expect(theme.managedID == "custom-night-1a2b3c4d")
+        #expect(theme.name == "Night")
+        #expect(samePath(theme.folder, v.appendingPathComponent("ventoy/themes/mactoy-custom-night-1a2b3c4d")))
+        #expect(theme.settings == .init(file: "theme.txt", fonts: ["font.pf2"], gfxmode: "1920x1080,auto"))
+    }
+
+    @Test("a theme file in a subfolder of a managed folder keeps the whole managed folder")
+    func driveManagedNested() throws {
+        let v = try volume()
+        let source = try themeFolder()
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("dark"), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: source.appendingPathComponent("dark/theme.txt"))
+        try ThemeInstaller.apply(themeDirectory: source, id: "nested", name: "Nested", settings: .init(file: "dark/theme.txt", fonts: ["font.pf2"]),
+                                 to: v, isReadOnly: { _ in false })
+        let theme = try #require(try ThemeInstaller.driveTheme(on: v))
+        #expect(theme.managedID == "nested")
+        #expect(samePath(theme.folder, v.appendingPathComponent("ventoy/themes/mactoy-nested")))
+        #expect(theme.settings.file == "dark/theme.txt")
+        #expect(theme.settings.fonts == ["font.pf2"])
+    }
+
+    @Test("a mactoy- folder whose marker can't be trusted is just a folder")
+    func driveUntrustedMarker() throws {
+        let v = try volume(json: #"{"theme":{"file":"/ventoy/themes/mactoy-x/theme.txt"}}"#, files: ["ventoy/themes/mactoy-x/theme.txt"])
+        try Data(#"{"id":"../x","name":"Evil"}"#.utf8).write(to: v.appendingPathComponent("ventoy/themes/mactoy-x/.mactoy-theme.json"))
+        let theme = try #require(try ThemeInstaller.driveTheme(on: v))
+        #expect(theme.managedID == nil)
+        #expect(theme.name == "mactoy-x")
+    }
+
+    @Test("a name from a drive is cut down to something a person can read")
+    func driveNameIsCleaned() throws {
+        let long = String(repeating: "n", count: 200)
+        let v = try volume(json: #"{"theme":{"file":"/ventoy/\#(long)/theme.txt"}}"#, files: ["ventoy/\(long)/theme.txt"])
+        let theme = try #require(try ThemeInstaller.driveTheme(on: v))
+        #expect(theme.name.count == 60)
+    }
+
+    @Test("there is nothing to save when the drive has no theme, or only settings, or no theme file on it")
+    func driveNothingToSave() throws {
+        #expect(try ThemeInstaller.driveTheme(on: volume()) == nil)
+        #expect(try ThemeInstaller.driveTheme(on: volume(json: #"{"control":[]}"#)) == nil)
+        #expect(try ThemeInstaller.driveTheme(on: volume(json: #"{"theme":{"gfxmode":"1280x720"}}"#)) == nil)
+        #expect(try ThemeInstaller.driveTheme(on: volume(json: #"{"theme":null}"#)) == nil)
+        // Named but not there, or not a file.
+        #expect(try ThemeInstaller.driveTheme(on: volume(json: #"{"theme":{"file":"/ventoy/gone/theme.txt"}}"#)) == nil)
+        #expect(try ThemeInstaller.driveTheme(on: volume(json: #"{"theme":{"file":"/ventoy/dir/theme.txt"}}"#, files: ["ventoy/dir/theme.txt/inner.txt"])) == nil)
+    }
+
+    @Test("a theme file at the volume root is not saved, so the whole drive is never copied")
+    func driveThemeAtRoot() throws {
+        let v = try volume(json: #"{"theme":{"file":"/theme.txt"}}"#, files: ["theme.txt", "iso/big.png"])
+        #expect(try ThemeInstaller.driveTheme(on: v) == nil)
+    }
+
+    @Test("a theme file that reaches outside the volume is not saved", arguments: [
+        "/ventoy/../../etc/hosts", "/../theme.txt", "/ventoy/./mytheme/theme.txt", "/ventoy/mytheme/../mytheme/theme.txt", "/ventoy/my\\theme/theme.txt"])
+    func driveThemeOutside(file: String) throws {
+        // The backslash case is escaped the way a JSON file would hold it.
+        let escaped = file.replacingOccurrences(of: "\\", with: "\\\\")
+        let v = try volume(json: #"{"theme":{"file":"\#(escaped)"}}"#, files: ["ventoy/mytheme/theme.txt"])
+        // A backslash in ventoy.json is refused outright; the others are refused by the path check.
+        if file.contains("\\") {
+            #expect(throws: VentoyConfigEditor.Refusal.containsBackslash) { _ = try ThemeInstaller.driveTheme(on: v) }
+        } else {
+            #expect(try ThemeInstaller.driveTheme(on: v) == nil)
+        }
+    }
+
+    @Test("a theme folder, or any folder above it, that is a link is not saved", arguments: ["folder", "parent", "file"])
+    func driveThemeThroughLinks(link: String) throws {
+        let fm = FileManager.default
+        let away = fm.temporaryDirectory.appendingPathComponent("mactoy-away-\(UUID().uuidString)")
+        try fm.createDirectory(at: away.appendingPathComponent("mytheme"), withIntermediateDirectories: true)
+        try Data([1]).write(to: away.appendingPathComponent("mytheme/theme.txt"))
+        let v = try volume(json: #"{"theme":{"file":"/ventoy/mytheme/theme.txt"}}"#)
+        let ventoy = v.appendingPathComponent("ventoy")
+        switch link {
+        case "folder":
+            try fm.createSymbolicLink(at: ventoy.appendingPathComponent("mytheme"), withDestinationURL: away.appendingPathComponent("mytheme"))
+        case "file":
+            try fm.createDirectory(at: ventoy.appendingPathComponent("mytheme"), withIntermediateDirectories: true)
+            try fm.createSymbolicLink(at: ventoy.appendingPathComponent("mytheme/theme.txt"),
+                                      withDestinationURL: away.appendingPathComponent("mytheme/theme.txt"))
+        default:
+            // ventoy.json has to stay readable, so the link is made one level up from the config.
+            let config = try Data(contentsOf: ventoy.appendingPathComponent("ventoy.json"))
+            try fm.removeItem(at: ventoy)
+            let real = fm.temporaryDirectory.appendingPathComponent("mactoy-real-\(UUID().uuidString)")
+            try fm.createDirectory(at: real, withIntermediateDirectories: true)
+            try config.write(to: real.appendingPathComponent("ventoy.json"))
+            try fm.copyItem(at: away.appendingPathComponent("mytheme"), to: real.appendingPathComponent("mytheme"))
+            try fm.createSymbolicLink(at: ventoy, withDestinationURL: real)
+        }
+        #expect(try ThemeInstaller.driveTheme(on: v) == nil)
+    }
+
+    @Test("a ventoy.json that can't be read is an error, not 'no theme'")
+    func driveDamagedConfig() throws {
+        let v = try volume(json: #"{"theme": "#)
+        #expect(throws: VentoyConfigEditor.Refusal.self) { _ = try ThemeInstaller.driveTheme(on: v) }
+    }
+
 }
 
 private struct InjectedFailure: Error {}
