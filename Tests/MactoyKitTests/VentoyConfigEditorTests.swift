@@ -247,6 +247,30 @@ struct VentoyConfigEditorTests {
         }
     }
 
+    @Test("a theme object is read with its keys, unless it repeats one")
+    func themeObjectKeys() throws {
+        let plain = try VentoyConfigEditor.themeObject(in: Data(#"{"control":[],"theme":{"file":"/a","gfxmode":"1x1"}}"#.utf8))
+        #expect(plain?.keys.sorted() == ["file", "gfxmode"])
+        // A repeat nobody can read the meaning of: nil, wherever the repeat is and whatever the values.
+        for repeated in [#"{"file":"/mine.txt","file":"/ventoy/themes/mactoy-x/theme.txt"}"#,
+                         #"{"file":"/a","gfxmode":"1x1","file":"/a"}"#,
+                         #"{ "file" : "/a" ,  "file" : "/b" }"#,
+                         #"{"fonts":["/f"],"fonts":["/g"],"file":"/a"}"#] {
+            #expect(try VentoyConfigEditor.themeObject(in: Data(#"{"theme":\#(repeated)}"#.utf8)) == nil, "\(repeated)")
+            // The rest of the editor still reads the file: this is about what the object means, not whether it parses.
+            #expect(try VentoyConfigEditor.hasTheme(in: Data(#"{"theme":\#(repeated)}"#.utf8)))
+        }
+        // A repeat elsewhere, in the theme's nested values or beside it, is not a repeat in the theme object.
+        let elsewhere = #"{"control":[{"a":1,"a":2}],"theme":{"file":"/a","fonts":[{"b":1,"b":2}]}}"#
+        #expect(try VentoyConfigEditor.themeObject(in: Data(elsewhere.utf8))?.keys.sorted() == ["file", "fonts"])
+        // Not an object, absent, or no file: unchanged.
+        #expect(try VentoyConfigEditor.themeObject(in: Data(#"{"theme":"x"}"#.utf8)) == nil)
+        #expect(try VentoyConfigEditor.themeObject(in: Data(#"{"control":[]}"#.utf8)) == nil)
+        #expect(try VentoyConfigEditor.themeObject(in: nil) == nil)
+        // A file that is refused is still refused.
+        #expect(throws: VentoyConfigEditor.Refusal.notValidJSON) { _ = try VentoyConfigEditor.themeObject(in: Data(#"{"theme":{"file":"#.utf8)) }
+    }
+
     @Test("a nested theme is not read as the top-level one")
     func nestedThemeNotRead() throws {
         let nestedOnly = Data(#"{"control":[{"theme":{"file":"/inner"}}]}"#.utf8)

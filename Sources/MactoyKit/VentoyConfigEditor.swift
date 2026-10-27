@@ -56,14 +56,21 @@ public enum VentoyConfigEditor {
     }
 
     /// The top-level `theme` value when it is a JSON object, so callers can see
-    /// which keys it holds. Nil for no file, no `theme`, or a `theme` that isn't an
-    /// object. Goes through `parse`, so the same files are refused as everywhere else.
+    /// which keys it holds. Nil for no file, no `theme`, a `theme` that isn't an
+    /// object, or a `theme` object that repeats a key: a standard parser keeps the
+    /// last of two `file` members, and Ventoy's may use the first, so what such an
+    /// object says is not known. Goes through `parse`, so the same files are refused
+    /// as everywhere else.
     public static func themeObject(in data: Data?) throws -> [String: Any]? {
         guard let data, !isBlank(data) else { return nil }
         let parsed = try parse(data)
         guard let member = parsed.members.first(where: { $0.key == "theme" }) else { return nil }
         let value = Data(parsed.bytes[member.valueStart..<member.valueEnd])
-        return try? JSONSerialization.jsonObject(with: value) as? [String: Any]
+        guard let object = try? JSONSerialization.jsonObject(with: value) as? [String: Any] else { return nil }
+        // The same scanner that listed the top-level members lists this object's, so a repeat is seen.
+        var scanner = ByteScanner(bytes: parsed.bytes, index: member.valueStart)
+        guard let keys = try? scanner.objectMembers().members.map(\.key), Set(keys).count == keys.count else { return nil }
+        return object
     }
 
     /// Whether the file has a top-level `theme` member, whatever its value
@@ -168,29 +175,7 @@ public enum VentoyConfigEditor {
 
         var s = ByteScanner(bytes: bytes, index: bom)
         s.skipWhitespace()
-        guard s.peek == UInt8(ascii: "{") else { throw Refusal.notAnObject }
-        let open = s.index
-        s.index += 1
-        var members: [Member] = []
-        s.skipWhitespace()
-        if s.peek != UInt8(ascii: "}") {
-            while true {
-                s.skipWhitespace()
-                let memberStart = s.index
-                let key = try s.string()
-                s.skipWhitespace()
-                try s.expect(UInt8(ascii: ":"))
-                s.skipWhitespace()
-                let valueStart = s.index
-                try s.skipValue()
-                members.append(Member(key: key, memberStart: memberStart, valueStart: valueStart, valueEnd: s.index))
-                s.skipWhitespace()
-                if s.peek == UInt8(ascii: ",") { s.index += 1; continue }
-                if s.peek == UInt8(ascii: "}") { break }
-                throw Refusal.notValidJSON
-            }
-        }
-        let close = s.index
+        let (members, open, close) = try s.objectMembers()
         if members.filter({ $0.key == "theme" }).count > 1 { throw Refusal.duplicateTheme }
         return Parsed(bytes: bytes, openBrace: open, closeBrace: close, members: members)
     }
@@ -219,6 +204,34 @@ private struct ByteScanner {
 
     mutating func skipWhitespace() {
         while let b = peek, b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0D { index += 1 }
+    }
+
+    /// The members of the object whose `{` is at the current index, with the
+    /// positions of its braces. Leaves the index on the closing brace.
+    mutating func objectMembers() throws -> (members: [VentoyConfigEditor.Member], open: Int, close: Int) {
+        guard peek == UInt8(ascii: "{") else { throw VentoyConfigEditor.Refusal.notAnObject }
+        let open = index
+        index += 1
+        var members: [VentoyConfigEditor.Member] = []
+        skipWhitespace()
+        if peek != UInt8(ascii: "}") {
+            while true {
+                skipWhitespace()
+                let memberStart = index
+                let key = try string()
+                skipWhitespace()
+                try expect(UInt8(ascii: ":"))
+                skipWhitespace()
+                let valueStart = index
+                try skipValue()
+                members.append(VentoyConfigEditor.Member(key: key, memberStart: memberStart, valueStart: valueStart, valueEnd: index))
+                skipWhitespace()
+                if peek == UInt8(ascii: ",") { index += 1; continue }
+                if peek == UInt8(ascii: "}") { break }
+                throw VentoyConfigEditor.Refusal.notValidJSON
+            }
+        }
+        return (members, open, index)
     }
 
     mutating func expect(_ byte: UInt8) throws {

@@ -41,17 +41,29 @@ public enum ThemeInstaller {
     }
 
     /// Whether `volume` looks like a drive Mactoy has only just installed Ventoy
-    /// on: no `ventoy/ventoy.json`, and `ventoy/themes` missing or empty.
+    /// on. All of these must hold:
+    /// - the volume itself is a real folder (not a link, and it is there) that holds
+    ///   nothing but `ventoy` and entries whose names start with `.`. Mactoy's helper
+    ///   writes nothing to the data partition, so a freshly formatted one is empty
+    ///   (macOS adds only hidden entries of its own, like `.fseventsd`), and a drive
+    ///   with an ISO on it has been used;
+    /// - there is no `ventoy/ventoy.json`;
+    /// - `ventoy/themes` is missing or empty.
     ///
     /// The install-time theme is applied to whatever Ventoy volume shows up on
     /// the installed disk's number, and macOS can hand that number to a different
     /// stick if the user swaps drives meanwhile. A drive someone has used already
-    /// has settings or themes, and applying would replace the user's own theme
+    /// has files, settings or themes, and applying would replace the user's own theme
     /// and delete `mactoy-*` folders on a drive they never agreed to change.
     ///
     /// Reads only, and without following links (`attributesOfItem` is an lstat):
-    /// a link where a folder or file should be is not a fresh drive.
+    /// a link where a folder or file should be is not a fresh drive, and neither
+    /// is a folder that can't be listed to the end.
     public static func looksFreshlyInstalled(_ volume: URL) -> Bool {
+        guard fileType(volume) == .typeDirectory,
+              let rootEntries = rawEntries(of: volume),
+              rootEntries.allSatisfy({ $0 == "ventoy" || $0.hasPrefix(".") })
+        else { return false }
         let ventoy = volume.appendingPathComponent("ventoy", isDirectory: true)
         switch fileType(ventoy) {
         case nil: return true            // a brand new Ventoy volume has no settings folder yet
@@ -261,7 +273,9 @@ public enum ThemeInstaller {
             if isSymlink(destination) { throw ThemeError.unsafeVolumeLayout("\(themesPath)/\(folder)") }
             if readMarker(destination) == nil { throw ThemeError.destinationExists(destination.path) }
         }
-        let createdVentoyFolder = !exists(volume.appendingPathComponent("ventoy", isDirectory: true))
+        var made = Made()
+        made.ventoyFolder = !exists(volume.appendingPathComponent("ventoy", isDirectory: true))
+        made.themesFolder = !exists(themes)
         try fm.createDirectory(at: themes, withIntermediateDirectories: true)
         let staging = themes.appendingPathComponent(".mactoy-staging-\(UUID().uuidString)", isDirectory: true)
         let old = themes.appendingPathComponent(".mactoy-old-\(UUID().uuidString)", isDirectory: true)
@@ -281,11 +295,12 @@ public enum ThemeInstaller {
         defer { if setAside { try? fm.removeItem(at: old) } }
         // Settings go last, so a failure above never leaves ventoy.json
         // pointing at a theme that isn't there.
-        try writeConfig(updated, original: original, volume: volume)
+        made.backup = try writeConfig(updated, original: original, volume: volume)
+        made.config = true
         let removed = removeManagedFolders(in: themes, except: folder)
         // The staging and old folders are renamed or removed by now (or just about to be).
         removeAppleDoubleClutter(on: volume, installed: folder, gone: removed + [staging.lastPathComponent, old.lastPathComponent],
-                                 createdVentoyFolder: createdVentoyFolder, removeEmptyThemesFolder: false)
+                                 made: made, removeEmptyThemesFolder: false)
         return Outcome(warnings: warnings)
     }
 
@@ -294,11 +309,13 @@ public enum ThemeInstaller {
         guard !isReadOnly(volume) else { throw ThemeError.readOnlyVolume }
         try requireNoLinks(on: volume)
         let original = try readConfig(volume)
+        var made = Made()
         if let updated = try VentoyConfigEditor.removingTheme(from: original), updated != original {
-            try writeConfig(updated, original: original, volume: volume)
+            made.backup = try writeConfig(updated, original: original, volume: volume)
+            made.config = true
         }
         let removed = removeManagedFolders(in: volume.appendingPathComponent(themesPath, isDirectory: true), except: nil)
-        removeAppleDoubleClutter(on: volume, installed: nil, gone: removed, createdVentoyFolder: false, removeEmptyThemesFolder: true)
+        removeAppleDoubleClutter(on: volume, installed: nil, gone: removed, made: made, removeEmptyThemesFolder: true)
         return Outcome(warnings: try modeWarnings(original))
     }
 
@@ -342,7 +359,9 @@ public enum ThemeInstaller {
         return try Data(contentsOf: url)
     }
 
-    static func writeConfig(_ data: Data, original: Data?, volume: URL) throws {
+    /// Returns whether it wrote the one-time backup in this call.
+    @discardableResult
+    static func writeConfig(_ data: Data, original: Data?, volume: URL) throws -> Bool {
         let fm = FileManager.default
         let url = configURL(volume)
         let dir = url.deletingLastPathComponent()
@@ -350,7 +369,8 @@ public enum ThemeInstaller {
         // The first file is the one worth keeping: later ones only differ by our own edits.
         let backup = dir.appendingPathComponent(backupName)
         // Atomic: a write cut short must not leave a half file that `exists` then protects forever as "the user's first file".
-        if let original, !exists(backup) { try original.write(to: backup, options: .atomic) }
+        var wroteBackup = false
+        if let original, !exists(backup) { try original.write(to: backup, options: .atomic); wroteBackup = true }
         let temp = dir.appendingPathComponent(tempName)
         do { try data.write(to: temp) } catch { try? fm.removeItem(at: temp); throw error }
         guard rename(temp.path, url.path) == 0 else {
@@ -359,6 +379,7 @@ public enum ThemeInstaller {
             throw ThemeError.writeFailed(reason)
         }
         guard (try? Data(contentsOf: url)) == data else { throw ThemeError.writeFailed("ventoy.json didn't read back as written") }
+        return wroteBackup
     }
 
     static func readMarker(_ folder: URL) -> Marker? {
@@ -401,11 +422,13 @@ public enum ThemeInstaller {
     /// `isAppleDouble` agrees and `X` is there or was removed by Mactoy:
     /// - everything under the installed theme folder, and the folder's own;
     /// - those of the folders removed (`gone`) from `ventoy/themes`;
-    /// - beside `ventoy/themes`, `ventoy.json` and its backup (and `ventoy`, if Mactoy made it).
+    /// - those beside `ventoy` itself, `ventoy/themes`, `ventoy.json` and its backup, each only
+    ///   when Mactoy made, wrote or removed that very thing in this call (`made`): a companion
+    ///   beside a folder or file that was already there is the user's, whatever it looks like.
     ///
     /// With `removeEmptyThemesFolder`, `ventoy/themes` goes too once nothing is left in it.
     static func removeAppleDoubleClutter(on volume: URL, installed: String?, gone: [String],
-                                         createdVentoyFolder: Bool, removeEmptyThemesFolder: Bool) {
+                                         made: Made, removeEmptyThemesFolder: Bool) {
         let ventoy = volume.appendingPathComponent("ventoy", isDirectory: true)
         let themes = ventoy.appendingPathComponent("themes", isDirectory: true)
         if let installed {
@@ -423,12 +446,24 @@ public enum ThemeInstaller {
             themesRemoved = rmdir(themes.path) == 0
         }
 
-        removeCompanion(of: "themes", in: ventoy, counterpartRemoved: themesRemoved)
-        removeCompanion(of: "ventoy.json", in: ventoy, counterpartRemoved: false)
-        removeCompanion(of: backupName, in: ventoy, counterpartRemoved: false)
+        if made.themesFolder || themesRemoved { removeCompanion(of: "themes", in: ventoy, counterpartRemoved: themesRemoved) }
+        if made.config { removeCompanion(of: "ventoy.json", in: ventoy, counterpartRemoved: false) }
+        if made.backup { removeCompanion(of: backupName, in: ventoy, counterpartRemoved: false) }
         // Renamed over ventoy.json, so a companion left under this name has no file left.
         removeCompanion(of: tempName, in: ventoy, counterpartRemoved: true)
-        if createdVentoyFolder { removeCompanion(of: "ventoy", in: volume, counterpartRemoved: false) }
+        if made.ventoyFolder { removeCompanion(of: "ventoy", in: volume, counterpartRemoved: false) }
+    }
+
+    /// What Mactoy itself made or wrote during one change. Only the companions beside these are its to tidy.
+    struct Made {
+        /// `ventoy` did not exist before.
+        var ventoyFolder = false
+        /// `ventoy/themes` did not exist before.
+        var themesFolder = false
+        /// `ventoy.json` was written.
+        var config = false
+        /// `ventoy.json.mactoy-backup` was written.
+        var backup = false
     }
 
     /// Deletes `directory/._<name>` when it is an AppleDouble file and `name` is
@@ -441,18 +476,24 @@ public enum ThemeInstaller {
 
     /// Every name in a folder, `._` files included. `FileManager.contentsOfDirectory`
     /// leaves out a `._X` that sits beside an `X`, which is exactly what is wanted here.
-    /// Nil when the folder can't be read.
-    static func rawEntries(of directory: URL) -> [String]? {
+    /// Nil when the folder can't be read, or a read fails part of the way: a
+    /// partial list could miss the very entry being looked for. `readNext` is
+    /// `readdir`; a seam so a test can make it fail.
+    static func rawEntries(of directory: URL,
+                           readNext: (UnsafeMutablePointer<DIR>) -> UnsafeMutablePointer<dirent>? = { readdir($0) }) -> [String]? {
         guard let stream = opendir(directory.path) else { return nil }
         defer { closedir(stream) }
         var names: [String] = []
-        while let entry = readdir(stream) {
+        while true {
+            // `readdir` returns nil at the end and also on an error; only errno tells them apart.
+            errno = 0
+            guard let entry = readNext(stream) else { break }
             let name = withUnsafeBytes(of: &entry.pointee.d_name) { raw in
                 String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
             }
             if name != "." && name != ".." { names.append(name) }
         }
-        return names
+        return errno == 0 ? names : nil
     }
 
     /// Every `._X` under a folder Mactoy just built whose `X` is beside it.

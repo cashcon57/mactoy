@@ -730,6 +730,22 @@ struct ThemeInstallerTests {
         #expect(try ThemeInstaller.current(on: v) == .other(file: managedFile))
     }
 
+    @Test("a theme object with a repeated key is the user's: a parser keeps the last, Ventoy may use the first",
+          arguments: [
+            #"{"file":"/mine.txt","file":"/ventoy/themes/mactoy-xx/theme.txt"}"#,
+            #"{"file":"/ventoy/themes/mactoy-xx/theme.txt","file":"/mine.txt"}"#,
+            #"{"file":"/ventoy/themes/mactoy-xx/theme.txt","file":"/ventoy/themes/mactoy-xx/theme.txt"}"#,
+            #"{"file":"/ventoy/themes/mactoy-xx/theme.txt","gfxmode":"1920x1080,auto","gfxmode":"640x480"}"#,
+          ])
+    func currentRepeatedKeyIsOther(theme: String) throws {
+        let v = try volumeWithManagedFolder(theme: theme)
+        let current = try ThemeInstaller.current(on: v)
+        guard case .other = current else { Issue.record("expected .other, got \(current)"); return }
+        // The same shape without the repeat is Mactoy's.
+        let once = try volumeWithManagedFolder(theme: #"{"file":"/ventoy/themes/mactoy-xx/theme.txt","gfxmode":"1920x1080,auto"}"#)
+        #expect(try ThemeInstaller.current(on: once) == .managed(id: "xx", name: "X"))
+    }
+
     @Test("a file list is the user's, even when it includes the managed file")
     func currentFileArrayIsOther() throws {
         let first = try volumeWithManagedFolder(theme: #"{"file":["/ventoy/themes/mactoy-xx/theme.txt","/ventoy/mine/theme.txt"]}"#)
@@ -957,12 +973,82 @@ struct ThemeInstallerTests {
         #expect(!exists(v, "ventoy/themes/mactoy-sample"))
         #expect(!fileExists(v, "ventoy/themes/._mactoy-sample"))
         #expect(!fileExists(v, "ventoy/._ventoy.json"))
-        #expect(!fileExists(v, "ventoy/._ventoy.json.mactoy-backup"))
-        // Beside `themes`, which it emptied of its own folder (`._themes` is Mactoy's to tidy either way).
-        #expect(!fileExists(v, "ventoy/._themes"))
+        // The backup was made by the apply above, not by this call, so its companion is not this call's to tidy.
+        #expect(fileExists(v, "ventoy/._ventoy.json.mactoy-backup"))
         // `mine` is still in `themes`, so the folder stays, and so does the user's companion.
         #expect(exists(v, "ventoy/themes/mine/theme.txt"))
         #expect(fileExists(v, "ventoy/themes/._mine"))
+        // `themes` was there before and still is, so Mactoy neither made nor removed it: its companion is not Mactoy's.
+        #expect(fileExists(v, "ventoy/._themes"))
+    }
+
+    @Test("a themes folder the user made keeps its companion through apply; one Mactoy made does not")
+    func applyLeavesAUserMadeThemesFoldersCompanion() throws {
+        // `themes` is already there, the user's, with a companion beside it.
+        let theirs = try volume(json: #"{"control":[]}"#)
+        try plant(theirs.appendingPathComponent("ventoy/themes/mine/theme.txt"), Data("x".utf8))
+        try plant(theirs.appendingPathComponent("ventoy/._themes"))
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "sample", name: "Sample", settings: settings, to: theirs, isReadOnly: { _ in false })
+        #expect(fileExists(theirs, "ventoy/._themes"))
+        // An existing but empty one is still not Mactoy's.
+        let empty = try volume(json: #"{"control":[]}"#)
+        try FileManager.default.createDirectory(at: empty.appendingPathComponent("ventoy/themes"), withIntermediateDirectories: true)
+        try plant(empty.appendingPathComponent("ventoy/._themes"))
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "sample", name: "Sample", settings: settings, to: empty, isReadOnly: { _ in false })
+        #expect(fileExists(empty, "ventoy/._themes"))
+
+        // `ventoy` is there but `themes` is not: Mactoy makes it, and macOS leaves a companion for it.
+        let mine = try volume(json: #"{"control":[]}"#)
+        try ThemeInstaller.install(themeDirectory: themeFolder(), id: "sample", name: "Sample", settings: settings, to: mine,
+                                   isReadOnly: { _ in false }, move: { from, to in
+            try FileManager.default.moveItem(at: from, to: to)
+            try self.plant(mine.appendingPathComponent("ventoy/._themes"))
+        })
+        #expect(!fileExists(mine, "ventoy/._themes"))
+    }
+
+    @Test("removeTheme on a config with no theme writes nothing, so it keeps the companions of the settings file and its backup")
+    func removeWithoutAThemeKeepsConfigCompanions() throws {
+        let v = try volume(json: #"{"control":[]}"#)
+        try Data(#"{"control":[]}"#.utf8).write(to: v.appendingPathComponent("ventoy/ventoy.json.mactoy-backup"))
+        try plant(v.appendingPathComponent("ventoy/._ventoy.json"))
+        try plant(v.appendingPathComponent("ventoy/._ventoy.json.mactoy-backup"))
+        let before = try Data(contentsOf: v.appendingPathComponent("ventoy/ventoy.json"))
+        try ThemeInstaller.removeTheme(from: v, isReadOnly: { _ in false })
+        #expect(try Data(contentsOf: v.appendingPathComponent("ventoy/ventoy.json")) == before)
+        #expect(fileExists(v, "ventoy/._ventoy.json"))
+        #expect(fileExists(v, "ventoy/._ventoy.json.mactoy-backup"))
+        // And with no ventoy.json at all.
+        let none = try volume()
+        try plant(none.appendingPathComponent("ventoy/._ventoy.json"))
+        try ThemeInstaller.removeTheme(from: none, isReadOnly: { _ in false })
+        #expect(fileExists(none, "ventoy/._ventoy.json"))
+    }
+
+    @Test("a backup that was there before is not Mactoy's write, so its companion stays; the settings file's goes")
+    func applyLeavesAnOlderBackupsCompanion() throws {
+        let v = try volume(json: #"{"control":[]}"#)
+        let older = #"{"control":[],"menu_alias":[]}"#
+        try Data(older.utf8).write(to: v.appendingPathComponent("ventoy/ventoy.json.mactoy-backup"))
+        try plant(v.appendingPathComponent("ventoy/._ventoy.json"))
+        try plant(v.appendingPathComponent("ventoy/._ventoy.json.mactoy-backup"))
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "sample", name: "Sample", settings: settings, to: v, isReadOnly: { _ in false })
+        #expect(try text(v, "ventoy/ventoy.json.mactoy-backup") == older, "the backup itself is untouched")
+        #expect(fileExists(v, "ventoy/._ventoy.json.mactoy-backup"))
+        #expect(!fileExists(v, "ventoy/._ventoy.json"))
+    }
+
+    @Test("removeTheme that rewrites the settings file takes its companion; the backup's only when that was written too")
+    func removeRewriteTidiesConfigCompanions() throws {
+        let v = try volume(json: #"{"control":[],"theme":{"file":"/ventoy/mine/theme.txt"}}"#)
+        try plant(v.appendingPathComponent("ventoy/._ventoy.json"))
+        try plant(v.appendingPathComponent("ventoy/._ventoy.json.mactoy-backup"))
+        try ThemeInstaller.removeTheme(from: v, isReadOnly: { _ in false })
+        #expect(try json(v)["theme"] == nil)
+        #expect(!fileExists(v, "ventoy/._ventoy.json"))
+        // The first rewrite made the backup, so it is Mactoy's.
+        #expect(exists(v, "ventoy/ventoy.json.mactoy-backup"))
+        #expect(!fileExists(v, "ventoy/._ventoy.json.mactoy-backup"))
     }
 
     // MARK: Empty themes folder
@@ -1040,9 +1126,99 @@ struct ThemeInstallerTests {
         #expect(ThemeInstaller.looksFreshlyInstalled(v), "an empty ventoy folder")
         try fm.createDirectory(at: v.appendingPathComponent("ventoy/themes"), withIntermediateDirectories: true)
         #expect(ThemeInstaller.looksFreshlyInstalled(v), "an empty themes folder")
-        // Files elsewhere on the drive (an ISO, say) say nothing about the settings.
-        try Data([1]).write(to: v.appendingPathComponent("some.iso"))
+    }
+
+    @Test("a volume holding only ventoy/ and entries that start with a dot is fresh")
+    func onlyVentoyAndDotEntriesIsFresh() throws {
+        let fm = FileManager.default
+        let v = try volume()
+        // What macOS adds to a new volume by itself, and a stray companion or two.
+        for hidden in [".fseventsd", ".Spotlight-V100", ".Trashes"] {
+            try fm.createDirectory(at: v.appendingPathComponent(hidden), withIntermediateDirectories: true)
+        }
+        try Data([1]).write(to: v.appendingPathComponent(".DS_Store"))
+        try Data([1]).write(to: v.appendingPathComponent("._ventoy"))
+        try fm.createDirectory(at: v.appendingPathComponent("ventoy/themes"), withIntermediateDirectories: true)
         #expect(ThemeInstaller.looksFreshlyInstalled(v))
+        // Dot entries only, with no ventoy folder yet.
+        let bare = try volume()
+        try Data([1]).write(to: bare.appendingPathComponent(".metadata_never_index"))
+        #expect(ThemeInstaller.looksFreshlyInstalled(bare))
+    }
+
+    @Test("a volume with anything else at its root has been used, so it is not fresh")
+    func rootEntriesMakeItNotFresh() throws {
+        let fm = FileManager.default
+        // An ISO, a folder, a file named like the settings folder, and one that only starts like it.
+        for entry in ["some.iso", "ISOs", "Ventoy", "ventoy2", "ventoy.json", "notes.txt"] {
+            let v = try volume()
+            if entry == "ISOs" {
+                try fm.createDirectory(at: v.appendingPathComponent(entry), withIntermediateDirectories: true)
+            } else {
+                try Data([1]).write(to: v.appendingPathComponent(entry))
+            }
+            #expect(!ThemeInstaller.looksFreshlyInstalled(v), "\(entry)")
+        }
+        // Dot entries beside a real file don't excuse it, and the ISO need not be the only thing there.
+        let v = try volume()
+        try fm.createDirectory(at: v.appendingPathComponent("ventoy"), withIntermediateDirectories: true)
+        try Data([1]).write(to: v.appendingPathComponent(".DS_Store"))
+        try Data([1]).write(to: v.appendingPathComponent("ubuntu.iso"))
+        #expect(!ThemeInstaller.looksFreshlyInstalled(v))
+    }
+
+    @Test("a volume that isn't there, isn't a folder, or is a link is not fresh")
+    func volumeItselfMustBeAFolder() throws {
+        let fm = FileManager.default
+        let gone = fm.temporaryDirectory.appendingPathComponent("mactoy-gone-\(UUID().uuidString)")
+        #expect(!ThemeInstaller.looksFreshlyInstalled(gone), "a volume that vanished")
+
+        let file = fm.temporaryDirectory.appendingPathComponent("mactoy-file-\(UUID().uuidString)")
+        try Data([1]).write(to: file)
+        #expect(!ThemeInstaller.looksFreshlyInstalled(file), "a file")
+
+        // A link to an empty folder would look empty, and it is not the volume.
+        let empty = try volume()
+        let link = fm.temporaryDirectory.appendingPathComponent("mactoy-link-\(UUID().uuidString)")
+        try fm.createSymbolicLink(at: link, withDestinationURL: empty)
+        #expect(ThemeInstaller.looksFreshlyInstalled(empty))
+        #expect(!ThemeInstaller.looksFreshlyInstalled(link), "a link")
+    }
+
+    @Test("a volume whose root can't be listed is not fresh")
+    func unreadableRootIsNotFresh() throws {
+        // Root can open anything; the check is about a failed listing, so skip where it can't fail.
+        guard geteuid() != 0 else { return }
+        let fm = FileManager.default
+        let v = try volume()
+        try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: v.path)
+        defer { try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: v.path) }
+        #expect(!ThemeInstaller.looksFreshlyInstalled(v))
+    }
+
+    @Test("a folder listing that fails part of the way is no listing at all")
+    func rawEntriesFailure() throws {
+        let fm = FileManager.default
+        let v = try volume()
+        try Data([1]).write(to: v.appendingPathComponent("a"))
+        try Data([1]).write(to: v.appendingPathComponent("b"))
+        #expect(Set(try #require(ThemeInstaller.rawEntries(of: v))) == ["a", "b"])
+
+        // readdir answers nil with errno set: an error, not the end of the folder.
+        #expect(ThemeInstaller.rawEntries(of: v, readNext: { _ in errno = EIO; return nil }) == nil)
+        // The same after it has already returned an entry.
+        var calls = 0
+        #expect(ThemeInstaller.rawEntries(of: v, readNext: { stream in
+            calls += 1
+            if calls == 1 { return readdir(stream) }
+            errno = EIO
+            return nil
+        }) == nil)
+        // A stale errno from before the listing is not an error in it.
+        errno = EIO
+        #expect(ThemeInstaller.rawEntries(of: v)?.count == 2)
+        // A folder that can't be opened.
+        #expect(ThemeInstaller.rawEntries(of: v.appendingPathComponent("missing")) == nil)
     }
 
     @Test("a drive with a ventoy.json is not fresh, whatever is in it")
