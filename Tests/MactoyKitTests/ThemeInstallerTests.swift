@@ -684,6 +684,122 @@ struct ThemeInstallerTests {
         #expect(throws: VentoyConfigEditor.Refusal.self) { _ = try ThemeInstaller.driveTheme(on: v) }
     }
 
+    // MARK: current() decides "managed" strictly
+
+    private let managedFile = "/ventoy/themes/mactoy-xx/theme.txt"
+
+    /// A volume with a Mactoy-style folder `mactoy-xx` (marker included) and a ventoy.json holding `theme`.
+    private func volumeWithManagedFolder(theme: String, marker: String? = #"{"id":"xx","name":"X"}"#) throws -> URL {
+        let v = try volume(json: #"{"control":[],"theme":\#(theme)}"#, files: ["ventoy/themes/mactoy-xx/theme.txt", "ventoy/themes/mactoy-xx/f.pf2"])
+        if let marker {
+            try Data(marker.utf8).write(to: v.appendingPathComponent("ventoy/themes/mactoy-xx/\(ThemeInstaller.markerName)"))
+        }
+        return v
+    }
+
+    @Test("the exact theme Mactoy writes, with every key it writes, is managed")
+    func currentManagedExactShape() throws {
+        let all = try volumeWithManagedFolder(theme: #"""
+            {"file":"/ventoy/themes/mactoy-xx/theme.txt","fonts":["/ventoy/themes/mactoy-xx/f.pf2"],"gfxmode":"1920x1080,auto",
+             "ventoy_left":"5%","ventoy_top":"10%","ventoy_color":"#112233"}
+            """#)
+        #expect(try ThemeInstaller.current(on: all) == .managed(id: "xx", name: "X"))
+        let bare = try volumeWithManagedFolder(theme: #"{"file":"/ventoy/themes/mactoy-xx/theme.txt"}"#)
+        #expect(try ThemeInstaller.current(on: bare) == .managed(id: "xx", name: "X"))
+    }
+
+    @Test("a path with . or .. or an empty part is the user's, even inside a folder that has our marker",
+          arguments: [
+            "/ventoy/themes/mactoy-xx/../mactoy-xx/theme.txt",
+            "/ventoy/themes/mactoy-xx/../../../elsewhere/theme.txt",
+            "/ventoy/themes/mactoy-xx/./theme.txt",
+            "/ventoy/themes//mactoy-xx/theme.txt",
+            "/ventoy/themes/mactoy-xx//theme.txt",
+            "ventoy/themes/mactoy-xx/theme.txt",
+          ])
+    func currentOddPathsAreOther(file: String) throws {
+        let v = try volumeWithManagedFolder(theme: #"{"file":"\#(file)"}"#)
+        #expect(try ThemeInstaller.current(on: v) == .other(file: file))
+    }
+
+    @Test("a managed folder with a key Mactoy doesn't write is the user's, so replacing it asks first",
+          arguments: ["\"display_mode\":\"CLI\"", "\"resolution_fit\":\"1\"", "\"default_file\":\"/ventoy/themes/mactoy-xx/b.txt\"",
+                      "\"some_future_key\":1", "\"theme_uefi\":{}"])
+    func currentExtraKeyIsOther(extra: String) throws {
+        let v = try volumeWithManagedFolder(theme: "{\"file\":\"/ventoy/themes/mactoy-xx/theme.txt\",\(extra)}")
+        #expect(try ThemeInstaller.current(on: v) == .other(file: managedFile))
+    }
+
+    @Test("a file list is the user's, even when it includes the managed file")
+    func currentFileArrayIsOther() throws {
+        let first = try volumeWithManagedFolder(theme: #"{"file":["/ventoy/themes/mactoy-xx/theme.txt","/ventoy/mine/theme.txt"]}"#)
+        #expect(try ThemeInstaller.current(on: first) == .other(file: managedFile))
+        let second = try volumeWithManagedFolder(theme: #"{"file":["/ventoy/mine/theme.txt","/ventoy/themes/mactoy-xx/theme.txt"]}"#)
+        #expect(try ThemeInstaller.current(on: second) == .other(file: "/ventoy/mine/theme.txt"))
+        let single = try volumeWithManagedFolder(theme: #"{"file":["/ventoy/themes/mactoy-xx/theme.txt"]}"#)
+        #expect(try ThemeInstaller.current(on: single) == .other(file: managedFile))
+    }
+
+    @Test("fonts that aren't all inside the managed folder make it the user's")
+    func currentFontsOutsideAreOther() throws {
+        for fonts in [#"["/ventoy/themes/mactoy-xx/f.pf2","/ventoy/mine/g.pf2"]"#, #""/ventoy/themes/mactoy-xx/f.pf2""#,
+                      #"["/ventoy/themes/mactoy-xx/../f.pf2"]"#, #"[5]"#, #"["/ventoy/themes/mactoy-xx"]"#] {
+            let v = try volumeWithManagedFolder(theme: #"{"file":"/ventoy/themes/mactoy-xx/theme.txt","fonts":\#(fonts)}"#)
+            #expect(try ThemeInstaller.current(on: v) == .other(file: managedFile), "\(fonts)")
+        }
+    }
+
+    @Test("a marker that isn't a plain file with a usable id, or names another id, doesn't make a folder ours",
+          arguments: [#"{"id":"../x","name":"X"}"#, #"{"id":"","name":"X"}"#, #"{"id":"XX","name":"X"}"#, #"{"id":"yy","name":"X"}"#,
+                      "not json", #"{"name":"X"}"#])
+    func currentUntrustedMarkerIsOther(marker: String) throws {
+        let v = try volumeWithManagedFolder(theme: #"{"file":"/ventoy/themes/mactoy-xx/theme.txt"}"#, marker: marker)
+        #expect(try ThemeInstaller.current(on: v) == .other(file: managedFile))
+    }
+
+    @Test("a marker that is a link is not read")
+    func currentLinkedMarkerIsOther() throws {
+        let v = try volumeWithManagedFolder(theme: #"{"file":"/ventoy/themes/mactoy-xx/theme.txt"}"#, marker: nil)
+        let elsewhere = FileManager.default.temporaryDirectory.appendingPathComponent("mactoy-marker-\(UUID().uuidString).json")
+        try Data(#"{"id":"xx","name":"X"}"#.utf8).write(to: elsewhere)
+        try FileManager.default.createSymbolicLink(at: v.appendingPathComponent("ventoy/themes/mactoy-xx/\(ThemeInstaller.markerName)"),
+                                                   withDestinationURL: elsewhere)
+        #expect(try ThemeInstaller.current(on: v) == .other(file: managedFile))
+    }
+
+    @Test("a folder that is reached through a link is not trusted for its marker", arguments: ["ventoy", "themes", "mactoy-xx"])
+    func currentLinkedFolderIsOther(linked: String) throws {
+        let fm = FileManager.default
+        let v = try volumeWithManagedFolder(theme: #"{"file":"/ventoy/themes/mactoy-xx/theme.txt"}"#)
+        let path = ["ventoy": "ventoy", "themes": "ventoy/themes", "mactoy-xx": "ventoy/themes/mactoy-xx"][linked]!
+        // Move the real folder away and leave a link to it where it was.
+        let real = fm.temporaryDirectory.appendingPathComponent("mactoy-real-\(UUID().uuidString)")
+        try fm.moveItem(at: v.appendingPathComponent(path), to: real)
+        try fm.createSymbolicLink(at: v.appendingPathComponent(path), withDestinationURL: real)
+        #expect(try ThemeInstaller.current(on: v) == .other(file: "/ventoy/themes/mactoy-xx/theme.txt"))
+    }
+
+    @Test("a name read off the drive loses control and bidi characters, and is cut to the library's length")
+    func currentNameIsCleaned() throws {
+        let marker = #"{"id":"xx","name":"Ev\u202Eil\u0007 \u200Bna\u2066me"}"#
+        let v = try volumeWithManagedFolder(theme: #"{"file":"/ventoy/themes/mactoy-xx/theme.txt"}"#, marker: marker)
+        #expect(try ThemeInstaller.current(on: v) == .managed(id: "xx", name: "Evil name"))
+
+        let long = String(repeating: "n", count: 200)
+        let big = try volumeWithManagedFolder(theme: #"{"file":"/ventoy/themes/mactoy-xx/theme.txt"}"#, marker: #"{"id":"xx","name":"\#(long)"}"#)
+        #expect(try ThemeInstaller.current(on: big) == .managed(id: "xx", name: String(repeating: "n", count: 60)))
+
+        // Nothing readable left: the id stands in for the name.
+        let blank = try volumeWithManagedFolder(theme: #"{"file":"/ventoy/themes/mactoy-xx/theme.txt"}"#, marker: #"{"id":"xx","name":"\u202E\u200B"}"#)
+        #expect(try ThemeInstaller.current(on: blank) == .managed(id: "xx", name: "xx"))
+    }
+
+    @Test("a damaged ventoy.json still throws from current, as before")
+    func currentDamagedConfig() throws {
+        let v = try volume(json: #"{"theme": "#)
+        #expect(throws: VentoyConfigEditor.Refusal.self) { _ = try ThemeInstaller.current(on: v) }
+    }
+
     // MARK: Looks freshly installed
 
     @Test("a volume that was just formatted looks fresh, with or without an empty ventoy or themes folder")

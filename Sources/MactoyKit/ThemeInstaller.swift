@@ -76,12 +76,42 @@ public enum ThemeInstaller {
         // overwrite or delete the whole value, so it must never read as the default.
         guard try VentoyConfigEditor.hasTheme(in: config) else { return .ventoyDefault }
         guard let file = try VentoyConfigEditor.themeFiles(in: config).first else { return .other(file: "") }
-        let parts = file.split(separator: "/").map(String.init)
-        if parts.count >= 4, parts[0] == "ventoy", parts[1] == "themes", parts[2].hasPrefix(managedPrefix),
-           let marker = readMarker(volume.appendingPathComponent("\(themesPath)/\(parts[2])")) {
-            return .managed(id: marker.id, name: marker.name)
-        }
+        if let managed = try managedTheme(file: file, in: config, on: volume) { return managed }
         return .other(file: file)
+    }
+
+    /// The keys `settingsValue` writes: a `theme` with any other key has been edited since.
+    private static let managedKeys = Set(ThemeEntry.Settings.CodingKeys.allCases.map(\.rawValue))
+
+    /// `.managed` only for the exact shape Mactoy writes, because "managed" lets a
+    /// replacement go ahead without asking: the `theme` object holds nothing but
+    /// Mactoy's own keys, `file` is one string in a `mactoy-<id>` folder that
+    /// holds a trustworthy marker for that same id, and so are the fonts. Anything
+    /// else (a file list, `display_mode`, `default_file`, a path that climbs out of
+    /// the folder, a marker that isn't a plain file) is the user's, and is shown as such.
+    private static func managedTheme(file: String, in config: Data?, on volume: URL) throws -> Current? {
+        guard let theme = try VentoyConfigEditor.themeObject(in: config),
+              theme["file"] is String, Set(theme.keys).isSubset(of: managedKeys),
+              let parts = pathParts(file), parts.count >= 4, parts[0] == "ventoy", parts[1] == "themes",
+              // `pathParts` skips empty parts; Mactoy never writes one, so a path with one was not written by Mactoy.
+              file == "/" + parts.joined(separator: "/"),
+              parts[2].hasPrefix(managedPrefix)
+        else { return nil }
+        // Each step down is a real folder: a link could lead the marker read anywhere on this Mac.
+        var folder = volume
+        for part in parts.prefix(3) {
+            folder.appendPathComponent(part, isDirectory: true)
+            guard fileType(folder) == .typeDirectory else { return nil }
+        }
+        guard let marker = markerIfPlain(folder), parts[2] == managedPrefix + marker.id else { return nil }
+        if let fonts = theme["fonts"] {
+            // Mactoy writes an array of strings, every one inside the same folder.
+            guard let list = fonts as? [String], list.allSatisfy({ font in
+                pathParts(font).map { $0.count > 3 && $0.prefix(3).elementsEqual(parts.prefix(3)) } == true
+            }) else { return nil }
+        }
+        // Read off a drive: shown in a dialog, so no control or bidi characters.
+        return .managed(id: marker.id, name: ThemeLibrary.cleaned(marker.name, limit: ThemeLibrary.maxNameLength, fallback: marker.id))
     }
 
     /// The theme a drive is set to use, found on the drive, so it can be kept
@@ -136,7 +166,7 @@ public enum ThemeInstaller {
         guard resolved.hasPrefix(root.hasSuffix("/") ? root : root + "/"), resolved != root else { return nil }
 
         var settings = ThemeEntry.Settings(file: parts.dropFirst(folderParts.count).joined(separator: "/"))
-        if let theme = try themeObject(in: config) {
+        if let theme = try VentoyConfigEditor.themeObject(in: config) {
             settings.fonts = fontPaths(theme["fonts"]).compactMap { font -> String? in
                 guard let fontParts = pathParts(font), fontParts.count > folderParts.count,
                       zip(fontParts, folderParts).allSatisfy({ $0.caseInsensitiveCompare($1) == .orderedSame })
@@ -177,14 +207,6 @@ public enum ThemeInstaller {
               let marker = readMarker(folder), isValidID(marker.id)
         else { return nil }
         return marker
-    }
-
-    /// The `theme` object in `ventoy.json`, if it is one.
-    private static func themeObject(in config: Data?) throws -> [String: Any]? {
-        guard let config, !VentoyConfigEditor.isBlank(config) else { return nil }
-        let parsed = try VentoyConfigEditor.parse(config)
-        guard let member = parsed.members.first(where: { $0.key == "theme" }) else { return nil }
-        return try? JSONSerialization.jsonObject(with: Data(parsed.bytes[member.valueStart..<member.valueEnd])) as? [String: Any]
     }
 
     private static func fontPaths(_ value: Any?) -> [String] {

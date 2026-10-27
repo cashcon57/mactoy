@@ -55,6 +55,17 @@ public enum VentoyConfigEditor {
         return (theme["file"] as? [Any])?.compactMap { $0 as? String } ?? []
     }
 
+    /// The top-level `theme` value when it is a JSON object, so callers can see
+    /// which keys it holds. Nil for no file, no `theme`, or a `theme` that isn't an
+    /// object. Goes through `parse`, so the same files are refused as everywhere else.
+    public static func themeObject(in data: Data?) throws -> [String: Any]? {
+        guard let data, !isBlank(data) else { return nil }
+        let parsed = try parse(data)
+        guard let member = parsed.members.first(where: { $0.key == "theme" }) else { return nil }
+        let value = Data(parsed.bytes[member.valueStart..<member.valueEnd])
+        return try? JSONSerialization.jsonObject(with: value) as? [String: Any]
+    }
+
     /// Whether the file has a top-level `theme` member, whatever its value
     /// (an object with no `file`, `null` and a string all count). `themeFiles`
     /// alone can't tell "no theme" from "a theme setting with no file", and
