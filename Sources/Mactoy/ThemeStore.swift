@@ -174,6 +174,25 @@ final class ThemeStore: ObservableObject {
         return saved
     }
 
+    /// For the erase sheet of an Install: the theme the Ventoy drive on `bsdName`
+    /// uses now, if it is one worth keeping, with the volume it was read from.
+    /// Nil when no Ventoy volume is mounted from that disk, it has no theme,
+    /// the theme can't be read, or Mactoy can get it back anyway. Reads the
+    /// drive only, and off the main actor: this runs while a sheet is open.
+    func savableDriveTheme(onDisk bsdName: String,
+                           volumesDirectory: URL = URL(fileURLWithPath: "/Volumes"),
+                           deviceIdentifier: @escaping @Sendable (URL) -> String? = VentoyVolumeLocator.deviceIdentifier
+    ) async -> (name: String, volume: URL)? {
+        let found = await Task.detached(priority: .userInitiated) { () -> (URL, DriveTheme)? in
+            guard let volume = VentoyVolumeLocator.find(onDisk: bsdName, volumesDirectory: volumesDirectory,
+                                                        deviceIdentifier: deviceIdentifier),
+                  let theme = try? ThemeInstaller.driveTheme(on: volume) else { return nil }
+            return (volume, theme)
+        }.value
+        guard let (volume, theme) = found, isSavable(theme) else { return nil }
+        return (theme.name, volume)
+    }
+
     /// Drives that already use the theme keep their copy.
     func removeSaved(id: String) async throws {
         let library = self.library

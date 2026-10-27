@@ -91,6 +91,8 @@ struct InstallVentoyPanel: View {
 
             SecureBootCard(isOn: $state.installSecureBoot)
 
+            BootThemeCard()
+
             if let disk = state.selectedDisk {
                 if state.isTimeMachineBackup(disk) {
                     TimeMachineBanner(disk: disk)

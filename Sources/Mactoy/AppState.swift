@@ -59,6 +59,18 @@ struct EraseConfirmation: Identifiable {
     /// The disk is a Time Machine backup the user unlocked; the sheet
     /// says its backups will be erased.
     var isTimeMachineBackup: Bool = false
+    /// Boot theme for a fresh install, captured like `secureBoot`. Always
+    /// `.ventoyDefault` for Update and Flash Image.
+    var theme: ThemeChoice = .ventoyDefault
+    /// The theme already on the drive, when it is one Mactoy can keep and
+    /// an Install would erase. Filled in after the sheet opens (reading the
+    /// drive can block), for Install only.
+    var driveThemeName: String?
+    /// The mounted volume that theme was read from.
+    var driveThemeVolume: URL?
+    /// The sheet's "save it first" box, ticked unless the user clears it.
+    /// Only means something while `driveThemeName` is set.
+    var saveDriveThemeFirst: Bool = true
 }
 
 @MainActor
@@ -136,6 +148,50 @@ final class AppState: ObservableObject {
     /// recommended style for the selected disk.
     @Published var installPartitionStyleChoice: VentoyPartitionStyle?
 
+    /// Mactoy's pick for new drives; the Install tab says so and how to opt out.
+    static let defaultInstallTheme: ThemeChoice = .catalog(id: "catppuccin-mocha")
+    static let installThemeKey = "installTheme"
+    private let defaults: UserDefaults
+
+    /// Boot theme to add after a fresh install. Saved so an opt-out sticks;
+    /// a custom theme isn't, since My Themes can lose it.
+    @Published var installTheme: ThemeChoice {
+        didSet {
+            switch installTheme {
+            case .ventoyDefault: defaults.set("ventoy-default", forKey: Self.installThemeKey)
+            case .catalog(let id): defaults.set("catalog:\(id)", forKey: Self.installThemeKey)
+            case .custom: break
+            }
+        }
+    }
+    /// Adds a theme to a freshly installed disk; returns a problem to
+    /// report, or nil. Set by the app to `ThemeStore.applyAfterInstall`;
+    /// a seam so tests don't touch disks or the network.
+    var installThemeApplier: @MainActor (ThemeChoice, DiskTarget) async -> String? = { _, _ in nil }
+    /// Looks for a theme worth keeping on the disk an Install is about to
+    /// erase. Set by the app to `ThemeStore.savableDriveTheme`; a seam so
+    /// tests touch no disks. It reads a drive, so it never runs on the main actor.
+    var driveThemeProbe: @Sendable (DiskTarget) async -> (name: String, volume: URL)? = { _ in nil }
+    /// Keeps the theme on that volume in My Themes. Set by the app to
+    /// `ThemeStore.saveDriveTheme`; throws if it can't.
+    var driveThemeSaver: @MainActor (URL) async throws -> Void = { _ in }
+    /// Which disk a mounted volume is on ("disk7s2"), read off the main
+    /// actor (diskutil can stall on a drive mid-eject). Seam for tests.
+    var driveVolumeIdentifier: @Sendable (URL) async -> String? = { volume in
+        await Task.detached(priority: .userInitiated) { VentoyVolumeLocator.deviceIdentifier(of: volume) }.value
+    }
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        // Property observers don't fire during init, so reading the saved
+        // choice doesn't write it back.
+        switch defaults.string(forKey: Self.installThemeKey) {
+        case "ventoy-default": installTheme = .ventoyDefault
+        case let saved? where saved.hasPrefix("catalog:"): installTheme = .catalog(id: String(saved.dropFirst("catalog:".count)))
+        default: installTheme = Self.defaultInstallTheme
+        }
+    }
+
     // flash mode
     @Published var selectedImagePath: String?
 
@@ -209,6 +265,11 @@ final class AppState: ObservableObject {
     /// just switched away from.
     private var pendingRunSecureBoot: Bool = true
     private var pendingRunPartitionStyle: VentoyPartitionStyle = .mbr
+    private var pendingRunTheme: ThemeChoice = .ventoyDefault
+    /// The volume whose theme the user asked to keep before the erase.
+    /// Cleared the moment that save succeeds: Retry means the drive may
+    /// already be partly erased, and must never save from it.
+    private var pendingRunSaveThemeVolume: URL?
     /// Set once Mactoy has re-registered its helper because of a version
     /// mismatch; a further mismatch then fails instead of looping through
     /// the approval sheet. Carried across the approval detour (that's the
@@ -226,6 +287,8 @@ final class AppState: ObservableObject {
         let mode: AppMode
         let secureBoot: Bool
         let partitionStyle: VentoyPartitionStyle
+        let theme: ThemeChoice
+        let saveThemeFrom: URL?
     }
     private(set) var lastRunRequest: RunRequest?
     private(set) var runRequestCount = 0
@@ -410,6 +473,7 @@ final class AppState: ObservableObject {
             // resume fire on stale state.
             pendingRunTarget = nil
             pendingRunMode = nil
+            pendingRunSaveThemeVolume = nil
             didReregisterForVersionMismatch = false
         }
         // A Set Up Helper approval never touched the captured run (it may
@@ -471,12 +535,16 @@ final class AppState: ObservableObject {
         if let target = pendingRunTarget, let mode = pendingRunMode {
             let secureBoot = pendingRunSecureBoot
             let partitionStyle = pendingRunPartitionStyle
+            let theme = pendingRunTheme
+            let saveThemeFrom = pendingRunSaveThemeVolume
             Task { @MainActor in
                 await self.run(
                     confirmedTarget: target,
                     confirmedMode: mode,
                     confirmedSecureBoot: secureBoot,
-                    confirmedPartitionStyle: partitionStyle
+                    confirmedPartitionStyle: partitionStyle,
+                    confirmedTheme: theme,
+                    confirmedSaveThemeFrom: saveThemeFrom
                 )
             }
         } else {
@@ -724,7 +792,8 @@ final class AppState: ObservableObject {
             totalBytes: target.sizeInBytes,
             secureBoot: mode == .updateVentoy ? updateSecureBoot : installSecureBoot,
             partitionStyle: effectiveInstallPartitionStyle(for: target),
-            isTimeMachineBackup: isTimeMachineBackup(target)
+            isTimeMachineBackup: isTimeMachineBackup(target),
+            theme: mode == .installVentoy ? installTheme : .ventoyDefault
         )
         pendingEraseConfirmation = confirmation
         // The sheet opens now; the used-space line fills in when the
@@ -735,6 +804,16 @@ final class AppState: ObservableObject {
             guard let self, self.pendingEraseConfirmation?.id == confirmation.id else { return }
             self.pendingEraseConfirmation?.usedBytes = used.map { min($0, target.sizeInBytes) }
         }
+        // Same for a theme on the drive: only an Install erases it, and
+        // finding it reads the drive, so it fills in after the sheet is up.
+        guard mode == .installVentoy else { return }
+        let probe = driveThemeProbe
+        Task { [weak self] in
+            let found = await probe(target)
+            guard let found, let self, self.pendingEraseConfirmation?.id == confirmation.id else { return }
+            self.pendingEraseConfirmation?.driveThemeName = found.name
+            self.pendingEraseConfirmation?.driveThemeVolume = found.volume
+        }
     }
 
     func cancelRun() {
@@ -744,6 +823,7 @@ final class AppState: ObservableObject {
         // resume can't fire an install the user has since cancelled.
         pendingRunTarget = nil
         pendingRunMode = nil
+        pendingRunSaveThemeVolume = nil
     }
 
     func confirmRun() {
@@ -761,16 +841,25 @@ final class AppState: ObservableObject {
         let capturedMode = confirmation.mode
         let capturedSecureBoot = confirmation.secureBoot
         let capturedPartitionStyle = confirmation.partitionStyle
+        let capturedTheme = confirmation.theme
+        // The box counts only if the sheet found a theme to keep, and only
+        // for an Install: nothing else erases the drive's theme.
+        let capturedSaveThemeFrom: URL? = capturedMode == .installVentoy && confirmation.saveDriveThemeFirst
+            ? confirmation.driveThemeVolume : nil
         pendingRunTarget = capturedTarget
         pendingRunMode = capturedMode
         pendingRunSecureBoot = capturedSecureBoot
         pendingRunPartitionStyle = capturedPartitionStyle
+        pendingRunTheme = capturedTheme
+        pendingRunSaveThemeVolume = capturedSaveThemeFrom
         Task { @MainActor in
             await self.run(
                 confirmedTarget: capturedTarget,
                 confirmedMode: capturedMode,
                 confirmedSecureBoot: capturedSecureBoot,
-                confirmedPartitionStyle: capturedPartitionStyle
+                confirmedPartitionStyle: capturedPartitionStyle,
+                confirmedTheme: capturedTheme,
+                confirmedSaveThemeFrom: capturedSaveThemeFrom
             )
         }
     }
@@ -787,14 +876,17 @@ final class AppState: ObservableObject {
     /// what caused the wrong-disk wipe in v0.3.0; we now require the
     /// caller to thread the captured target through explicitly.
     ///
-    /// `confirmedSecureBoot` and `confirmedPartitionStyle` are threaded
-    /// the same way, for the same reason: the live toggles are
-    /// presentation state (the update one is re-seeded by every probe).
+    /// `confirmedSecureBoot`, `confirmedPartitionStyle`, `confirmedTheme`
+    /// and `confirmedSaveThemeFrom` are threaded the same way, for the
+    /// same reason: the live toggles are presentation state (the update
+    /// one is re-seeded by every probe).
     func run(
         confirmedTarget: DiskTarget,
         confirmedMode: AppMode,
         confirmedSecureBoot: Bool,
-        confirmedPartitionStyle: VentoyPartitionStyle
+        confirmedPartitionStyle: VentoyPartitionStyle,
+        confirmedTheme: ThemeChoice = .ventoyDefault,
+        confirmedSaveThemeFrom: URL? = nil
     ) async {
         let target = confirmedTarget
         runRequestCount += 1
@@ -802,7 +894,9 @@ final class AppState: ObservableObject {
             bsdName: target.bsdName,
             mode: confirmedMode,
             secureBoot: confirmedSecureBoot,
-            partitionStyle: confirmedPartitionStyle
+            partitionStyle: confirmedPartitionStyle,
+            theme: confirmedTheme,
+            saveThemeFrom: confirmedSaveThemeFrom
         )
 
         // Layer 6 (BSD-name guard): even if the rest of the
@@ -926,6 +1020,16 @@ final class AppState: ObservableObject {
             return
         }
 
+        // Keep the drive's theme before anything is erased, if the user
+        // asked. Deliberately after every check above (Layers 4 to 6, the
+        // Time Machine check), so those still stop a wrong-disk run first,
+        // and right before the helper, so nothing is sent if it fails. It
+        // is cleared once saved, so Retry after a failed erase can't save
+        // from a half-erased drive.
+        if confirmedMode == .installVentoy, let themeVolume = confirmedSaveThemeFrom {
+            guard await saveDriveThemeBeforeErase(from: themeVolume, on: target) else { return }
+        }
+
         do {
             try await HelperInvoker.run(
                 plan: plan,
@@ -946,6 +1050,7 @@ final class AppState: ObservableObject {
                 }
             )
             status = .success("Install complete")
+            await addThemeAfterInstall(confirmedTheme, mode: confirmedMode, to: target)
             Self.log.info("run() success")
         } catch let err as HelperInvoker.HelperError where isFullDiskAccessError(err) {
             // TCC is blocking raw-disk access from the daemon. Users have
@@ -1022,6 +1127,7 @@ final class AppState: ObservableObject {
                             }
                         )
                         status = .success("Install complete")
+                        await addThemeAfterInstall(confirmedTheme, mode: confirmedMode, to: target)
                     } catch let retryErr as HelperInvoker.HelperError where isFullDiskAccessError(retryErr) {
                         // Same handling as a first attempt.
                         showFullDiskAccessSheet = true
@@ -1142,6 +1248,57 @@ final class AppState: ObservableObject {
         log = []
         pendingRunTarget = nil
         pendingRunMode = nil
+        pendingRunSaveThemeVolume = nil
+    }
+
+    /// Before an Install erases the drive: keep the theme it has in My
+    /// Themes, if the user ticked the box. Returns false, with the run
+    /// failed and nothing erased, when that didn't work: a theme the user
+    /// asked to keep must not be erased unsaved.
+    ///
+    /// Re-checks that the volume still belongs to the confirmed disk
+    /// first: the URL was found when the sheet opened, and a different
+    /// drive may be mounted under the same name by now.
+    func saveDriveThemeBeforeErase(from volume: URL, on target: DiskTarget) async -> Bool {
+        status = .preparing("Saving the drive's boot theme…")
+        do {
+            guard let id = await driveVolumeIdentifier(volume), id.hasPrefix(target.bsdName + "s") else {
+                throw DriveThemeSaveError.notOnConfirmedDisk(target.bsdName)
+            }
+            try await driveThemeSaver(volume)
+        } catch {
+            // The reason is spliced into a sentence of its own.
+            var reason = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+            while reason.hasSuffix(".") { reason.removeLast() }
+            status = .failed("Couldn't save the drive's boot theme: \(reason). Nothing was erased. To erase without saving, untick the option and try again.")
+            Self.log.error("run() aborted: couldn't save the drive's theme before the erase")
+            return false
+        }
+        pendingRunSaveThemeVolume = nil
+        return true
+    }
+
+    private enum DriveThemeSaveError: LocalizedError {
+        case notOnConfirmedDisk(String)
+        var errorDescription: String? {
+            switch self {
+            case .notOnConfirmedDisk(let bsd): return "the drive's Ventoy volume is no longer mounted from /dev/\(bsd)"
+            }
+        }
+    }
+
+    /// After a fresh install succeeds, add the boot theme the user picked.
+    /// The install already worked, so a theme problem is reported as part
+    /// of the success message, never as a failure (which would offer a
+    /// Retry that erases the drive again).
+    func addThemeAfterInstall(_ theme: ThemeChoice, mode: AppMode, to target: DiskTarget) async {
+        guard mode == .installVentoy, theme != .ventoyDefault else { return }
+        status = .preparing("Adding the boot theme…")
+        if let problem = await installThemeApplier(theme, target) {
+            status = .success("Install complete. The boot theme wasn't added: \(problem) You can add it from Manage Disk.")
+        } else {
+            status = .success("Install complete, with your boot theme")
+        }
     }
 
     /// True when a failed run has a captured target we can retry
@@ -1169,7 +1326,9 @@ final class AppState: ObservableObject {
             confirmedTarget: target,
             confirmedMode: mode,
             confirmedSecureBoot: pendingRunSecureBoot,
-            confirmedPartitionStyle: pendingRunPartitionStyle
+            confirmedPartitionStyle: pendingRunPartitionStyle,
+            confirmedTheme: pendingRunTheme,
+            confirmedSaveThemeFrom: pendingRunSaveThemeVolume
         )
     }
 
