@@ -255,6 +255,21 @@ struct VentoyConfigEditorTests {
         #expect(try VentoyConfigEditor.themeFiles(in: both) == ["/outer"])
     }
 
+    @Test("hasTheme is true for any top-level theme member, whatever its value")
+    func hasTheme() throws {
+        for json in [#"{"theme":{"file":"/a"}}"#, #"{"theme":{"gfxmode":"1280x720"}}"#, #"{"theme":{}}"#,
+                     #"{"theme":null}"#, #"{"theme":"x"}"#, #"{"control":[],"theme":[]}"#] {
+            #expect(try VentoyConfigEditor.hasTheme(in: Data(json.utf8)), "\(json)")
+        }
+        for json in [#"{}"#, #"{"control":[{"theme":{"file":"/inner"}}]}"#, #"{"theme_uefi":{"file":"/u"}}"#] {
+            #expect(try !VentoyConfigEditor.hasTheme(in: Data(json.utf8)), "\(json)")
+        }
+        #expect(try !VentoyConfigEditor.hasTheme(in: nil))
+        #expect(try !VentoyConfigEditor.hasTheme(in: Data()))
+        #expect(throws: VentoyConfigEditor.Refusal.notValidJSON) { _ = try VentoyConfigEditor.hasTheme(in: Data(#"{"theme": "#.utf8)) }
+        #expect(throws: VentoyConfigEditor.Refusal.duplicateTheme) { _ = try VentoyConfigEditor.hasTheme(in: Data(#"{"theme":{},"theme":{}}"#.utf8)) }
+    }
+
     @Test("refuses files it can't edit safely", arguments: [
         (Data([0xFF, 0xFE, 0x7B, 0x00, 0x7D, 0x00]), VentoyConfigEditor.Refusal.utf16),
         (Data(#"{"menu_alias":[{"image":"\/a.iso","alias":"x"}]}"#.utf8), .containsBackslash),

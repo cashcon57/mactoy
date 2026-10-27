@@ -22,6 +22,30 @@ enum DriveThemeReader {
     }
 }
 
+/// The section's wording, kept out of the view so tests can read it.
+enum DriveThemeCopy {
+    /// `file` is empty when the drive's `theme` setting names no theme file.
+    static func ownTheme(file: String) -> String {
+        file.isEmpty ? "Your own theme settings" : "Your own theme (\(file))"
+    }
+
+    static func replaceMessage(file: String, toDefault: Bool) -> String {
+        let first = file.isEmpty
+            ? "This drive has theme settings you set up yourself."
+            : "This drive uses a theme you set up yourself (\(file))."
+        let action = toDefault
+            ? "Mactoy will switch the drive back to Ventoy's own theme."
+            : "Mactoy will point the drive at the new theme instead."
+        return "\(first) \(action) Your theme's files stay on the drive."
+    }
+
+    static func success(removed: Bool) -> String {
+        removed
+            ? "Theme removed. The drive will show Ventoy's own menu next time you boot from it."
+            : "Theme updated. It will show the next time you boot from this drive."
+    }
+}
+
 struct DriveThemeSection: View {
     @EnvironmentObject private var themes: ThemeStore
     let volumeURL: URL
@@ -51,7 +75,7 @@ struct DriveThemeSection: View {
             HStack {
                 Text("Boot menu theme").font(.headline)
                 Spacer()
-                if working { ProgressView().controlSize(.small); Text("Adding the theme…").font(.callout) }
+                if working { ProgressView().controlSize(.small); Text("Changing the theme…").font(.callout) }
                 Button("Change Theme…") { showPicker = true }
                     .disabled(working || readOnly || current == nil)
             }
@@ -85,10 +109,11 @@ struct DriveThemeSection: View {
             presenting: pendingReplace
         ) { pending in
             Button("Replace") { Task { await apply(pending.choice) } }
-                .keyboardShortcut(.defaultAction)
+            // Return picks Cancel, so a double Return can't replace a theme nobody read about.
             Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: { pending in
-            Text("This drive uses a theme you set up yourself (\(pending.file)). Mactoy will point the drive at the new theme instead. Your theme's files stay on the drive, and your previous settings are saved in ventoy/ventoy.json.mactoy-backup.")
+            Text(DriveThemeCopy.replaceMessage(file: pending.file, toDefault: pending.choice == .ventoyDefault))
         }
     }
 
@@ -98,7 +123,7 @@ struct DriveThemeSection: View {
         case nil: return "Reading the drive's settings…"
         case .ventoyDefault: return "Ventoy default"
         case .managed(_, let name): return name
-        case .other(let file): return "Your own theme (\(file))"
+        case .other(let file): return DriveThemeCopy.ownTheme(file: file)
         }
     }
 
@@ -152,7 +177,7 @@ struct DriveThemeSection: View {
         do {
             let warnings = try await themes.apply(choice, to: volumeURL)
             isError = false
-            message = (["Theme updated. It will show the next time you boot from this drive."] + warnings).joined(separator: " ")
+            message = ([DriveThemeCopy.success(removed: choice == .ventoyDefault)] + warnings).joined(separator: " ")
         } catch {
             isError = true
             message = error.localizedDescription

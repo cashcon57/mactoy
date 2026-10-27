@@ -15,6 +15,8 @@ public enum ThemeInstaller {
     public enum Current: Equatable, Sendable {
         case ventoyDefault
         case managed(id: String, name: String)
+        /// The user's own `theme` setting. `file` is empty when the setting
+        /// names no theme file (only `gfxmode`, say, or a value that isn't an object).
         case other(file: String)
     }
 
@@ -39,7 +41,11 @@ public enum ThemeInstaller {
     }
 
     public static func current(on volume: URL) throws -> Current {
-        guard let file = try VentoyConfigEditor.themeFiles(in: readConfig(volume)).first else { return .ventoyDefault }
+        let config = try readConfig(volume)
+        // Any `theme` member that isn't Mactoy's is the user's: apply and remove
+        // overwrite or delete the whole value, so it must never read as the default.
+        guard try VentoyConfigEditor.hasTheme(in: config) else { return .ventoyDefault }
+        guard let file = try VentoyConfigEditor.themeFiles(in: config).first else { return .other(file: "") }
         let parts = file.split(separator: "/").map(String.init)
         if parts.count >= 4, parts[0] == "ventoy", parts[1] == "themes", parts[2].hasPrefix(managedPrefix),
            let marker = readMarker(volume.appendingPathComponent("\(themesPath)/\(parts[2])")) {

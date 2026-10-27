@@ -55,6 +55,15 @@ public enum VentoyConfigEditor {
         return (theme["file"] as? [Any])?.compactMap { $0 as? String } ?? []
     }
 
+    /// Whether the file has a top-level `theme` member, whatever its value
+    /// (an object with no `file`, `null` and a string all count). `themeFiles`
+    /// alone can't tell "no theme" from "a theme setting with no file", and
+    /// the second is the user's, so it must not be mistaken for the default.
+    public static func hasTheme(in data: Data?) throws -> Bool {
+        guard let data, !isBlank(data) else { return false }
+        return try parse(data).members.contains { $0.key == "theme" }
+    }
+
     /// Per-mode theme keys present at the top level, sorted.
     public static func presentModeSpecificThemeKeys(in data: Data?) throws -> [String] {
         guard let data, !isBlank(data) else { return [] }

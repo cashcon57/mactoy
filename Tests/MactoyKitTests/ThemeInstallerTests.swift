@@ -259,6 +259,28 @@ struct ThemeInstallerTests {
         #expect(try ThemeInstaller.current(on: v) == .other(file: "/ventoy/themes/mactoy-x/theme.txt"))
     }
 
+    @Test("a theme setting that names no theme file is the user's, not the default",
+          arguments: [#"{"theme":{"gfxmode":"1280x720"}}"#, #"{"theme":{"display_mode":"CLI"}}"#, #"{"theme":{}}"#,
+                      #"{"theme":null}"#, #"{"theme":"x"}"#, #"{"theme":{"file":5}}"#])
+    func themeWithoutFileIsOther(json: String) throws {
+        #expect(try ThemeInstaller.current(on: volume(json: json)) == .other(file: ""))
+    }
+
+    @Test("settings with no theme member are still the default")
+    func noThemeMemberIsDefault() throws {
+        #expect(try ThemeInstaller.current(on: volume(json: #"{"control":[{"theme":{"file":"/inner"}}],"menu_alias":[]}"#)) == .ventoyDefault)
+        #expect(try ThemeInstaller.current(on: volume(json: "{}")) == .ventoyDefault)
+    }
+
+    @Test("a theme setting with no file is replaced by apply and deleted by remove, like any other")
+    func fileLessThemeCanBeChanged() throws {
+        let v = try volume(json: #"{"control":[],"theme":{"gfxmode":"1280x720"}}"#)
+        try ThemeInstaller.apply(themeDirectory: themeFolder(), id: "sample", name: "Sample", settings: settings, to: v, isReadOnly: { _ in false })
+        #expect(try ThemeInstaller.current(on: v) == .managed(id: "sample", name: "Sample"))
+        try ThemeInstaller.removeTheme(from: v, isReadOnly: { _ in false })
+        #expect(try ThemeInstaller.current(on: v) == .ventoyDefault)
+    }
+
     @Test("a refused ventoy.json changes nothing on the drive")
     func refusedLeavesDriveAlone() throws {
         let v = try volume(json: #"{"menu_alias":[{"image":"\/a.iso","alias":"x"}]}"#)
