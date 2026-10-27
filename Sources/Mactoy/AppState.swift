@@ -162,6 +162,7 @@ final class AppState: ObservableObject {
     /// a custom theme isn't, since My Themes can lose it.
     @Published var installTheme: ThemeChoice {
         didSet {
+            guard !isFallingBack else { return }
             switch installTheme {
             case .ventoyDefault: defaults.set("ventoy-default", forKey: Self.installThemeKey)
             case .catalog(let id): defaults.set("catalog:\(id)", forKey: Self.installThemeKey)
@@ -170,22 +171,55 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Puts the pick back to `defaultInstallTheme` when what it names is gone: a saved
-    /// theme removed from My Themes, or a catalog theme that isn't in the online
-    /// catalog (the bundled and cached copies can lag behind it, so they never
-    /// reset a pick). The app calls it whenever either list changes.
-    func resetInstallThemeIfUnavailable(_ available: ThemeAvailability) {
-        let valid = available.validated(installTheme, fallback: Self.defaultInstallTheme)
-        // Only a real change, so a pick that is fine is never written again.
-        if valid != installTheme { installTheme = valid }
+    /// True while `resetInstallThemeIfUnavailable` puts the pick back: falling back
+    /// is not the user choosing, so it stores nothing.
+    private var isFallingBack = false
+
+    /// The choice kept in `defaults`; nil when nothing is stored or what is stored isn't one we wrote.
+    private static func storedInstallTheme(in defaults: UserDefaults) -> ThemeChoice? {
+        switch defaults.string(forKey: installThemeKey) {
+        case "ventoy-default": return .ventoyDefault
+        case let saved? where saved.hasPrefix("catalog:"): return .catalog(id: String(saved.dropFirst("catalog:".count)))
+        default: return nil
+        }
     }
 
-    /// Adds a theme to a freshly installed disk; returns a problem to
-    /// report, or nil. Set by the app to `ThemeStore.applyAfterInstall`;
+    /// Moves the pick off a theme that is gone: a saved theme removed from My Themes,
+    /// or a catalog theme that isn't in the online catalog (the bundled and cached
+    /// copies can lag behind it, so they never reset a pick). The app calls it
+    /// whenever either list changes.
+    ///
+    /// It goes back to what the user last chose and kept (read from the saved
+    /// choice again), so a removed custom theme doesn't silently replace an
+    /// opt-out or a catalog pick. Only when nothing usable is stored (nothing at
+    /// all, or a catalog theme that is itself gone) does it use `defaultInstallTheme`,
+    /// and then a stale stored value is dropped so the next launch doesn't start
+    /// from it. The fallback never stores a choice: the stored value stays as it
+    /// was and the default stays unsaved.
+    func resetInstallThemeIfUnavailable(_ available: ThemeAvailability) {
+        // A pick that is fine is left alone and never written again.
+        guard !available.isAvailable(installTheme) else { return }
+        let fallback: ThemeChoice
+        if let stored = Self.storedInstallTheme(in: defaults), available.isAvailable(stored) {
+            fallback = stored
+        } else {
+            fallback = Self.defaultInstallTheme
+            defaults.removeObject(forKey: Self.installThemeKey)
+        }
+        guard fallback != installTheme else { return }
+        isFallingBack = true
+        defer { isFallingBack = false }
+        installTheme = fallback
+    }
+
+    /// Adds a theme to a freshly installed disk; says whether it was added (with
+    /// any warnings) or why not. Set by the app to `ThemeStore.applyAfterInstall`;
     /// a seam so tests don't touch disks or the network.
     /// Until the app sets it, it reports a problem: a missing hookup must show
     /// up, not claim a theme that was never added.
-    var installThemeApplier: @MainActor (ThemeChoice, DiskTarget) async -> String? = { _, _ in "theme support isn't set up." }
+    var installThemeApplier: @MainActor (ThemeChoice, DiskTarget) async -> PostInstallThemeResult = { _, _ in
+        .notApplied(problem: "theme support isn't set up.")
+    }
     /// Looks for a theme worth keeping on the disk an Install is about to
     /// erase. Set by the app to `ThemeStore.savableDriveTheme`; a seam so
     /// tests touch no disks. It reads a drive, so it never runs on the main actor.
@@ -206,11 +240,7 @@ final class AppState: ObservableObject {
         self.defaults = defaults
         // Property observers don't fire during init, so reading the saved
         // choice doesn't write it back.
-        switch defaults.string(forKey: Self.installThemeKey) {
-        case "ventoy-default": installTheme = .ventoyDefault
-        case let saved? where saved.hasPrefix("catalog:"): installTheme = .catalog(id: String(saved.dropFirst("catalog:".count)))
-        default: installTheme = Self.defaultInstallTheme
-        }
+        installTheme = Self.storedInstallTheme(in: defaults) ?? Self.defaultInstallTheme
     }
 
     // flash mode
@@ -1364,15 +1394,29 @@ final class AppState: ObservableObject {
     /// After a fresh install succeeds, add the boot theme the user picked.
     /// The install already worked, so a theme problem is reported as part
     /// of the success message, never as a failure (which would offer a
-    /// Retry that erases the drive again).
+    /// Retry that erases the drive again). Warnings from a theme that was
+    /// added are a note on the success, not a problem.
     func addThemeAfterInstall(_ theme: ThemeChoice, mode: AppMode, to target: DiskTarget) async {
         guard mode == .installVentoy, theme != .ventoyDefault else { return }
         status = .preparing("Adding the boot theme…")
-        if let problem = await installThemeApplier(theme, target) {
-            status = .success("Install complete. The boot theme wasn't added: \(problem) You can add it from Manage Disk.")
-        } else {
-            status = .success("Install complete, with your boot theme")
+        switch await installThemeApplier(theme, target) {
+        case .applied(let warnings):
+            let notes = warnings.map(Self.asSentence).filter { !$0.isEmpty }
+            status = .success(notes.isEmpty
+                ? "Install complete, with your boot theme"
+                : "Install complete, with your boot theme. Note: \(notes.joined(separator: " "))")
+        case .notApplied(let problem):
+            status = .success("Install complete. The boot theme wasn't added: \(Self.asSentence(problem)) You can add it from Manage Disk.")
         }
+    }
+
+    /// `text` as a finished sentence, for splicing into a longer message: surrounding
+    /// whitespace dropped, and a period added unless it ends in ".", "!" or "?".
+    /// Empty stays empty.
+    static func asSentence(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let last = trimmed.last, !".!?".contains(last) else { return trimmed }
+        return trimmed + "."
     }
 
     /// True when a failed run has a captured target we can retry

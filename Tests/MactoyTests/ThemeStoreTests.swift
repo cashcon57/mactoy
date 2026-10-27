@@ -398,6 +398,9 @@ struct ThemeStoreTests {
 
     private let notTheNewDrive = "the drive in that slot doesn't look like the one Mactoy just set up."
 
+    /// Added with nothing to say about it.
+    private let addedCleanly = PostInstallThemeResult.applied(warnings: [])
+
     /// Every file and folder under `root` with its bytes, so "unchanged" means unchanged.
     private func snapshot(_ root: URL) throws -> [String: Data?] {
         let fm = FileManager.default
@@ -416,8 +419,25 @@ struct ThemeStoreTests {
         let volume = try tempDir()
         let problem = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume },
                                                    deviceIdentifier: onInstalledDisk)
-        #expect(problem == nil)
+        #expect(problem == addedCleanly)
         #expect(try ThemeInstaller.current(on: volume) == .managed(id: id, name: "Night Sky"))
+    }
+
+    @Test("warnings from a theme that was written come back with it: the theme is on the drive, so it isn't a failure")
+    func afterInstallWarnings() async throws {
+        let store = try await offlineStore()
+        guard case .custom(let id) = try await store.importCustom(from: themeFolder()) else { Issue.record("not a saved theme"); return }
+        // The new drive's ventoy.json sets a separate theme for UEFI boot, which Ventoy prefers in that mode.
+        let volume = try tempDir()
+        let settingsFolder = volume.appendingPathComponent("ventoy")
+        try FileManager.default.createDirectory(at: settingsFolder, withIntermediateDirectories: true)
+        try Data(#"{"theme_uefi":{"file":"/ventoy/u/theme.txt"}}"#.utf8).write(to: settingsFolder.appendingPathComponent("ventoy.json"))
+        let result = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume },
+                                                  looksFresh: { _ in true }, deviceIdentifier: onInstalledDisk)
+        guard case .applied(let warnings) = result else { Issue.record("not applied: \(result)"); return }
+        #expect(warnings.count == 1)
+        #expect(warnings.first?.contains("theme_uefi") == true)
+        #expect(try ThemeInstaller.current(on: volume) == .managed(id: id, name: "Night Sky"), "the theme was written")
     }
 
     @Test("the volume is looked up on the installed disk")
@@ -427,7 +447,7 @@ struct ThemeStoreTests {
         let problem = await store.applyAfterInstall(.ventoyDefault, disk: installedDisk("disk42"),
                                                    findVolume: { asked.add($0); return nil })
         #expect(asked.values == ["disk42"])
-        #expect(problem == "the new Ventoy volume didn't appear.")
+        #expect(problem == .notApplied(problem: "the new Ventoy volume didn't appear."))
     }
 
     @Test("a drive that already has a ventoy.json is left exactly as it was")
@@ -439,7 +459,7 @@ struct ThemeStoreTests {
         let before = try snapshot(volume)
         let problem = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume },
                                                    deviceIdentifier: onInstalledDisk)
-        #expect(problem == notTheNewDrive)
+        #expect(problem == .notApplied(problem: notTheNewDrive))
         #expect(try snapshot(volume) == before, "not a byte of the drive changed")
         #expect(try ThemeInstaller.current(on: volume) == .other(file: "/ventoy/mytheme/theme.txt"))
     }
@@ -456,7 +476,7 @@ struct ThemeStoreTests {
         let before = try snapshot(volume)
         let problem = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume },
                                                    deviceIdentifier: onInstalledDisk)
-        #expect(problem == notTheNewDrive)
+        #expect(problem == .notApplied(problem: notTheNewDrive))
         #expect(try snapshot(volume) == before, "mactoy-x is still there, and nothing was added")
     }
 
@@ -468,12 +488,12 @@ struct ThemeStoreTests {
         let looked = Box()
         let no = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume },
                                               looksFresh: { looked.add($0.path); return false }, deviceIdentifier: onInstalledDisk)
-        #expect(no != nil)
+        #expect(no == .notApplied(problem: notTheNewDrive))
         #expect(looked.values == [volume.path])
         #expect(!FileManager.default.fileExists(atPath: volume.appendingPathComponent("ventoy").path))
         let yes = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume },
                                                looksFresh: { _ in true }, deviceIdentifier: onInstalledDisk)
-        #expect(yes == nil)
+        #expect(yes == addedCleanly)
         #expect(FileManager.default.fileExists(atPath: volume.appendingPathComponent("ventoy/ventoy.json").path))
     }
 
@@ -508,7 +528,7 @@ struct ThemeStoreTests {
         let before = try snapshot(volume)
         let problem = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume },
                                                    deviceIdentifier: onInstalledDisk)
-        #expect(problem == notTheNewDrive)
+        #expect(problem == .notApplied(problem: notTheNewDrive))
         #expect(try snapshot(volume) == before, "no ventoy folder was made")
     }
 
@@ -524,7 +544,7 @@ struct ThemeStoreTests {
             let problem = await store.applyAfterInstall(.custom(id: id), disk: installedDisk("disk97"), findVolume: { _ in volume },
                                                        looksFresh: { _ in true },
                                                        deviceIdentifier: { asked.add($0.path); return answer })
-            #expect(problem == notTheNewDrive, "\(String(describing: answer))")
+            #expect(problem == .notApplied(problem: notTheNewDrive), "\(String(describing: answer))")
             #expect(asked.values == [volume.path])
             #expect(try snapshot(volume).isEmpty, "nothing was written for \(String(describing: answer))")
         }
@@ -532,7 +552,7 @@ struct ThemeStoreTests {
         let volume = try tempDir()
         let ok = await store.applyAfterInstall(.custom(id: id), disk: installedDisk("disk97"), findVolume: { _ in volume },
                                               looksFresh: { _ in true }, deviceIdentifier: { _ in "disk97s1" })
-        #expect(ok == nil)
+        #expect(ok == addedCleanly)
         #expect(try ThemeInstaller.current(on: volume) == .managed(id: id, name: "Night Sky"))
     }
 
@@ -545,7 +565,7 @@ struct ThemeStoreTests {
         let problem = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in order.add("found"); return volume },
                                                    looksFresh: { _ in order.add("fresh"); return true },
                                                    deviceIdentifier: { _ in order.add("device"); return "disk97s2" })
-        #expect(problem == nil)
+        #expect(problem == addedCleanly)
         #expect(order.values == ["found", "fresh", "device"])
     }
 
@@ -561,7 +581,7 @@ struct ThemeStoreTests {
         let looked = Box()
         let problem = await store.applyAfterInstall(.catalog(id: "slow-theme"), disk: installedDisk(), findVolume: { _ in volume },
                                                    looksFresh: { looked.add($0.path); return true }, deviceIdentifier: onInstalledDisk)
-        #expect(problem == DriverError.network("offline").localizedDescription)
+        #expect(problem == .notApplied(problem: DriverError.network("offline").localizedDescription))
         #expect(await fetching.requestCount == 1, "downloaded once, before the check, and not again to apply")
         #expect(looked.values.isEmpty)
         #expect(try snapshot(volume).isEmpty, "nothing was applied")
@@ -580,7 +600,7 @@ struct ThemeStoreTests {
             switch choice { case .catalog(let x), .custom(let x): id = x; case .ventoyDefault: id = "" }
             let problem = await store.applyAfterInstall(choice, disk: installedDisk(), findVolume: { _ in volume },
                                                        looksFresh: { looked.add($0.path); return true }, deviceIdentifier: onInstalledDisk)
-            #expect(problem == ThemeError.unknownTheme(id).localizedDescription)
+            #expect(problem == .notApplied(problem: ThemeError.unknownTheme(id).localizedDescription))
         }
         #expect(looked.values.isEmpty)
         #expect(try snapshot(volume).isEmpty)
@@ -646,7 +666,7 @@ struct ThemeStoreTests {
             for file in files where file.lastPathComponent == ".complete" { try? FileManager.default.removeItem(at: file) }
             return true
         }, deviceIdentifier: { _ in log.add("device"); return "disk97s2" })
-        #expect(problem == nil)
+        #expect(problem == addedCleanly)
         #expect(log.values == ["download", "looked", "device"], "nothing is fetched after the drive is looked at")
         #expect(try ThemeInstaller.current(on: volume) == .managed(id: "fetched-theme", name: "Fetched"))
         #expect(FileManager.default.fileExists(atPath: volume.appendingPathComponent("ventoy/themes/mactoy-fetched-theme/theme.txt").path))
@@ -668,7 +688,8 @@ struct ThemeStoreTests {
         for _ in 0..<500 where await gate.requestCount == 0 { try await Task.sleep(nanoseconds: 10_000_000) }
         await #expect(throws: ThemeStoreError.busy) { _ = try await store.apply(.ventoyDefault, to: volume) }
         await gate.open()
-        #expect(await running.value != nil, "the download has no answer, so this one fails")
+        #expect(await running.value == .notApplied(problem: DriverError.network("offline").localizedDescription),
+                "the download has no answer, so this one fails")
         #expect(try await store.apply(.ventoyDefault, to: volume).isEmpty, "and the drive is free again")
     }
 

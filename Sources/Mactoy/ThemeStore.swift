@@ -26,15 +26,30 @@ struct ThemeAvailability: Equatable, Sendable {
     /// theme missing from those is not yet known to be gone. Ventoy's own theme is
     /// always there.
     func validated(_ choice: ThemeChoice, fallback: ThemeChoice) -> ThemeChoice {
+        isAvailable(choice) ? choice : fallback
+    }
+
+    /// Whether what `choice` names can be used now, by the rules `validated` explains.
+    func isAvailable(_ choice: ThemeChoice) -> Bool {
         switch choice {
         case .ventoyDefault:
-            return choice
+            return true
         case .custom(let id):
-            return savedIDs.contains(id) ? choice : fallback
+            return savedIDs.contains(id)
         case .catalog(let id):
-            return catalogSource == .remote && !catalogIDs.contains(id) ? fallback : choice
+            return catalogSource != .remote || catalogIDs.contains(id)
         }
     }
+}
+
+/// How adding a boot theme to a freshly installed drive ended. The install itself
+/// worked either way, so neither case is a failed run.
+enum PostInstallThemeResult: Equatable, Sendable {
+    /// The theme is on the drive. `warnings` are things worth telling the user
+    /// (a setting that overrides the theme in one boot mode, say), not problems.
+    case applied(warnings: [String])
+    /// Nothing was added, or the write failed: why, as the end of a sentence.
+    case notApplied(problem: String)
 }
 
 enum ThemeStoreError: Error, Equatable, LocalizedError {
@@ -320,7 +335,8 @@ final class ThemeStore: ObservableObject {
     }
 
     /// For a fresh install: wait for macOS to mount the new volume, then
-    /// apply. Returns a problem to report, or nil when it worked cleanly.
+    /// apply. Says whether the theme was added (with any warnings the write
+    /// produced, which don't make it a failure) or why it wasn't.
     ///
     /// The volume is found by disk number, and macOS reuses numbers: if the user
     /// swapped sticks while this waited, the Ventoy volume that appears may be
@@ -337,12 +353,12 @@ final class ThemeStore: ObservableObject {
         findVolume: @escaping @Sendable (String) async -> URL? = { await VentoyVolumeLocator.waitForVolume(onDisk: $0) },
         looksFresh: @escaping @Sendable (URL) -> Bool = ThemeInstaller.looksFreshlyInstalled,
         deviceIdentifier: @escaping @Sendable (URL) -> String? = VentoyVolumeLocator.deviceIdentifier
-    ) async -> String? {
+    ) async -> PostInstallThemeResult {
         guard let volume = await findVolume(disk.bsdName) else {
-            return "the new Ventoy volume didn't appear."
+            return .notApplied(problem: "the new Ventoy volume didn't appear.")
         }
         let volumeKey = volume.standardizedFileURL.path
-        guard busyVolumes.insert(volumeKey).inserted else { return ThemeStoreError.busy.localizedDescription }
+        guard busyVolumes.insert(volumeKey).inserted else { return .notApplied(problem: ThemeStoreError.busy.localizedDescription) }
         defer { busyVolumes.remove(volumeKey) }
 
         do {
@@ -355,12 +371,11 @@ final class ThemeStore: ObservableObject {
                 looksFresh(volume) && deviceIdentifier(volume)?.hasPrefix(slot) == true
             }.value
             guard isTheNewDrive else {
-                return "the drive in that slot doesn't look like the one Mactoy just set up."
+                return .notApplied(problem: "the drive in that slot doesn't look like the one Mactoy just set up.")
             }
-            let warnings = try await write(theme, to: volume)
-            return warnings.isEmpty ? nil : warnings.joined(separator: " ")
+            return .applied(warnings: try await write(theme, to: volume))
         } catch {
-            return error.localizedDescription
+            return .notApplied(problem: error.localizedDescription)
         }
     }
 }

@@ -129,7 +129,7 @@ struct InstallThemeTests {
         let d = TempDefaults(); defer { d.remove() }
         let s = Fixture.state(d)
         let calls = Counter()
-        s.installThemeApplier = { _, _ in calls.n += 1; return nil }
+        s.installThemeApplier = { _, _ in calls.n += 1; return .applied(warnings: []) }
         s.status = .success("Install complete")
         await s.addThemeAfterInstall(.catalog(id: "tela"), mode: .installVentoy, to: disk())
         #expect(calls.n == 1)
@@ -145,7 +145,7 @@ struct InstallThemeTests {
         s.installThemeApplier = { [s] choice, target in
             seen.list.append("\(choice) \(target.bsdName)")
             if case .preparing(let m) = s.status { seen.list.append(m) }
-            return nil
+            return .applied(warnings: [])
         }
         s.status = .success("Install complete")
         await s.addThemeAfterInstall(.custom(id: "mine"), mode: .installVentoy, to: disk())
@@ -156,12 +156,62 @@ struct InstallThemeTests {
     func problem() async {
         let d = TempDefaults(); defer { d.remove() }
         let s = Fixture.state(d)
-        s.installThemeApplier = { _, _ in "the download failed." }
+        s.installThemeApplier = { _, _ in .notApplied(problem: "the download failed.") }
         s.status = .success("Install complete")
         await s.addThemeAfterInstall(.catalog(id: "tela"), mode: .installVentoy, to: disk())
         guard case .success(let m) = s.status else { Issue.record("not success"); return }
         #expect(m == "Install complete. The boot theme wasn't added: the download failed. You can add it from Manage Disk.")
         #expect(!s.canRetryRun, "a Retry here would erase the drive again")
+    }
+
+    /// The message the install ends on when the applier answers `result`.
+    private func message(after result: PostInstallThemeResult) async -> String? {
+        let d = TempDefaults(); defer { d.remove() }
+        let s = Fixture.state(d)
+        s.installThemeApplier = { _, _ in result }
+        s.status = .success("Install complete")
+        await s.addThemeAfterInstall(.catalog(id: "tela"), mode: .installVentoy, to: disk())
+        guard case .success(let m) = s.status else { Issue.record("not success: \(s.status)"); return nil }
+        #expect(!s.canRetryRun, "a Retry here would erase the drive again")
+        return m
+    }
+
+    @Test("a problem is finished with a period when it has none, and never gets a second one")
+    func problemPunctuation() async {
+        let tail = " You can add it from Manage Disk."
+        let head = "Install complete. The boot theme wasn't added: "
+        #expect(await message(after: .notApplied(problem: "the download failed")) == head + "the download failed." + tail)
+        #expect(await message(after: .notApplied(problem: "the download failed.")) == head + "the download failed." + tail)
+        #expect(await message(after: .notApplied(problem: "the download failed. \n")) == head + "the download failed." + tail, "trailing whitespace goes")
+        #expect(await message(after: .notApplied(problem: "no space left  ")) == head + "no space left." + tail)
+        #expect(await message(after: .notApplied(problem: "did it fail?")) == head + "did it fail?" + tail)
+        #expect(await message(after: .notApplied(problem: "it failed!")) == head + "it failed!" + tail)
+    }
+
+    @Test("warnings after the theme was written are a note on the success, not a failure")
+    func appliedWithWarnings() async {
+        let uefi = "This drive also sets a separate theme for UEFI boot (\"theme_uefi\" in ventoy.json). Ventoy uses that one instead when it boots in that mode."
+        let folder = "The drive's settings folder is named \"Ventoy\". Ventoy only reads a folder named \"ventoy\" in lowercase, so rename it or the theme won't load."
+        #expect(await message(after: .applied(warnings: [uefi])) == "Install complete, with your boot theme. Note: " + uefi)
+        #expect(await message(after: .applied(warnings: [uefi, folder])) == "Install complete, with your boot theme. Note: " + uefi + " " + folder)
+        // Each warning is a sentence of its own, so a run of them reads as sentences.
+        #expect(await message(after: .applied(warnings: ["one thing", " another thing \n"])) == "Install complete, with your boot theme. Note: one thing. another thing.")
+        // Nothing to say is the plain success; so is a list of nothing.
+        #expect(await message(after: .applied(warnings: [])) == "Install complete, with your boot theme")
+        #expect(await message(after: .applied(warnings: ["", "  "])) == "Install complete, with your boot theme")
+    }
+
+    @Test("asSentence trims, adds a period only when none of . ! ? ends the text, and leaves nothing alone")
+    func asSentence() {
+        #expect(AppState.asSentence("failed") == "failed.")
+        #expect(AppState.asSentence("failed.") == "failed.")
+        #expect(AppState.asSentence("failed!") == "failed!")
+        #expect(AppState.asSentence("failed?") == "failed?")
+        #expect(AppState.asSentence("  failed \n\t") == "failed.")
+        #expect(AppState.asSentence("failed.  ") == "failed.")
+        #expect(AppState.asSentence("failed...") == "failed...")
+        #expect(AppState.asSentence("") == "")
+        #expect(AppState.asSentence(" \n ") == "")
     }
 
     @Test("with no applier wired in, the success message says so instead of claiming a theme")
@@ -184,7 +234,7 @@ struct InstallThemeTests {
         let d = TempDefaults(); defer { d.remove() }
         let s = Fixture.state(d)
         let calls = Counter()
-        s.installThemeApplier = { _, _ in calls.n += 1; return nil }
+        s.installThemeApplier = { _, _ in calls.n += 1; return .applied(warnings: []) }
         s.status = .success("Install complete")
         await s.addThemeAfterInstall(.ventoyDefault, mode: .installVentoy, to: disk())
         await s.addThemeAfterInstall(.catalog(id: "tela"), mode: .updateVentoy, to: disk())
@@ -1024,6 +1074,99 @@ struct InstallThemeGoneTests {
         s.resetInstallThemeIfUnavailable(available(catalog: [], source: .remote))
         #expect(s.installTheme == .ventoyDefault)
         #expect(d.defaults.string(forKey: "installTheme") == "ventoy-default")
+    }
+
+    // The fallback is what the user last chose and kept, not Mactoy's default.
+
+    @Test("a removed custom pick goes back to a stored opt-out, which stays stored")
+    func removedCustomKeepsTheOptOut() {
+        let d = TempDefaults(); defer { d.remove() }
+        let s = AppState(defaults: d.defaults)
+        s.installTheme = .ventoyDefault
+        #expect(d.defaults.string(forKey: "installTheme") == "ventoy-default")
+        s.installTheme = .custom(id: "custom-night-12345678")     // not stored
+        #expect(d.defaults.string(forKey: "installTheme") == "ventoy-default")
+        s.resetInstallThemeIfUnavailable(available(saved: []))
+        #expect(s.installTheme == .ventoyDefault)
+        #expect(d.defaults.string(forKey: "installTheme") == "ventoy-default")
+        #expect(AppState(defaults: d.defaults).installTheme == .ventoyDefault)
+    }
+
+    @Test("a removed custom pick with nothing stored goes to Mocha, and the default stays unsaved")
+    func removedCustomWithNothingStored() {
+        let d = TempDefaults(); defer { d.remove() }
+        let s = AppState(defaults: d.defaults)
+        s.installTheme = .custom(id: "custom-night-12345678")
+        s.resetInstallThemeIfUnavailable(available(saved: []))
+        #expect(s.installTheme == .catalog(id: "catppuccin-mocha"))
+        #expect(d.defaults.string(forKey: "installTheme") == nil)
+        #expect(AppState(defaults: d.defaults).installTheme == AppState.defaultInstallTheme)
+    }
+
+    @Test("a removed custom pick goes back to a stored catalog theme that is still there, and stores nothing new")
+    func removedCustomKeepsTheCatalogPick() {
+        let d = TempDefaults(); defer { d.remove() }
+        d.defaults.set("catalog:tela", forKey: "installTheme")
+        let s = AppState(defaults: d.defaults)
+        #expect(s.installTheme == .catalog(id: "tela"))
+        s.installTheme = .custom(id: "custom-night-12345678")
+        s.resetInstallThemeIfUnavailable(available(saved: [], catalog: ["tela", "dracula"], source: .remote))
+        #expect(s.installTheme == .catalog(id: "tela"))
+        #expect(d.defaults.string(forKey: "installTheme") == "catalog:tela")
+
+        // Before the online list is in, a stored catalog theme isn't known to be gone, so it is the fallback.
+        for source: ThemeCatalogLoader.Source in [.none, .bundled, .cached] {
+            s.installTheme = .custom(id: "custom-night-12345678")
+            s.resetInstallThemeIfUnavailable(available(saved: [], catalog: [], source: source))
+            #expect(s.installTheme == .catalog(id: "tela"), "\(source)")
+            #expect(d.defaults.string(forKey: "installTheme") == "catalog:tela", "\(source)")
+        }
+    }
+
+    @Test("a removed custom pick, with a stored catalog theme that is gone from the online catalog, goes to Mocha and the stale value is dropped")
+    func removedCustomWithStaleStoredCatalogTheme() {
+        let d = TempDefaults(); defer { d.remove() }
+        d.defaults.set("catalog:tela", forKey: "installTheme")
+        let s = AppState(defaults: d.defaults)
+        s.installTheme = .custom(id: "custom-night-12345678")
+        s.resetInstallThemeIfUnavailable(available(saved: [], catalog: ["dracula"], source: .remote))
+        #expect(s.installTheme == AppState.defaultInstallTheme)
+        #expect(d.defaults.string(forKey: "installTheme") == nil, "nothing new is stored, and the next launch doesn't start from tela")
+        #expect(AppState(defaults: d.defaults).installTheme == AppState.defaultInstallTheme)
+    }
+
+    @Test("a stored value Mactoy didn't write is not a fallback")
+    func removedCustomWithJunkStored() {
+        let d = TempDefaults(); defer { d.remove() }
+        d.defaults.set("something-else", forKey: "installTheme")
+        let s = AppState(defaults: d.defaults)
+        s.installTheme = .custom(id: "custom-night-12345678")
+        s.resetInstallThemeIfUnavailable(available(saved: []))
+        #expect(s.installTheme == AppState.defaultInstallTheme)
+        #expect(d.defaults.string(forKey: "installTheme") != "catalog:catppuccin-mocha", "the default is not stored")
+    }
+
+    @Test("a pick that is fine is left alone, whatever is stored")
+    func goodPickIgnoresWhatIsStored() {
+        let d = TempDefaults(); defer { d.remove() }
+        d.defaults.set("ventoy-default", forKey: "installTheme")
+        let s = AppState(defaults: d.defaults)
+        s.installTheme = .custom(id: "custom-night-12345678")
+        s.resetInstallThemeIfUnavailable(available(saved: ["custom-night-12345678"]))
+        #expect(s.installTheme == .custom(id: "custom-night-12345678"))
+        #expect(d.defaults.string(forKey: "installTheme") == "ventoy-default")
+    }
+
+    @Test("the theme picker goes back to what it opened on if that is still there, else to Ventoy's own theme")
+    func pickerFallback() {
+        let night = ThemeChoice.custom(id: "custom-night-12345678")
+        // The sheet opened on the catalog pick: removing a saved theme returns to it.
+        #expect(available(saved: ["custom-night-12345678"], catalog: ["tela"]).validated(.catalog(id: "tela"), fallback: .ventoyDefault) == .catalog(id: "tela"))
+        // It opened on the saved theme that was just removed.
+        #expect(available(saved: []).validated(night, fallback: .ventoyDefault) == .ventoyDefault)
+        // It opened on another saved theme that is still there.
+        #expect(available(saved: ["custom-other-87654321"]).validated(.custom(id: "custom-other-87654321"), fallback: .ventoyDefault) == .custom(id: "custom-other-87654321"))
+        #expect(available().validated(.ventoyDefault, fallback: .ventoyDefault) == .ventoyDefault)
     }
 
     @Test("a good pick is not written again")

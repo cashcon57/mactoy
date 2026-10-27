@@ -8,6 +8,8 @@ struct ThemePickerSheet: View {
     @Environment(\.dismiss) private var dismiss
     let confirmTitle: String
     let onChoose: (ThemeChoice) -> Void
+    /// What the sheet opened on: where the selection goes back to when its theme is removed.
+    private let initial: ThemeChoice
     @State private var selection: ThemeChoice
     @State private var problem: Problem?
     @State private var isImporting = false
@@ -22,6 +24,7 @@ struct ThemePickerSheet: View {
     init(initial: ThemeChoice, confirmTitle: String, onChoose: @escaping (ThemeChoice) -> Void) {
         self.confirmTitle = confirmTitle
         self.onChoose = onChoose
+        self.initial = initial
         _selection = State(initialValue: initial)
     }
 
@@ -139,8 +142,12 @@ struct ThemePickerSheet: View {
         Task {
             do {
                 try await themes.removeSaved(id: saved.id)
-                // The tile is gone, so nothing may stay selected on it.
-                if selection == .custom(id: saved.id) { selection = .ventoyDefault }
+                // The tile is gone, so nothing may stay selected on it. It goes back to what
+                // the sheet opened on if that is still there, else to Ventoy's own theme, and
+                // never confirms by itself: the user still has to press the button.
+                if selection == .custom(id: saved.id) {
+                    selection = themes.availability.validated(initial, fallback: .ventoyDefault)
+                }
             } catch {
                 problem = Problem(title: "Couldn't remove that theme", message: error.localizedDescription)
             }
