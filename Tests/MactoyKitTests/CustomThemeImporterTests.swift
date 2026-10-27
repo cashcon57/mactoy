@@ -2,7 +2,11 @@ import Foundation
 import Testing
 @testable import MactoyKit
 
-@Suite("Custom theme import")
+// Serialized because every ZIP test blocks its thread in Subprocess.run, which
+// needs a free dispatch thread for its pipe readers. With a dozen of these
+// running at once the pool is full of waiting tests, the readers never start,
+// and unrelated tests (SubprocessTests) fail after Subprocess's 10 s limit.
+@Suite("Custom theme import", .serialized)
 struct CustomThemeImporterTests {
 
     private func tempDir() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("mactoy-import-\(UUID().uuidString)") }
@@ -148,9 +152,7 @@ struct CustomThemeImporterTests {
             _ = try CustomThemeImporter.importTheme(from: junk, cacheRoot: cache, workRoot: scratch)
             Issue.record("expected the import to fail")
         } catch ThemeError.unreadableArchive(let reason) {
-            #expect(!reason.isEmpty)
-            #expect(!reason.contains("\n"))
-            #expect(!reason.contains(scratch.path))
+            #expect(reason == "it doesn't look like a ZIP file")
         } catch {
             Issue.record("wrong error: \(error)")
         }
@@ -163,12 +165,141 @@ struct CustomThemeImporterTests {
         func reason(_ status: Int32, _ stderr: String) -> String {
             CustomThemeImporter.shortReason(DriverError.subprocess("/usr/bin/ditto -x -k a b", status, stderr), hiding: ["/private/var/T/mactoy-unzip-1", "/var/T/mactoy-unzip-1"])
         }
-        #expect(reason(-1, "timeout after 60.0s") == "it took too long to unpack")
+        #expect(reason(-1, "timeout after 60.0s") == "it took too long to read")
         #expect(reason(1, "ditto: Couldn't read PKZip archive\nditto: Unknown compression type\n") == "Couldn't read PKZip archive")
         #expect(reason(1, "ditto: /private/var/T/mactoy-unzip-1/unpacked/pack/dir/x.png: Not a directory") == "pack/dir/x.png: Not a directory")
         #expect(reason(1, "") == "unpacking failed with status 1")
         #expect(reason(1, String(repeating: "x", count: 500)).count == 120)
         #expect(CustomThemeImporter.shortReason(CocoaError(.fileNoSuchFile), hiding: []).isEmpty == false)
+    }
+
+    // MARK: the file list that is checked before anything is unpacked
+
+    /// Real `zipinfo -l` output, trimmed: a Unix archive, then a Windows one (7-character modes).
+    private let unixListing = """
+        Archive:  /tmp/real.zip
+        Zip file size: 1706 bytes, number of entries: 4
+        drwxr-xr-x  3.0 unx        0 bx        0 stor 26-Oct-26 19:17 pack/
+        -rw-r--r--  3.0 unx       15 tx       15 stor 26-Oct-26 19:17 pack/theme.txt
+        lrwxr-xr-x  3.0 unx       10 bx       10 stor 26-Oct-26 19:17 pack/my link.png
+        -rw-r--r--  3.0 unx 209715200 bx   203529 defN 26-Oct-26 19:30 pack/big file.png
+        4 files, 209715225 bytes uncompressed, 203554 bytes compressed:  99.9%
+
+        """
+    private let windowsListing = """
+        Archive:  fat.zip
+        Zip file size: 613 bytes, number of entries: 2
+        -rw-a--     2.0 fat        3 b-        3 stor 80-Jan-01 00:00 fat/theme.txt
+        drwx---     2.0 fat        0 b-        0 stor 80-Jan-01 00:00 fat/dir/
+        2 files, 3 bytes uncompressed, 3 bytes compressed:  0.0%
+        """
+
+    private func listed(_ sizes: [Int], names: [String]? = nil) -> [CustomThemeImporter.ListedEntry] {
+        sizes.enumerated().map { .init(name: names?[$0.offset] ?? "t/\($0.offset).png", size: $0.element) }
+    }
+
+    @Test("zipinfo output is read into names and sizes")
+    func parseListing() throws {
+        let entries = try CustomThemeImporter.parseListing(unixListing)
+        #expect(entries.map(\.name) == ["pack/", "pack/theme.txt", "pack/my link.png", "pack/big file.png"])
+        #expect(entries.map(\.size) == [0, 15, 10, 209_715_200])
+        let windows = try CustomThemeImporter.parseListing(windowsListing)
+        #expect(windows == [.init(name: "fat/theme.txt", size: 3), .init(name: "fat/dir/", size: 0)])
+        // No entries, with or without zipinfo's "Empty zipfile." line.
+        #expect(try CustomThemeImporter.parseListing("Archive:  e.zip\nZip file size: 22 bytes, number of entries: 0\nEmpty zipfile.\n").isEmpty)
+        // Sizes too big for an Int are read as the biggest Int, so they still trip the limit.
+        let huge = "Zip file size: 9 bytes, number of entries: 1\n-rw-r--r--  4.5 unx 18446744073709551615 bx 5 defN 26-Oct-26 19:30 x.png\n"
+        #expect(try CustomThemeImporter.parseListing(huge).first?.size == Int.max)
+    }
+
+    @Test("a listing that can't be read is refused")
+    func unparsableListing() {
+        let lines = unixListing.split(separator: "\n", omittingEmptySubsequences: false)
+        let cases = [
+            "",                                                                   // nothing
+            "Archive:  x.zip\n",                                                   // no header
+            "Zip file size: 9 bytes, number of entries: many\n",                   // count isn't a number
+            lines.filter { !$0.contains("pack/theme.txt") }.joined(separator: "\n"),          // fewer lines than it declares
+            lines.joined(separator: "\n").replacingOccurrences(of: "number of entries: 4", with: "number of entries: 3"),
+            lines.joined(separator: "\n").replacingOccurrences(of: "tx       15 stor", with: "tx   fifteen stor"),   // a size that isn't a number
+            unixListing.replacingOccurrences(of: "4 files,", with: "extra line that is not an entry\n4 files,"),
+            "Zip file size: 9 bytes, number of entries: 1\nnot an entry at all\n",
+        ]
+        for text in cases {
+            #expect(throws: ThemeError.self, "\(text)") { _ = try CustomThemeImporter.parseListing(text) }
+        }
+    }
+
+    @Test("a listing over the file-count or size limits is refused")
+    func listingLimits() throws {
+        let cap = ThemeAssembler.maxFiles * 2
+        try CustomThemeImporter.checkListing(listed(Array(repeating: 1, count: cap)))
+        #expect(throws: ThemeError.tooManyFiles(cap + 1)) { try CustomThemeImporter.checkListing(listed(Array(repeating: 1, count: cap + 1))) }
+
+        let limit = ThemeAssembler.maxUnpackedBytes
+        try CustomThemeImporter.checkListing(listed([limit - 10, 10]))
+        #expect(throws: ThemeError.themeTooLarge(limit + 1)) { try CustomThemeImporter.checkListing(listed([limit - 10, 11])) }
+        // The bomb shape: one small archive that declares 200 MiB.
+        #expect(throws: ThemeError.themeTooLarge(209_715_200)) { try CustomThemeImporter.checkListing(listed([209_715_200])) }
+        // Declared sizes that would wrap a sum.
+        #expect(throws: ThemeError.themeTooLarge(Int.max)) { try CustomThemeImporter.checkListing(listed([Int.max, Int.max])) }
+        #expect(throws: ThemeError.themeTooLarge(Int.max)) { try CustomThemeImporter.checkListing(listed([Int.max])) }
+    }
+
+    @Test("absolute names and .. components are refused; dots inside a name are fine")
+    func listingNames() throws {
+        for name in ["../x.png", "pack/../../x.png", "pack/..", "..", "/x.png", "/", "a/b/../c.png", "../"] {
+            #expect(throws: ThemeError.unreadableArchive("it has unsafe file names"), "\(name)") {
+                try CustomThemeImporter.checkListing(listed([1, 1], names: ["pack/theme.txt", name]))
+            }
+        }
+        try CustomThemeImporter.checkListing(listed([1, 1, 1, 1, 1, 1, 1], names: ["pack/", "pack/theme.txt", "a..b.png", "...", "..hidden.png", "pack/x..", "./pack/a.png"]))
+        try CustomThemeImporter.checkListing([])
+    }
+
+    @Test("a bomb-shaped zip is refused from its file list, before anything is unpacked")
+    func bombZip() throws {
+        let work = tempDir()
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: work) }
+        // 200 MiB of zeros (sparse, so it costs no disk) packs to about 200 KB.
+        let zeros = work.appendingPathComponent("zeros.png")
+        FileManager.default.createFile(atPath: zeros.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: zeros)
+        try handle.truncate(atOffset: 200 * 1024 * 1024)
+        try handle.close()
+        let zip = try zipUp("zeros.png", in: work, as: "bomb.zip")
+        let packed = (try FileManager.default.attributesOfItem(atPath: zip.path)[.size] as? Int) ?? .max
+        #expect(packed < CustomThemeImporter.maxZipBytes)
+        let scratch = work.appendingPathComponent("scratch")
+        #expect(throws: ThemeError.themeTooLarge(200 * 1024 * 1024)) {
+            _ = try CustomThemeImporter.importTheme(from: zip, cacheRoot: work.appendingPathComponent("cache"), workRoot: scratch)
+        }
+        #expect(!FileManager.default.fileExists(atPath: scratch.path))
+    }
+
+    @Test("declared sizes are checked before ditto runs, links included")
+    func declaredBeforeUnpacking() throws {
+        // A link whose entry claims 300 MiB. ditto would fail on this archive; the size error can only come from the list.
+        let work = tempDir()
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        let zip = work.appendingPathComponent("claims.zip")
+        try ThemeAssemblerTests.zip([
+            .init(name: "pack/theme.txt", data: Data("t".utf8)),
+            .init(name: "pack/l.png", data: Data("/etc/hosts".utf8), declaredSize: 300 * 1024 * 1024, mode: 0o120777),
+        ]).write(to: zip)
+        #expect(throws: ThemeError.themeTooLarge(300 * 1024 * 1024 + 1)) {
+            _ = try CustomThemeImporter.importTheme(from: zip, cacheRoot: tempDir(), workRoot: tempDir())
+        }
+    }
+
+    @Test("an archive with no entries has no theme")
+    func emptyZip() throws {
+        let work = tempDir()
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        let zip = work.appendingPathComponent("empty.zip")
+        try ThemeAssemblerTests.zip([]).write(to: zip)
+        #expect(throws: ThemeError.noThemeFile) { _ = try CustomThemeImporter.importTheme(from: zip, cacheRoot: tempDir()) }
     }
 
     @Test("a damaged zip is an error, not a crash")
@@ -210,29 +341,34 @@ struct CustomThemeImporterTests {
         }
     }
 
-    @Test("entry names that climb out of the unpack folder are neutralised")
+    @Test("entry names that climb out of the unpack folder are refused before anything is unpacked")
     func hostileNames() throws {
         let tag = UUID().uuidString
         let root = tempDir()
         let zipDir = root.appendingPathComponent("a/b/zips")
         let scratch = root.appendingPathComponent("scratch")           // the importer's temp area
         let cache = root.appendingPathComponent("cache")
-        for dir in [zipDir, scratch] { try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
-        let zip = zipDir.appendingPathComponent("hostile.zip")
-        try ThemeAssemblerTests.zip([
-            .init(name: "pack/theme.txt", data: Data("title-text: \"\"\n".utf8)),
-            .init(name: "pack/a.png", data: Data([1])),
-            .init(name: "../escape-\(tag).png", data: Data([9])),
-            .init(name: "pack/../../escape2-\(tag).png", data: Data([9])),
-            .init(name: "../../../../../../../../tmp/escape3-\(tag).png", data: Data([9])),
-            .init(name: "/escape4-\(tag).png", data: Data([9])),
-        ]).write(to: zip)
-
-        let imported = try CustomThemeImporter.importTheme(from: zip, cacheRoot: cache, workRoot: scratch)
-        #expect(listing(imported.directory) == ["a.png", "theme.txt"])
-        #expect(imported.skippedFiles.isEmpty)
-        #expect(names(in: scratch).isEmpty, "the unpack area is removed afterwards")
-        #expect(names(in: cache) == [imported.directory.lastPathComponent])
+        try FileManager.default.createDirectory(at: zipDir, withIntermediateDirectories: true)
+        let bad = ["../escape-\(tag).png", "pack/../../escape2-\(tag).png", "../../../../../../../../tmp/escape3-\(tag).png",
+                   "/escape4-\(tag).png", "pack/..", "pack/../escape-\(tag).png"]
+        for (i, name) in bad.enumerated() {
+            let zip = zipDir.appendingPathComponent("hostile\(i).zip")
+            try ThemeAssemblerTests.zip([
+                .init(name: "pack/theme.txt", data: Data("title-text: \"\"\n".utf8)),
+                .init(name: "pack/a.png", data: Data([1])),
+                .init(name: name, data: Data([9])),
+            ]).write(to: zip)
+            do {
+                _ = try CustomThemeImporter.importTheme(from: zip, cacheRoot: cache, workRoot: scratch)
+                Issue.record("\(name) should have been refused")
+            } catch ThemeError.unreadableArchive(let reason) {
+                #expect(reason == "it has unsafe file names", "\(name)")
+            } catch {
+                Issue.record("wrong error for \(name): \(error)")
+            }
+        }
+        #expect(!FileManager.default.fileExists(atPath: scratch.path), "nothing was unpacked")
+        #expect(!FileManager.default.fileExists(atPath: cache.path))
         expectNoEscapes(tag: tag, root: root, zipDir: zipDir, scratch: scratch, cache: cache)
     }
 

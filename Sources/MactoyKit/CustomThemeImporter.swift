@@ -6,6 +6,7 @@ import Foundation
 public enum CustomThemeImporter {
     public static let maxZipBytes = 64 * 1024 * 1024
     static let unzipTimeout: TimeInterval = 60
+    static let listTimeout: TimeInterval = 20
 
     public struct Imported: Sendable, Equatable, Identifiable {
         public let id: String
@@ -79,15 +80,19 @@ public enum CustomThemeImporter {
     /// whole app) on some malformed archives, so a file the user picked never
     /// goes through it; a bad archive here only makes `ditto` exit.
     ///
-    /// `ditto` writes nothing outside the folder it is given: it strips `..`
-    /// and leading `/` from entry names and won't write through a stored
-    /// link. Unpacking into a subfolder keeps even a stray name inside the
-    /// private folder. Links it does create are skipped when the folder is read.
+    /// The archive's own file list is checked first (`checkArchive`), because
+    /// `ditto` writes everything it is given and the size caps in
+    /// `files(fromFolder:)` apply only after that. Past that check, `ditto`
+    /// still writes nothing outside the folder it is given and won't write
+    /// through a stored link; unpacking into a subfolder keeps even a stray
+    /// name inside the private folder. Links it does create are skipped when
+    /// the folder is read.
     private static func unpackedFiles(fromZip zip: URL, workRoot: URL) throws -> [ThemeSourceFile] {
         // Size of the file itself, not of a link to it.
         let resolved = zip.resolvingSymlinksInPath()
         let size = (try? resolved.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         guard size <= maxZipBytes else { throw ThemeError.downloadTooLarge(size) }
+        try checkArchive(resolved)
 
         let fm = FileManager.default
         let work = try makePrivateDirectory(in: workRoot)
@@ -104,6 +109,83 @@ public enum CustomThemeImporter {
         return try ThemeAssembler.files(fromFolder: unpacked)
     }
 
+    // MARK: ZIP file list
+
+    struct ListedEntry: Equatable {
+        let name: String
+        let size: Int
+    }
+
+    /// Reads the archive's central directory with `zipinfo` (a separate process,
+    /// like `ditto`) and refuses it before anything is written to disk if it
+    /// has too many entries, declares too much data, or names a file outside
+    /// the folder. An archive that lies about its sizes still gets through
+    /// this; it is bounded only by `unzipTimeout` (accepted risk).
+    private static func checkArchive(_ zip: URL) throws {
+        let result: SubprocessResult
+        do {
+            result = try Subprocess.run("/usr/bin/zipinfo", ["-l", zip.path], timeout: listTimeout)
+        } catch {
+            throw ThemeError.unreadableArchive(shortReason(error, hiding: []))
+        }
+        // Status 1 is a warning (an empty archive is one) that still comes with a full list.
+        guard result.status == 0 || result.status == 1 else {
+            throw ThemeError.unreadableArchive("it doesn't look like a ZIP file")
+        }
+        let entries = try parseListing(result.stdout)
+        guard !entries.isEmpty else { throw ThemeError.noThemeFile }
+        try checkListing(entries)
+    }
+
+    /// Entries from `zipinfo -l` output:
+    ///
+    ///     Zip file size: 1706 bytes, number of entries: 2
+    ///     -rw-r--r--  3.0 unx       15 tx       15 stor 26-Oct-26 19:17 pack/theme.txt
+    ///     ...
+    ///     2 files, 164 bytes uncompressed, 164 bytes compressed:  0.0%
+    ///
+    /// The mode column is 10 characters for Unix archives and 7 for Windows ones,
+    /// so only its first character is checked. `zipinfo` escapes control and
+    /// non-ASCII characters in names, so a name can't span lines. Anything that
+    /// doesn't fit, or a line count that differs from the declared one, throws.
+    static func parseListing(_ output: String) throws -> [ListedEntry] {
+        let unreadable = ThemeError.unreadableArchive("its file list couldn't be read")
+        let lines = output.split(whereSeparator: \.isNewline)
+        guard let header = lines.firstIndex(where: { $0.hasPrefix("Zip file size:") }),
+              let marker = lines[header].range(of: #"number of entries: [0-9]+$"#, options: .regularExpression),
+              let declared = Int(lines[header][marker].dropFirst("number of entries: ".count))
+        else { throw unreadable }
+        if declared == 0 { return [] }
+        var entries: [ListedEntry] = []
+        for line in lines[(header + 1)...] {
+            // The totals line ("12 files, ...") ends the list; entry lines start with a mode.
+            if line.first?.isNumber == true { break }
+            // mode, version, OS, size, flags, packed size, method, date, time, then the name.
+            let fields = line.split(separator: " ", maxSplits: 9, omittingEmptySubsequences: true)
+            guard fields.count == 10, "-dlbcps?".contains(fields[0].first ?? " "),
+                  let size = byteCount(fields[3]), byteCount(fields[5]) != nil
+            else { throw unreadable }
+            entries.append(ListedEntry(name: String(fields[9]), size: size))
+        }
+        guard entries.count == declared else { throw unreadable }
+        return entries
+    }
+
+    /// Digits only. A number too big for an Int becomes `Int.max`, which the size limit then refuses.
+    private static func byteCount(_ field: Substring) -> Int? {
+        guard !field.isEmpty, field.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+        return Int(field) ?? Int.max
+    }
+
+    /// The same count and size limits as `files(fromZip:)`, plus no absolute
+    /// names and no `..` components (`ditto` would quietly rewrite those).
+    static func checkListing(_ entries: [ListedEntry]) throws {
+        guard entries.count <= ThemeAssembler.maxFiles * 2 else { throw ThemeError.tooManyFiles(entries.count) }
+        try ThemeAssembler.checkDeclaredSizes(entries.map(\.size))
+        let unsafe = entries.contains { $0.name.hasPrefix("/") || $0.name.split(separator: "/", omittingEmptySubsequences: false).contains("..") }
+        if unsafe { throw ThemeError.unreadableArchive("it has unsafe file names") }
+    }
+
     /// A new, empty folder only the current user can enter.
     static func makePrivateDirectory(in parent: URL) throws -> URL {
         let fm = FileManager.default
@@ -117,7 +199,7 @@ public enum CustomThemeImporter {
     /// One line the user can read: the tool's complaint without our temp paths.
     static func shortReason(_ error: Error, hiding paths: [String]) -> String {
         guard case DriverError.subprocess(_, let status, let stderr) = error else { return error.localizedDescription }
-        if status == -1, stderr.hasPrefix("timeout") { return "it took too long to unpack" }
+        if status == -1, stderr.hasPrefix("timeout") { return "it took too long to read" }
         // ditto reports the real path (/private/var/...), so the resolved form goes first.
         var text = stderr
         for path in paths { text = text.replacingOccurrences(of: path + "/unpacked/", with: "").replacingOccurrences(of: path, with: "") }
