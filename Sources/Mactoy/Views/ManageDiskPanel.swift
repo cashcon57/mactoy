@@ -14,6 +14,9 @@ struct ManageDiskPanel: View {
                 Text("Ventoy volume mounted at \(volumeURL.path)")
                     .foregroundStyle(.secondary)
 
+                DriveThemeSection(volumeURL: volumeURL)
+                    .id(volumeURL)
+
                 // `id: volumeURL` forces the library to rebuild its state
                 // when the user switches between disks, instead of
                 // keeping stale items from the previously-selected
