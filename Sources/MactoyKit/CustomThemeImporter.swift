@@ -1,12 +1,19 @@
 import CryptoKit
 import Foundation
 
-/// Makes an installable theme from a `.zip` or folder the user picked.
-/// Same file rules as catalog themes (`ThemeAssembler`).
+/// Makes an installable theme from whatever the user picked: a `.zip`, a
+/// folder, or a theme's `theme.txt`. The theme may sit at the top of that or
+/// anywhere below it. Same file rules as catalog themes (`ThemeAssembler`).
 public enum CustomThemeImporter {
     public static let maxZipBytes = 64 * 1024 * 1024
+    /// The most themes listed to choose from when a download holds several.
+    public static let maxChoices = 20
     static let unzipTimeout: TimeInterval = 60
     static let listTimeout: TimeInterval = 20
+    /// A `ventoy.json` is a few KB; this keeps a hostile one from being parsed at all.
+    static let maxVentoyJSONBytes = 256 * 1024
+    static let maxVentoyJSONFiles = 16
+    static let maxPackFonts = 32
 
     public struct Imported: Sendable, Equatable, Identifiable {
         public let id: String
@@ -17,27 +24,113 @@ public enum CustomThemeImporter {
         public let skippedFiles: [String]
     }
 
+    /// One of several themes in a source, as a list shows it.
+    public struct Choice: Sendable, Equatable, Hashable, Identifiable {
+        /// The theme's folder inside the source: what `importTheme(from:themeRoot:)` takes.
+        public let folder: String
+        /// The folder's name made readable: "catppuccin-mocha" becomes "Catppuccin Mocha".
+        public let name: String
+        /// The last two folders of the path, so two themes with one name can be told apart.
+        public let location: String
+        public var id: String { folder }
+    }
+
+    /// A ZIP, folder or theme.txt, read once. Everything is held in memory (never more than
+    /// the unpacked-size cap), so choosing between its themes doesn't read it again, and
+    /// nothing is left on disk.
+    public struct Opened: Sendable {
+        let files: [ThemeSourceFile]
+        let baseName: String
+        /// The theme to use when one clearly wins; nil when the user has to choose.
+        let singleRoot: String?
+        /// Every theme folder, when the user has to choose; empty otherwise.
+        public let choices: [Choice]
+
+        public var needsChoice: Bool { singleRoot == nil }
+
+        /// The theme.txt of each choice, which is how `ThemeError.ambiguousThemes` names them.
+        public var themeFilePaths: [String] { choices.map { $0.folder + "/theme.txt" } }
+    }
+
+    // MARK: entry points
+
     public static func importTheme(from source: URL, cacheRoot: URL = ThemeFetcher.defaultCacheRoot()) throws -> Imported {
-        try importTheme(from: source, cacheRoot: cacheRoot, workRoot: FileManager.default.temporaryDirectory)
+        try importTheme(from: source, themeRoot: nil, cacheRoot: cacheRoot, workRoot: FileManager.default.temporaryDirectory)
+    }
+
+    /// For a source with several themes: imports the one in `themeRoot`, a folder path inside
+    /// the source ("" is the source's top). Any folder that holds a `theme.txt` will do, not
+    /// only the ones `Opened.choices` lists.
+    public static func importTheme(from source: URL, themeRoot: String, cacheRoot: URL = ThemeFetcher.defaultCacheRoot()) throws -> Imported {
+        try importTheme(from: source, themeRoot: themeRoot, cacheRoot: cacheRoot, workRoot: FileManager.default.temporaryDirectory)
     }
 
     /// `workRoot` is where a ZIP is unpacked, so tests can see that nothing is left there.
-    static func importTheme(from source: URL, cacheRoot: URL, workRoot: URL) throws -> Imported {
+    static func importTheme(from source: URL, themeRoot: String? = nil, cacheRoot: URL, workRoot: URL) throws -> Imported {
+        try importTheme(try open(source, workRoot: workRoot, rootKnown: themeRoot != nil), themeRoot: themeRoot, cacheRoot: cacheRoot)
+    }
+
+    /// Reads the source (unpacking a ZIP) and finds its theme or themes. Throws
+    /// `noThemeFile` when it has none and `tooManyThemes` when it has more than `maxChoices`.
+    public static func open(_ source: URL) throws -> Opened {
+        try open(source, workRoot: FileManager.default.temporaryDirectory)
+    }
+
+    /// `rootKnown`: the caller names the theme folder, so how many themes there are doesn't matter
+    /// and the result is only for `importTheme(_:themeRoot:)`.
+    static func open(_ source: URL, workRoot: URL, rootKnown: Bool = false) throws -> Opened {
         let fm = FileManager.default
         var isDirectory: ObjCBool = false
         let isFolder = fm.fileExists(atPath: source.path, isDirectory: &isDirectory) && isDirectory.boolValue
-        let files: [ThemeSourceFile]
+        let read: [ThemeSourceFile]
         let baseName: String
         if isFolder {
             // A link to a folder enumerates as empty, so read the folder it points to; the name stays what the user picked.
-            files = try ThemeAssembler.files(fromFolder: source.resolvingSymlinksInPath())
+            read = try ThemeAssembler.files(fromFolder: source.resolvingSymlinksInPath())
             baseName = source.lastPathComponent
-        } else {
-            files = try unpackedFiles(fromZip: source, workRoot: workRoot)
+        } else if source.lastPathComponent == "theme.txt" {
+            // The theme file itself stands for its folder.
+            let folder = source.resolvingSymlinksInPath().deletingLastPathComponent()
+            read = try ThemeAssembler.files(fromFolder: folder)
+            baseName = folder.lastPathComponent
+        } else if source.pathExtension.lowercased() == "zip" || hasZipSignature(source) || !fm.fileExists(atPath: source.path) {
+            // A missing file goes this way too, to be reported as unreadable like any other bad archive.
+            read = try unpackedFiles(fromZip: source, workRoot: workRoot)
             baseName = source.deletingPathExtension().lastPathComponent
+        } else {
+            // Another .txt, a picture, a .7z: none of them is a theme.
+            throw ThemeError.unsupportedSource
         }
-        let root = try themeRoot(in: files.map(\.path))
-        let name = root.isEmpty ? baseName : ThemeAssembler.last(root)
+        // Finder's ZIPs carry a __MACOSX copy of the tree; it must neither be a theme nor change the digest.
+        var files = read.filter { !isJunk($0.path) }
+        if rootKnown { return Opened(files: files, baseName: baseName, singleRoot: nil, choices: []) }
+        switch try findThemes(in: files.map(\.path)) {
+        case .one(let root):
+            return Opened(files: files, baseName: baseName, singleRoot: root, choices: [])
+        case .several(let folders):
+            // What is held while the user chooses: the themes, and the ventoy.json files that describe them.
+            files = files.filter { file in
+                isVentoyJSON(file.path) || folders.contains { file.path.hasPrefix($0 + "/") }
+            }
+            return Opened(files: files, baseName: baseName, singleRoot: nil, choices: choices(for: folders))
+        }
+    }
+
+    /// Imports the theme in `themeRoot` (see `importTheme(from:themeRoot:)`), or the only theme when
+    /// `themeRoot` is nil. With several themes and no `themeRoot` it throws `ambiguousThemes`.
+    public static func importTheme(_ opened: Opened, themeRoot: String? = nil,
+                                   cacheRoot: URL = ThemeFetcher.defaultCacheRoot()) throws -> Imported {
+        let files = opened.files
+        let root: String
+        if let themeRoot {
+            root = try checkedRoot(themeRoot, in: files)
+        } else if let single = opened.singleRoot {
+            root = single
+        } else {
+            throw ThemeError.ambiguousThemes(opened.themeFilePaths)
+        }
+        let fm = FileManager.default
+        let name = root.isEmpty ? opened.baseName : ThemeAssembler.last(root)
         let id = "custom-" + slug(name)
         let prefix = root.isEmpty ? "" : root + "/"
         let digest = contentDigest(files.filter { $0.path.hasPrefix(prefix) }.map { ThemeSourceFile(path: String($0.path.dropFirst(prefix.count)), data: $0.data) })
@@ -48,7 +141,7 @@ public enum CustomThemeImporter {
         defer { try? fm.removeItem(at: staging) }
         // Always assembled: that is what yields `skippedFiles`, and it is what
         // an existing folder is checked against.
-        let skipped = try ThemeAssembler.assemble(files, root: root, mappings: nil, into: staging)
+        var skipped = try ThemeAssembler.assemble(files, root: root, mappings: nil, into: staging)
         // The folder name says what went in, but the folder itself may have
         // been edited or built by an older Mactoy. Keep an intact one (it may
         // be in use); replace anything else.
@@ -64,16 +157,37 @@ public enum CustomThemeImporter {
 
         let fonts = ((try? fm.contentsOfDirectory(atPath: directory.path)) ?? [])
             .filter { $0.lowercased().hasSuffix(".pf2") }.sorted()
+        var settings = ThemeEntry.Settings(file: "theme.txt", fonts: fonts.isEmpty ? nil : fonts)
+        if let pack = packSettings(forRoot: root, in: files) {
+            // The pack's own choices, held to the catalog's rules. Fonts it doesn't name (or names
+            // wrongly) fall back to the ones that sit beside theme.txt.
+            var wanted = pack.settings
+            if wanted.fonts?.isEmpty != false { wanted.fonts = settings.fonts }
+            if var checked = try? ThemeLibrary.settings(wanted, keptIn: directory) {
+                if checked.fonts == nil { checked.fonts = settings.fonts }
+                settings = checked
+            }
+            // It was read, not left out.
+            if pack.source.hasPrefix(prefix) { skipped.removeAll { $0 == String(pack.source.dropFirst(prefix.count)) } }
+        }
         let themeText = (try? String(contentsOf: directory.appendingPathComponent("theme.txt"), encoding: .utf8)) ?? ""
         let preview = backgroundImage(inThemeText: themeText)
             .map { directory.appendingPathComponent($0) }
             .flatMap { fm.fileExists(atPath: $0.path) ? $0 : nil }
-        return Imported(id: id, name: name, directory: directory,
-                        settings: .init(file: "theme.txt", fonts: fonts.isEmpty ? nil : fonts),
+        return Imported(id: id, name: name, directory: directory, settings: settings,
                         previewImage: preview, skippedFiles: skipped)
     }
 
     // MARK: ZIP
+
+    /// Whether the file starts like a ZIP, for one that isn't named .zip (a browser may add or drop an extension).
+    private static func hasZipSignature(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: 4) else { return false }
+        // A local file header, or the end record of an empty archive.
+        return head.elementsEqual([0x50, 0x4B, 0x03, 0x04]) || head.elementsEqual([0x50, 0x4B, 0x05, 0x06])
+    }
 
     /// Unpacks with `ditto` in a throwaway private folder, then reads that
     /// folder like any other. The in-process ZIP reader traps (ending the
@@ -234,13 +348,145 @@ public enum CustomThemeImporter {
 
     // MARK: reading the theme
 
-    /// Folder holding the shallowest `theme.txt`; refuses a tie.
+    /// Files that only the machine that made the archive wanted: Finder's resource-fork copy
+    /// of the tree (`__MACOSX/`), AppleDouble `._*` files and `.DS_Store`.
+    static func isJunk(_ path: String) -> Bool {
+        path.split(separator: "/").contains { $0 == "__MACOSX" || $0 == ".DS_Store" || $0.hasPrefix("._") }
+    }
+
+    enum FoundThemes: Equatable {
+        /// The folder of the one theme to use ("" is the source's top).
+        case one(String)
+        /// Every folder that holds a theme.txt, shallowest first.
+        case several([String])
+    }
+
+    /// The theme folder: the one holding the shallowest `theme.txt`. When several are equally
+    /// shallow there is no telling which is meant, so every folder with a `theme.txt` is offered
+    /// (a pack often has a plain GRUB copy of each theme beside its Ventoy one).
+    static func findThemes(in paths: [String]) throws -> FoundThemes {
+        let texts = Set(paths.filter { ($0 == "theme.txt" || $0.hasSuffix("/theme.txt")) && ThemePath.isSafeRelative($0) })
+            .map { (path: $0, depth: $0.split(separator: "/").count) }
+            .sorted { ($0.depth, $0.path) < ($1.depth, $1.path) }
+        guard let shallowest = texts.first else { throw ThemeError.noThemeFile }
+        if texts.filter({ $0.depth == shallowest.depth }).count == 1 { return .one(ThemeAssembler.parent(shallowest.path)) }
+        guard texts.count <= maxChoices else { throw ThemeError.tooManyThemes(texts.count) }
+        return .several(texts.map { ThemeAssembler.parent($0.path) })
+    }
+
+    /// Folder holding the shallowest `theme.txt`; throws `ambiguousThemes`, naming each
+    /// `theme.txt` that could be meant, when there is no single one.
     static func themeRoot(in paths: [String]) throws -> String {
-        let candidates = paths.filter { ($0 == "theme.txt" || $0.hasSuffix("/theme.txt")) && ThemePath.isSafeRelative($0) }
-        guard let minDepth = candidates.map({ $0.split(separator: "/").count }).min() else { throw ThemeError.noThemeFile }
-        let shallowest = candidates.filter { $0.split(separator: "/").count == minDepth }.sorted()
-        guard shallowest.count == 1 else { throw ThemeError.ambiguousThemes(shallowest) }
-        return ThemeAssembler.parent(shallowest[0])
+        switch try findThemes(in: paths) {
+        case .one(let root): return root
+        case .several(let folders): throw ThemeError.ambiguousThemes(folders.map { $0 + "/theme.txt" })
+        }
+    }
+
+    /// `root` as a folder path with no slash at either end, once it is known to hold a theme.txt.
+    private static func checkedRoot(_ root: String, in files: [ThemeSourceFile]) throws -> String {
+        var path = root
+        while path.hasPrefix("./") { path.removeFirst(2) }
+        while path.hasSuffix("/") { path.removeLast() }
+        if path == "." { path = "" }
+        guard path.isEmpty || ThemePath.isSafeRelative(path) else { throw ThemeError.rootNotFound(root) }
+        let prefix = path.isEmpty ? "" : path + "/"
+        if files.contains(where: { $0.path == prefix + "theme.txt" }) { return path }
+        // A folder that exists but has no theme.txt is a different problem from one that isn't there.
+        throw files.contains { $0.path.hasPrefix(prefix) } ? ThemeError.noThemeFile : ThemeError.rootNotFound(root)
+    }
+
+    static func choices(for folders: [String]) -> [Choice] {
+        folders.map { folder in
+            let parts = folder.split(separator: "/").map(String.init)
+            // Folder names come from an archive: no hidden or direction-changing characters in a list.
+            let last = ThemeLibrary.cleaned(parts.last ?? folder, limit: ThemeLibrary.maxNameLength, fallback: "Theme")
+            return Choice(folder: folder, name: readableName(last),
+                          location: ThemeLibrary.cleaned(parts.suffix(2).joined(separator: "/"), limit: 80, fallback: last))
+        }
+    }
+
+    /// "catppuccin-mocha" becomes "Catppuccin Mocha". A name that already has capitals keeps them.
+    static func readableName(_ folder: String) -> String {
+        folder.split(whereSeparator: { $0 == "-" || $0 == "_" || $0 == " " })
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+
+    // MARK: ventoy.json beside the theme
+
+    static func isVentoyJSON(_ path: String) -> Bool { ThemeAssembler.last(path) == "ventoy.json" }
+
+    /// What a pack's own `ventoy.json` says about the theme in `root`, if it has a `theme`
+    /// that points into that folder. `settings.file` is always `theme.txt`; the values are
+    /// the pack's, and `ThemeLibrary.settings(_:keptIn:)` is what holds them to the catalog's
+    /// rules. `source` is the `ventoy.json` that was read.
+    ///
+    /// A pack's paths are paths on a drive, where `ventoy.json` lives in `/ventoy/`. So a path
+    /// in it is looked for with the folder holding the `ventoy.json` standing in for `/ventoy/`
+    /// (`ventoy/ventoy.json` and `/ventoy/pop/theme.txt` give `ventoy/pop/theme.txt`), and
+    /// failing that for the same folder standing in for the drive's root. Whichever way the
+    /// theme file is found is the way its fonts are read. Names are matched without regard to
+    /// case, as on the drive. The other keys (`control`, `menu_alias` and the rest) are ignored.
+    static func packSettings(forRoot root: String, in files: [ThemeSourceFile]) -> (settings: ThemeEntry.Settings, source: String)? {
+        let known = Dictionary(files.map { ($0.path.lowercased(), $0.path) }, uniquingKeysWith: { first, _ in first })
+        let configs = files
+            .filter { isVentoyJSON($0.path) && $0.data.count <= maxVentoyJSONBytes }
+            // The deepest first: the one closest to a theme says more about it than a pack-wide one.
+            .sorted { a, b in
+                let (depthA, depthB) = (a.path.split(separator: "/").count, b.path.split(separator: "/").count)
+                return depthA != depthB ? depthA > depthB : a.path < b.path
+            }
+            .prefix(maxVentoyJSONFiles)
+        for config in configs {
+            guard let theme = themeObject(in: config.data) else { continue }
+            let folder = ThemeAssembler.parent(config.path)
+            for standing in [Standing.ventoyFolder, .driveRoot] {
+                func find(_ drivePath: String) -> String? {
+                    sourcePath(of: drivePath, configFolder: folder, standing: standing).flatMap { known[$0.lowercased()] }
+                }
+                // A file in the theme's own folder, so this is the setting for that theme and not another's.
+                guard stringList(theme["file"]).compactMap(find).contains(where: { ThemeAssembler.parent($0) == root }) else { continue }
+                let prefix = root.isEmpty ? "" : root + "/"
+                let fonts = stringList(theme["fonts"]).compactMap(find)
+                    .filter { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) }
+                return (ThemeEntry.Settings(file: "theme.txt", fonts: fonts.isEmpty ? nil : Array(fonts.prefix(maxPackFonts)),
+                                            gfxmode: theme["gfxmode"] as? String,
+                                            ventoyLeft: theme["ventoy_left"] as? String,
+                                            ventoyTop: theme["ventoy_top"] as? String,
+                                            ventoyColor: theme["ventoy_color"] as? String),
+                        config.path)
+            }
+        }
+        return nil
+    }
+
+    private enum Standing { case ventoyFolder, driveRoot }
+
+    /// The `theme` object of a `ventoy.json`, if it is valid JSON of the shape Ventoy reads.
+    private static func themeObject(in data: Data) -> [String: Any]? {
+        // Editors on Windows like to put a byte order mark first; JSONSerialization refuses one.
+        let bom: [UInt8] = [0xEF, 0xBB, 0xBF]
+        let body = data.starts(with: bom) ? Data(data.dropFirst(bom.count)) : data
+        guard let top = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else { return nil }
+        return top["theme"] as? [String: Any]
+    }
+
+    /// A JSON string, or an array of them (Ventoy takes either for `file` and `fonts`).
+    private static func stringList(_ value: Any?) -> [String] {
+        if let one = value as? String { return [one] }
+        return (value as? [Any])?.compactMap { $0 as? String } ?? []
+    }
+
+    /// Where a path on the drive lands in the source, or nil for a name that climbs out.
+    private static func sourcePath(of drivePath: String, configFolder: String, standing: Standing) -> String? {
+        var parts = drivePath.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard !parts.isEmpty, !parts.contains("."), !parts.contains("..") else { return nil }
+        if standing == .ventoyFolder {
+            guard parts.count > 1, parts[0].lowercased() == "ventoy" else { return nil }
+            parts.removeFirst()
+        }
+        return ([configFolder].filter { !$0.isEmpty } + parts).joined(separator: "/")
     }
 
     /// Lowercase ASCII letters, digits and single hyphens, at most 30 long;

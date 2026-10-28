@@ -48,8 +48,8 @@ struct ThemeDownloadErrorTests {
                                          .checksumMismatch(expected: "a", actual: "b")]
         let available: [ThemeError] = [
             .serverUnreachable(host: "github.com"), .downloadTooLarge(1), .fileTooLarge(1), .unreadableArchive("x"), .rootNotFound("x"),
-            .missingFile("x"), .themeTooLarge(1), .tooManyFiles(1), .noThemeFile, .ambiguousThemes(["x"]), .readOnlyVolume,
-            .writeFailed("x"), .unknownTheme("x"), .destinationExists("x"), .unsafeVolumeLayout("x"),
+            .missingFile("x"), .themeTooLarge(1), .tooManyFiles(1), .noThemeFile, .ambiguousThemes(["x"]), .tooManyThemes(21),
+            .unsupportedSource, .readOnlyVolume, .writeFailed("x"), .unknownTheme("x"), .destinationExists("x"), .unsafeVolumeLayout("x"),
         ]
         for error in unavailable { #expect(error.meansThemeIsUnavailable, "\(error)") }
         for error in available { #expect(!error.meansThemeIsUnavailable, "\(error)") }
@@ -65,7 +65,8 @@ struct ThemeDownloadErrorTests {
             == "Couldn't reach github.com. Check your internet connection and try again.")
         #expect(ThemeError.unknownTheme("tela").errorDescription == "“tela” is no longer in Mactoy's theme list. Choose another theme.")
         let all: [ThemeError] = [.downloadGone(host: "h", status: 410), .checksumMismatch(expected: "a", actual: "b"),
-                                 .serverUnreachable(host: "h"), .unknownTheme("x")]
+                                 .serverUnreachable(host: "h"), .unknownTheme("x"), .tooManyThemes(21), .unsupportedSource,
+                                 .ambiguousThemes(["a/theme.txt", "b/theme.txt"])]
         for error in all {
             let text = error.errorDescription ?? ""
             #expect(!text.contains("\u{2014}"), "no em-dash in \(text)")

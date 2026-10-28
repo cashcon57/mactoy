@@ -24,6 +24,10 @@ public enum ThemeError: Error, Equatable, LocalizedError {
     case tooManyFiles(Int)
     case noThemeFile
     case ambiguousThemes([String])
+    /// More themes than can be listed to choose from.
+    case tooManyThemes(Int)
+    /// A file that is none of a ZIP, a folder or a theme.txt.
+    case unsupportedSource
     case readOnlyVolume
     case writeFailed(String)
     case unknownTheme(String)
@@ -45,6 +49,8 @@ public enum ThemeError: Error, Equatable, LocalizedError {
         case .tooManyFiles(let n): return "The theme has too many files (\(n))."
         case .noThemeFile: return "No theme.txt was found. A Ventoy or GRUB theme needs one."
         case .ambiguousThemes(let paths): return "This contains more than one theme (\(paths.joined(separator: ", "))). Choose the folder of the one you want."
+        case .tooManyThemes(let n): return "This contains \(n) themes, which is too many to choose from here. Choose the folder of the one you want instead."
+        case .unsupportedSource: return "Choose the theme's folder, its .zip file, or its theme.txt."
         case .readOnlyVolume: return "This drive is read-only on this Mac (an NTFS drive is, for example), so Mactoy can't add a theme to it."
         case .writeFailed(let why): return "Couldn't save the theme settings: \(why)"
         // The id is all this error knows; callers that know the theme's name say it instead.
@@ -121,7 +127,7 @@ public enum ThemeAssembler {
     }
 
     public static func files(fromFolder folder: URL) throws -> [ThemeSourceFile] {
-        let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .isDirectoryKey, .fileSizeKey]
         guard let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: keys) else {
             throw ThemeError.noThemeFile
         }
@@ -130,6 +136,12 @@ public enum ThemeAssembler {
         var total = 0
         for case let url as URL in walker {
             let values = try url.resourceValues(forKeys: Set(keys))
+            // A cloned repository: its history is hidden files that can never be kept, and it
+            // can be large enough to trip the caps below before any theme file is looked at.
+            if values.isDirectory == true, url.lastPathComponent == ".git" {
+                walker.skipDescendants()
+                continue
+            }
             guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
             // Disallowed files are read too (assemble drops them later), so
             // the bound is looser than `maxFiles`.
