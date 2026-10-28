@@ -40,7 +40,8 @@ struct ThemePickerSheet: View {
                         .onChange(of: selection) { proxy.scrollTo($0) }
                 }
                 .frame(minWidth: 420)
-                ThemeDetail(selection: selection) { pendingRemoval = $0 }.frame(width: 340)
+                ThemeDetail(selection: selection, isImporting: isImporting, onAddFromFile: addFromFile) { pendingRemoval = $0 }
+                    .frame(width: 340)
             }
             .confirmationDialog(
                 pendingRemoval.map { "Remove “\($0.name)” from My Themes?" } ?? "",
@@ -64,6 +65,8 @@ struct ThemePickerSheet: View {
                 Button("Cancel", role: .cancel) { dismiss() }
                 Button(confirmTitle) { onChoose(selection); dismiss() }
                     .keyboardShortcut(.defaultAction)
+                    // An unavailable theme would fail the same way when it is used.
+                    .disabled(!ThemePickerRules.canConfirm(selection, unavailable: themes.unavailableThemes))
             }
         }
         .padding(20)
@@ -84,12 +87,13 @@ struct ThemePickerSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             LazyVGrid(columns: Self.columns, spacing: 12) {
                 ThemeTile(title: "Ventoy default", subtitle: "Ventoy's own theme", image: themes.ventoyDefaultPreview,
-                          chips: [], isSelected: selection == .ventoyDefault) { selection = .ventoyDefault }
+                          chips: [], isUnavailable: false, isSelected: selection == .ventoyDefault) { selection = .ventoyDefault }
                     .id(ThemeChoice.ventoyDefault)
                     .task { await themes.loadVentoyDefaultPreview() }
                 ForEach(themes.catalog) { entry in
                     ThemeTile(title: entry.name, subtitle: "by \(entry.author)", image: themes.previews[entry.id],
                               chips: [entry.license, entry.showsVentoyHotkeys ? "F1–F6 key bar" : "No key bar"],
+                              isUnavailable: themes.unavailableThemes[entry.id] != nil,
                               isSelected: selection == .catalog(id: entry.id)) { selection = .catalog(id: entry.id) }
                         .id(ThemeChoice.catalog(id: entry.id))
                         .task { await themes.loadPreview(for: entry) }
@@ -100,7 +104,7 @@ struct ThemePickerSheet: View {
                 LazyVGrid(columns: Self.columns, spacing: 12) {
                     ForEach(themes.savedThemes) { saved in
                         ThemeTile(title: saved.name, subtitle: saved.origin, image: themes.customPreviews[saved.id],
-                                  chips: [], isSelected: selection == .custom(id: saved.id)) { selection = .custom(id: saved.id) }
+                                  chips: [], isUnavailable: false, isSelected: selection == .custom(id: saved.id)) { selection = .custom(id: saved.id) }
                             .id(ThemeChoice.custom(id: saved.id))
                             // The subtitle is cut short in a tile; the whole line is here and in the detail pane.
                             .help(saved.origin)
@@ -127,12 +131,7 @@ struct ThemePickerSheet: View {
     }
 
     private func addFromFile() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = true
-        panel.allowedContentTypes = [.zip, .folder]
-        panel.message = "Choose a theme's .zip file or folder (it needs a theme.txt)."
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let url = ThemeUnavailableActions.chooseThemeFile() else { return }
         isImporting = true
         Task {
             defer { isImporting = false }
@@ -163,6 +162,8 @@ private struct ThemeTile: View {
     let subtitle: String
     let image: NSImage?
     let chips: [String]
+    /// The download is gone or changed. Said instead of the other chips, which would not fit beside it.
+    let isUnavailable: Bool
     let isSelected: Bool
     let action: () -> Void
 
@@ -179,9 +180,15 @@ private struct ThemeTile: View {
                 Text(title).font(.headline).lineLimit(1)
                 Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 HStack(spacing: 4) {
-                    ForEach(chips, id: \.self) { chip in
-                        Text(chip).font(.caption2).lineLimit(1).padding(.horizontal, 5).padding(.vertical, 2)
-                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+                    if isUnavailable {
+                        Text(ThemeUnavailableCopy.chip).font(.caption2.weight(.semibold)).lineLimit(1)
+                            .foregroundStyle(.orange).padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(Color.orange.opacity(0.18), in: RoundedRectangle(cornerRadius: 4))
+                    } else {
+                        ForEach(chips, id: \.self) { chip in
+                            Text(chip).font(.caption2).lineLimit(1).padding(.horizontal, 5).padding(.vertical, 2)
+                                .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+                        }
                     }
                 }
             }
@@ -199,6 +206,8 @@ private struct ThemeTile: View {
 private struct ThemeDetail: View {
     @EnvironmentObject private var themes: ThemeStore
     let selection: ThemeChoice
+    let isImporting: Bool
+    let onAddFromFile: () -> Void
     let onRemove: (SavedTheme) -> Void
 
     var body: some View {
@@ -214,6 +223,9 @@ private struct ThemeDetail: View {
                     if let entry = themes.catalog.first(where: { $0.id == id }) {
                         preview(themes.previews[id])
                         Text(entry.name).font(.headline)
+                        if let problem = themes.unavailableThemes[id] {
+                            UnavailableThemeNotice(entry: entry, problem: problem, isBusy: isImporting, onAddFromFile: onAddFromFile)
+                        }
                         if let notes = entry.notes { Text(notes).font(.callout).foregroundStyle(.secondary) }
                         Link("\(entry.author) · \(entry.license)", destination: entry.homepage).font(.callout)
                         Text("Downloaded from the author and checked against Mactoy's theme list before use.")

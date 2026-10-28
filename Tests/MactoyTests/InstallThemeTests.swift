@@ -198,6 +198,22 @@ struct InstallThemeTests {
         #expect(await message(after: .notApplied(problem: "it failed!")) == head + "it failed!" + tail)
     }
 
+    @Test("a theme that can't be used is named, and the message points to another theme instead of trying again")
+    func themeUnavailable() async {
+        let head = "Install complete. The boot theme wasn't added: "
+        let tail = " You can pick another theme from Manage Disk."
+        // The exact text for a download that is gone.
+        let gone = ThemeUnavailableCopy.postInstallResult(for: ThemeError.downloadGone(host: "github.com", status: 404), name: "Tela")
+        #expect(await message(after: gone) == "Install complete. The boot theme wasn't added: Mactoy couldn't find “Tela” where its theme list says it should be. You can pick another theme from Manage Disk.")
+        let changed = ThemeUnavailableCopy.postInstallResult(for: ThemeError.checksumMismatch(expected: "a", actual: "b"), name: "Tela")
+        #expect(await message(after: changed) == head + "“Tela” has changed since it was added to Mactoy's theme list, so Mactoy didn't use it." + tail)
+        let removed = ThemeUnavailableCopy.postInstallResult(for: ThemeError.unknownTheme("tela"), name: "Tela")
+        #expect(await message(after: removed) == head + "“Tela” is no longer in Mactoy's theme list." + tail)
+        // The same punctuation rules as any other problem.
+        #expect(await message(after: .themeUnavailable(problem: "it is gone")) == head + "it is gone." + tail)
+        #expect(await message(after: .themeUnavailable(problem: "it is gone. \n")) == head + "it is gone." + tail)
+    }
+
     @Test("warnings after the theme was written are a note on the success, not a failure")
     func appliedWithWarnings() async {
         let uefi = "This drive also sets a separate theme for UEFI boot (\"theme_uefi\" in ventoy.json). Ventoy uses that one instead when it boots in that mode."

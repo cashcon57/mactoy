@@ -80,6 +80,12 @@ enum DriveThemeCopy {
         "Couldn't save this drive's theme to My Themes, so the drive was left as it was. \(reason)"
     }
 
+    /// The copy is safe in My Themes, and the drive keeps its old theme because the new one can't be downloaded
+    /// (the alert says why).
+    static func savedButUnchanged(name: String) -> String {
+        "\(saved(name: name)) The drive's theme wasn't changed."
+    }
+
     /// The copy is safe in My Themes, but the drive still has its old theme.
     static func changeFailed(savedName: String?, reason: String) -> String {
         guard let savedName else { return reason }
@@ -105,6 +111,12 @@ struct DriveThemeSection: View {
     /// confirmation below never opens while the sheet is still closing.
     @State private var picked: ThemeChoice?
     @State private var pendingReplace: PendingReplace?
+    /// A catalog theme that couldn't be used: the alert that says so and offers the ways forward.
+    @State private var unavailableAlert: UnavailableAlert?
+    /// Where the picker opens when it isn't on the drive's current theme: on a theme just added from a file.
+    @State private var pickerStart: ThemeChoice?
+    /// A theme file is being added (from the alert's button).
+    @State private var importing = false
     @State private var working = false
     /// Keeping a copy of the drive's theme (the standalone button). The drive isn't changed.
     @State private var saving = false
@@ -113,6 +125,11 @@ struct DriveThemeSection: View {
     /// A read that finishes after a newer one started is dropped, so a slow
     /// first read can't bring back a theme that was just changed.
     @State private var generation = 0
+
+    private struct UnavailableAlert {
+        let entry: ThemeEntry
+        let problem: ThemeUnavailable
+    }
 
     private struct PendingReplace: Identifiable {
         enum Kind {
@@ -146,8 +163,26 @@ struct DriveThemeSection: View {
                 Text("Boot menu theme").font(.headline)
                 Spacer()
                 if working { ProgressView().controlSize(.small); Text("Changing the theme…").font(.callout) }
+                if importing { ProgressView().controlSize(.small); Text("Adding theme…").font(.callout) }
                 Button("Change Theme…") { showPicker = true }
-                    .disabled(working || saving || readOnly || current == nil)
+                    .disabled(working || saving || importing || readOnly || current == nil)
+            }
+            // A confirmation dialog, not an alert: on macOS an alert shows only three buttons, and this has four.
+            // It hangs on this row so it doesn't compete with the other dialog on the section.
+            .confirmationDialog(
+                unavailableAlert.map { ThemeUnavailableCopy.title(name: $0.entry.name) } ?? "",
+                isPresented: Binding(get: { unavailableAlert != nil }, set: { if !$0 { unavailableAlert = nil } }),
+                titleVisibility: .visible,
+                presenting: unavailableAlert
+            ) { shown in
+                Button(ThemeUnavailableCopy.reportButton) { ThemeUnavailableActions.report(shown.entry, shown.problem) }
+                Button(ThemeUnavailableCopy.pageButton) { ThemeUnavailableActions.openPage(of: shown.entry) }
+                Button(ThemeUnavailableCopy.fileButton) { Task { await addThemeFromFile() } }
+                // Return closes the dialog; nothing it offers happens by accident.
+                Button(ThemeUnavailableCopy.okButton, role: .cancel) {}
+                    .keyboardShortcut(.defaultAction)
+            } message: { shown in
+                Text(ThemeUnavailableCopy.message(for: shown.problem))
             }
             Text(currentText).font(.callout).foregroundStyle(readError == nil ? Color.secondary : Color.red)
                 .fixedSize(horizontal: false, vertical: true)
@@ -179,11 +214,12 @@ struct DriveThemeSection: View {
         .mactoyGlass(cornerRadius: 16)
         .task(id: volumeURL) { await refresh() }
         .sheet(isPresented: $showPicker, onDismiss: {
+            pickerStart = nil
             guard let choice = picked else { return }
             picked = nil
             Task { await choose(choice) }
         }) {
-            ThemePickerSheet(initial: initialChoice, confirmTitle: "Apply to Drive") { picked = $0 }
+            ThemePickerSheet(initial: pickerStart ?? initialChoice, confirmTitle: "Apply to Drive") { picked = $0 }
                 .environmentObject(themes)
         }
         .confirmationDialog(
@@ -287,11 +323,34 @@ struct DriveThemeSection: View {
             isError = true
             message = DriveThemeCopy.saveFailed(failure.underlying.localizedDescription)
         } catch {
-            isError = true
-            message = DriveThemeCopy.changeFailed(savedName: savedName, reason: error.localizedDescription)
+            if case .catalog(let id) = choice, let entry = themes.catalog.first(where: { $0.id == id }),
+               let problem = ThemeUnavailable(error: error, entry: entry) {
+                // The alert says what happened and what to do, so there is no red text as well.
+                isError = false
+                message = savedName.map { DriveThemeCopy.savedButUnchanged(name: $0) }
+                unavailableAlert = UnavailableAlert(entry: entry, problem: problem)
+            } else {
+                isError = true
+                message = DriveThemeCopy.changeFailed(savedName: savedName, reason: themes.message(for: error, choice: choice))
+            }
         }
         await refresh()
         working = false
+    }
+
+    /// The alert's third button: add the theme from a ZIP file or folder, then open the picker on it.
+    private func addThemeFromFile() async {
+        guard let url = ThemeUnavailableActions.chooseThemeFile() else { return }
+        importing = true
+        message = nil
+        defer { importing = false }
+        do {
+            pickerStart = try await themes.importCustom(from: url)
+            showPicker = true
+        } catch {
+            isError = true
+            message = "Couldn't add that theme: \(error.localizedDescription)"
+        }
     }
 
     /// The standalone button. Never changes the drive.

@@ -1407,6 +1407,9 @@ final class AppState: ObservableObject {
                 : "Install complete, with your boot theme. Note: \(notes.joined(separator: " "))")
         case .notApplied(let problem):
             status = .success("Install complete. The boot theme wasn't added: \(Self.asSentence(problem)) You can add it from Manage Disk.")
+        case .themeUnavailable(let problem):
+            // Adding the same theme later would fail the same way.
+            status = .success("Install complete. The boot theme wasn't added: \(Self.asSentence(problem)) You can pick another theme from Manage Disk.")
         }
     }
 
