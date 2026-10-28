@@ -56,6 +56,23 @@ enum PostInstallThemeResult: Equatable, Sendable {
     case themeUnavailable(problem: String)
 }
 
+/// A file or folder with several themes in it, waiting for the user to choose one. It holds
+/// what was read, so choosing doesn't read (or unzip) the file again and nothing is left on disk.
+struct PendingThemeChoice: Identifiable, Sendable {
+    let id = UUID()
+    let opened: CustomThemeImporter.Opened
+
+    var choices: [CustomThemeImporter.Choice] { opened.choices }
+}
+
+/// How adding a theme from a file began.
+enum ThemeImportStart: Sendable {
+    /// The file held one theme and it is in My Themes.
+    case imported(ThemeChoice)
+    /// The file holds several. Nothing was added yet.
+    case needsChoice(PendingThemeChoice)
+}
+
 enum ThemeStoreError: Error, Equatable, LocalizedError {
     /// Another theme change is still running on the same drive.
     case busy
@@ -219,16 +236,36 @@ final class ThemeStore: ObservableObject {
 
     nonisolated static let maxPreviewBytes = 20 * 1024 * 1024
 
-    /// Adds a ZIP file or folder to My Themes. Importing runs `zipinfo` and
-    /// `ditto` and can take a minute, so it stays off the main actor.
+    /// Adds a ZIP file, folder or theme.txt to My Themes. Reading it runs `zipinfo` and
+    /// `ditto` and can take a minute, so it stays off the main actor. A file with several
+    /// themes isn't added: the answer is `.needsChoice`, and `finishImport` adds the one chosen.
+    func startImport(from url: URL) async throws -> ThemeImportStart {
+        let opened = try await Task.detached(priority: .userInitiated) { try CustomThemeImporter.open(url) }.value
+        if opened.needsChoice { return .needsChoice(PendingThemeChoice(opened: opened)) }
+        return .imported(try await saveImport(opened, themeRoot: nil))
+    }
+
+    /// Adds the theme the user picked from a file that holds several.
+    func finishImport(_ pending: PendingThemeChoice, choosing choice: CustomThemeImporter.Choice) async throws -> ThemeChoice {
+        try await saveImport(pending.opened, themeRoot: choice.folder)
+    }
+
+    /// For a caller that has no way to ask which theme: a file with several is an error naming them.
     func importCustom(from url: URL) async throws -> ThemeChoice {
+        switch try await startImport(from: url) {
+        case .imported(let choice): return choice
+        case .needsChoice(let pending): throw ThemeError.ambiguousThemes(pending.opened.themeFilePaths)
+        }
+    }
+
+    private func saveImport(_ opened: CustomThemeImporter.Opened, themeRoot: String?) async throws -> ThemeChoice {
         let library = self.library
         let (saved, skipped) = try await Task.detached(priority: .userInitiated) { () throws -> (SavedTheme, [String]) in
             // The importer's working copy lives in a folder of its own, deleted when done:
             // the library now holds the theme, and Caches would only collect copies.
             let work = FileManager.default.temporaryDirectory.appendingPathComponent("mactoy-import-\(UUID().uuidString)", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: work) }
-            let imported = try CustomThemeImporter.importTheme(from: url, cacheRoot: work)
+            let imported = try CustomThemeImporter.importTheme(opened, themeRoot: themeRoot, cacheRoot: work)
             let saved = try library.save(folder: imported.directory, name: imported.name, settings: imported.settings,
                                          origin: "Added from a file")
             return (saved, imported.skippedFiles)

@@ -15,13 +15,17 @@ enum ThemeUnavailableActions {
         NSWorkspace.shared.open(entry.homepage)
     }
 
-    /// Asks for a theme's ZIP file or folder. Nil when the user cancels.
+    /// What the file panel lets through. Plain text is only there for a theme's `theme.txt`;
+    /// the importer turns any other text file away with a message that says what to pick.
+    static let themeSourceTypes: [UTType] = [.zip, .folder, .plainText]
+
+    /// Asks for a theme's ZIP file, folder or theme.txt. Nil when the user cancels.
     static func chooseThemeFile() -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
-        panel.allowedContentTypes = [.zip, .folder]
-        panel.message = "Choose a theme's .zip file or folder (it needs a theme.txt)."
+        panel.allowedContentTypes = themeSourceTypes
+        panel.message = "Choose a theme's folder, its .zip file, or its theme.txt."
         return panel.runModal() == .OK ? panel.url : nil
     }
 }

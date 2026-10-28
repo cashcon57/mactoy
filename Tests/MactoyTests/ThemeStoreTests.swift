@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Testing
 import Foundation
+import UniformTypeIdentifiers
 @testable import Mactoy
 import MactoyKit
 
@@ -203,6 +204,88 @@ struct ThemeStoreTests {
         #expect(store.importSkipped[id] == ["grub.cfg"])
         try await store.removeSaved(id: id)
         #expect(store.importSkipped[id] == nil)
+    }
+
+    /// A download with two themes side by side and a ventoy.json for one of them, as a pack ships.
+    private func themePack(name: String = "Pack") throws -> URL {
+        let dir = try tempDir().appendingPathComponent(name)
+        for flavour in ["mocha", "latte"] {
+            try FileManager.default.createDirectory(at: dir.appendingPathComponent(flavour), withIntermediateDirectories: true)
+            try Data("title-text: \"\(flavour)\"\n".utf8).write(to: dir.appendingPathComponent("\(flavour)/theme.txt"))
+            try Data([1]).write(to: dir.appendingPathComponent("\(flavour)/f.pf2"))
+        }
+        try Data(##"{"theme":{"file":"/ventoy/mocha/theme.txt","fonts":["/ventoy/mocha/f.pf2"],"ventoy_color":"#89b4fa"}}"##.utf8)
+            .write(to: dir.appendingPathComponent("ventoy.json"))
+        return dir
+    }
+
+    @Test("a file with several themes asks which one, and adds nothing until the user answers")
+    func importSeveralAsks() async throws {
+        let libraryRoot = try tempDir().appendingPathComponent("My Themes")
+        let store = try await offlineStore(libraryRoot: libraryRoot)
+        let pack = try themePack()
+        guard case .needsChoice(let pending) = try await store.startImport(from: pack) else { Issue.record("expected a choice"); return }
+        #expect(pending.choices.map(\.folder) == ["latte", "mocha"])
+        #expect(pending.choices.map(\.name) == ["Latte", "Mocha"])
+        // Nothing is added by asking, and walking away leaves nothing behind.
+        #expect(store.savedThemes.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: libraryRoot.path))
+
+        let mocha = try #require(pending.choices.last)
+        let choice = try await store.finishImport(pending, choosing: mocha)
+        guard case .custom(let id) = choice else { Issue.record("expected a saved theme, got \(choice)"); return }
+        #expect(store.savedThemes.map(\.id) == [id])
+        #expect(store.savedThemes[0].name == "mocha")
+        // The pack's own settings came along.
+        #expect(store.savedThemes[0].settings == .init(file: "theme.txt", fonts: ["f.pf2"], ventoyColor: "#89b4fa"))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: libraryRoot.path).count == 1)
+    }
+
+    @Test("the chosen theme is added from what was read, even after the file is gone")
+    func importChoiceReadsOnce() async throws {
+        let store = try await offlineStore()
+        let work = try tempDir()
+        let src = try themePack(name: "zipped")
+        let zip = work.appendingPathComponent("zipped.zip")
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        p.currentDirectoryURL = src.deletingLastPathComponent()
+        p.arguments = ["-qr", zip.path, "zipped"]
+        try p.run(); p.waitUntilExit()
+        guard case .needsChoice(let pending) = try await store.startImport(from: zip) else { Issue.record("expected a choice"); return }
+        #expect(pending.choices.map(\.folder) == ["zipped/latte", "zipped/mocha"])
+        try FileManager.default.removeItem(at: zip)
+        let latte = try #require(pending.choices.first)
+        let choice = try await store.finishImport(pending, choosing: latte)
+        #expect(store.displayName(for: choice) == "latte")
+        // The same answer can be given again: the second add finds the theme already there.
+        #expect(try await store.finishImport(pending, choosing: latte) == choice)
+        #expect(store.savedThemes.count == 1)
+    }
+
+    @Test("a caller that can't ask is told which themes there are")
+    func importCustomSeveral() async throws {
+        let store = try await offlineStore()
+        await #expect(throws: ThemeError.ambiguousThemes(["latte/theme.txt", "mocha/theme.txt"])) {
+            _ = try await store.importCustom(from: try themePack())
+        }
+        #expect(store.savedThemes.isEmpty)
+        // One theme is still added straight away, from a folder or from its theme.txt.
+        let folder = try themeFolder()
+        let viaFile = try await store.importCustom(from: folder.appendingPathComponent("theme.txt"))
+        let viaFolder = try await store.importCustom(from: folder)
+        #expect(viaFile == viaFolder)
+        #expect(store.savedThemes.count == 1)
+    }
+
+    @Test("the file panel offers ZIPs, folders and plain text, so a theme.txt can be picked")
+    func panelTypes() throws {
+        // Only the list of types: no panel is made or shown.
+        let types = ThemeUnavailableActions.themeSourceTypes
+        let txt = try #require(UTType(filenameExtension: "txt"))
+        #expect(types.contains(.zip))
+        #expect(types.contains(.folder))
+        #expect(types.contains { txt.conforms(to: $0) })
     }
 
     @Test("a saved theme's picture is read from its folder")

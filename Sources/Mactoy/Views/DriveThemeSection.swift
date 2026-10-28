@@ -117,6 +117,8 @@ struct DriveThemeSection: View {
     @State private var pickerStart: ThemeChoice?
     /// A theme file is being added (from the alert's button).
     @State private var importing = false
+    /// A file that held several themes, while the user chooses one.
+    @State private var pendingChoice: PendingThemeChoice?
     @State private var working = false
     /// Keeping a copy of the drive's theme (the standalone button). The drive isn't changed.
     @State private var saving = false
@@ -183,6 +185,11 @@ struct DriveThemeSection: View {
                     .keyboardShortcut(.defaultAction)
             } message: { shown in
                 Text(ThemeUnavailableCopy.message(for: shown.problem))
+            }
+            // On this row and not on the section, which already presents the picker's sheet.
+            .sheet(item: $pendingChoice) { pending in
+                ThemeChoiceSheet(pending: pending, onChoose: { choice in Task { await addChosen(choice, from: pending) } },
+                                 onCancel: { pendingChoice = nil })
             }
             Text(currentText).font(.callout).foregroundStyle(readError == nil ? Color.secondary : Color.red)
                 .fixedSize(horizontal: false, vertical: true)
@@ -345,7 +352,27 @@ struct DriveThemeSection: View {
         message = nil
         defer { importing = false }
         do {
-            pickerStart = try await themes.importCustom(from: url)
+            switch try await themes.startImport(from: url) {
+            case .imported(let choice):
+                pickerStart = choice
+                showPicker = true
+            case .needsChoice(let pending):
+                pendingChoice = pending
+            }
+        } catch {
+            isError = true
+            message = "Couldn't add that theme: \(error.localizedDescription)"
+        }
+    }
+
+    /// Adds the theme picked from a file that held several, then opens the picker on it.
+    private func addChosen(_ choice: CustomThemeImporter.Choice, from pending: PendingThemeChoice) async {
+        pendingChoice = nil
+        importing = true
+        message = nil
+        defer { importing = false }
+        do {
+            pickerStart = try await themes.finishImport(pending, choosing: choice)
             showPicker = true
         } catch {
             isError = true

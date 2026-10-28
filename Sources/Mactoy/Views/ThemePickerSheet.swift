@@ -13,6 +13,8 @@ struct ThemePickerSheet: View {
     @State private var selection: ThemeChoice
     @State private var problem: Problem?
     @State private var isImporting = false
+    /// A file that held several themes, while the user chooses one.
+    @State private var pendingChoice: PendingThemeChoice?
     /// The saved theme the user asked to remove; removed only after they confirm.
     @State private var pendingRemoval: SavedTheme?
 
@@ -79,6 +81,9 @@ struct ThemePickerSheet: View {
         .alert(problem?.title ?? "", isPresented: Binding(get: { problem != nil }, set: { if !$0 { problem = nil } })) {
             Button("OK") { problem = nil }
         } message: { Text(problem?.message ?? "") }
+        .sheet(item: $pendingChoice) { pending in
+            ThemeChoiceSheet(pending: pending, onChoose: { add($0, from: pending) }, onCancel: { pendingChoice = nil })
+        }
     }
 
     private static let columns = [GridItem(.adaptive(minimum: 190), spacing: 12)]
@@ -135,7 +140,22 @@ struct ThemePickerSheet: View {
         isImporting = true
         Task {
             defer { isImporting = false }
-            do { selection = try await themes.importCustom(from: url) }
+            do {
+                switch try await themes.startImport(from: url) {
+                case .imported(let choice): selection = choice
+                case .needsChoice(let pending): pendingChoice = pending
+                }
+            } catch { problem = Problem(title: "Couldn't add that theme", message: error.localizedDescription) }
+        }
+    }
+
+    /// Adds the theme picked from a file that held several.
+    private func add(_ choice: CustomThemeImporter.Choice, from pending: PendingThemeChoice) {
+        pendingChoice = nil
+        isImporting = true
+        Task {
+            defer { isImporting = false }
+            do { selection = try await themes.finishImport(pending, choosing: choice) }
             catch { problem = Problem(title: "Couldn't add that theme", message: error.localizedDescription) }
         }
     }
