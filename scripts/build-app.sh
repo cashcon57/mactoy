@@ -64,10 +64,26 @@ cp "$ROOT/app-support/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/app-support/com.mactoy.mactoyd.plist" \
    "$APP/Contents/Library/LaunchDaemons/com.mactoy.mactoyd.plist"
 
-# Copy AppIcon if present
-if [[ -f "$ROOT/app-support/AppIcon.icns" ]]; then
+# App icon. The source is the Icon Composer file app-support/AppIcon.icon
+# (SVG layers). actool (Xcode 26 or newer) compiles it into Assets.car, the
+# Liquid Glass icon macOS 26 uses, plus AppIcon.icns for macOS 13 to 15.
+# Older Xcode can't read .icon files, so it gets the committed AppIcon.icns,
+# which is the same compile, saved. Rebuild that after editing the icon:
+#   xcrun actool app-support/AppIcon.icon --compile /tmp/icon --platform macosx \
+#     --minimum-deployment-target 13.5 --app-icon AppIcon \
+#     --output-partial-info-plist /tmp/icon/p.plist && cp /tmp/icon/AppIcon.icns app-support/
+ICON_OUT="$(mktemp -d)"
+if xcrun actool "$ROOT/app-support/AppIcon.icon" --compile "$ICON_OUT" --platform macosx \
+        --minimum-deployment-target 13.5 --app-icon AppIcon \
+        --output-partial-info-plist "$ICON_OUT/partial.plist" >/dev/null 2>&1 \
+        && [[ -f "$ICON_OUT/Assets.car" && -f "$ICON_OUT/AppIcon.icns" ]]; then
+    cp "$ICON_OUT/Assets.car" "$APP/Contents/Resources/Assets.car"
+    cp "$ICON_OUT/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+else
+    echo "==> actool couldn't compile AppIcon.icon (needs Xcode 26+); using the committed AppIcon.icns"
     cp "$ROOT/app-support/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 fi
+rm -rf "$ICON_OUT"
 
 # Copy SPM-bundled resources if they exist
 if [[ -d "$BUILD_DIR/Mactoy_Mactoy.bundle" ]]; then

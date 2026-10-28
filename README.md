@@ -20,8 +20,6 @@
   <a href="https://ko-fi.com/cash508287"><img alt="Support me on Ko-fi" src="https://storage.ko-fi.com/cdn/brandasset/v2/support_me_on_kofi_dark.png" height="44"></a>
 </p>
 
-> **Heads up on the icon.** The header art above is a placeholder that still has some rough edges — mixed anti-aliasing on the bezel, slightly uneven inner text rendering at small sizes. A proper redesign is in progress and will land in a future release.
-
 ## Why Mactoy exists
 
 [Ventoy](https://www.ventoy.net) is the best way to carry a toolkit of bootable OSes on a single USB — install it once, then just drop ISOs on the drive and pick one at boot. The problem: **Ventoy has no macOS installer.** The official options are all workarounds:
@@ -299,7 +297,7 @@ Mactoy/
 │   ├── mactoyd/             privileged helper CLI
 │   └── Mactoy/              SwiftUI app
 ├── Tests/MactoyKitTests/    unit tests for MBR/GPT, drivers, plan
-├── app-support/             Info.plist (outside SPM resources)
+├── app-support/             Info.plist, entitlements, and the app icon (AppIcon.icon, editable in Icon Composer)
 ├── scripts/                 build-app.sh, build-dmg.sh
 ├── themes/                  Boot theme catalog, previews and generated gallery
 ├── scripts/themes/          mactoy-themes tool (validate, hash, gallery, credits, install) and preview renderer
