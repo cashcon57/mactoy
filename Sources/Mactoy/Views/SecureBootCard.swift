@@ -17,8 +17,8 @@ struct SecureBootCard: View {
             .toggleStyle(.switch)
 
             Text(isOn
-                 ? "The drive boots through Ventoy's signed shim, so it works on PCs that have Secure Boot turned on (you enroll Ventoy's key the first time). This is Ventoy's default."
-                 : "The drive boots GRUB directly, with no shim. Choose this for Macs, and for PCs that hang on a blank screen when starting the drive. It won't boot on a PC while that PC's Secure Boot is on.")
+                 ? "The drive starts through a small loader signed by Microsoft, so it works on PCs that have Secure Boot turned on. The first time, the PC asks you to enroll Ventoy's key. This is Ventoy's default."
+                 : "The drive starts Ventoy directly. Choose this if you'll start an Intel Mac from the drive, or if a PC freezes at a blank screen when starting from it. It won't start on a PC while that PC's Secure Boot is on.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
