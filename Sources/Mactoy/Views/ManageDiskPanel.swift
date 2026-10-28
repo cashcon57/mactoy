@@ -14,6 +14,9 @@ struct ManageDiskPanel: View {
                 Text("Ventoy volume mounted at \(volumeURL.path)")
                     .foregroundStyle(.secondary)
 
+                DriveThemeSection(volumeURL: volumeURL)
+                    .id(volumeURL)
+
                 // `id: volumeURL` forces the library to rebuild its state
                 // when the user switches between disks, instead of
                 // keeping stale items from the previously-selected
@@ -38,27 +41,10 @@ struct ManageDiskPanel: View {
         }
     }
 
-    /// Find the `Ventoy` volume that actually lives on the selected
-    /// disk, not just any volume named `Ventoy` anywhere on the system.
-    /// Previously we matched by name alone, which would pick the wrong
-    /// drive if the user had two Ventoy sticks plugged in.
+    /// The `Ventoy` volume on the selected disk, not just any volume named
+    /// `Ventoy` (two sticks can be plugged in at once).
     private func ventoyVolumeURL(for disk: DiskTarget) -> URL? {
-        let fm = FileManager.default
-        guard let mounts = try? fm.contentsOfDirectory(atPath: "/Volumes") else { return nil }
-        for name in mounts where name == "Ventoy" || name.hasPrefix("Ventoy") {
-            let candidate = URL(fileURLWithPath: "/Volumes/\(name)")
-            if let info = try? Subprocess.run(
-                "/usr/sbin/diskutil", ["info", "-plist", candidate.path]
-            ),
-               info.status == 0,
-               let data = info.stdout.data(using: .utf8),
-               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-               let deviceIdentifier = plist["DeviceIdentifier"] as? String,
-               deviceIdentifier.hasPrefix(disk.bsdName + "s") {
-                return candidate
-            }
-        }
-        return nil
+        VentoyVolumeLocator.find(onDisk: disk.bsdName)
     }
 }
 

@@ -43,6 +43,7 @@ And the [Mac App Store sandbox forbids privilege escalation and raw block-device
 1. **Install Ventoy** on a USB drive — download from GitHub releases, partition (MBR or GPT, like Ventoy2Disk), write the bootloader, format the data partition as exFAT. Done from macOS, not a Linux VM.
 2. **Flash a raw image** (`.iso`, `.img`, `.img.xz`, `.img.gz`) — a one-shot `dd` replacement with a progress bar and drag-and-drop. Use this when you want a single-boot stick; use Install Ventoy when you want a multi-boot library.
 3. **Manage an existing Ventoy disk** — list, add, and remove ISOs on a mounted `Ventoy` volume without dropping to Finder. Lists the same images Ventoy's boot menu will: it follows `VTOY_DEFAULT_SEARCH_ROOT`, `VTOY_MAX_SEARCH_LEVEL` and `.ventoyignore` from your `/ventoy/ventoy.json` setup, searches subfolders, and adds new images to the search root.
+4. **Boot menu themes.** Pick a [theme for Ventoy's menu](#give-your-drive-a-boot-menu-theme), with previews, on a new or existing drive. New drives get Catppuccin Mocha unless you choose otherwise.
 
 Both write modes share one Liquid Glass UI and one privileged helper binary.
 
@@ -145,6 +146,24 @@ Either one alone isn't enough. Once both are granted — and if you keep the hel
 2. Switch to the **Manage Disk** tab.
 3. Add new ISOs or remove old ones without needing Finder.
 
+### Give your drive a boot menu theme
+
+<p align="center">
+  <img src="themes/previews/catppuccin-mocha.jpg" width="49%" alt="Catppuccin Mocha theme">
+  <img src="themes/previews/adwaita-blue.jpg" width="49%" alt="Adwaita Blue theme">
+  <img src="themes/previews/tela.jpg" width="49%" alt="Tela theme">
+  <img src="themes/previews/568flat.jpg" width="49%" alt="568flat theme">
+</p>
+
+Ventoy's boot menu can be themed. Mactoy has a picker with previews of community themes, each a real capture of the theme booted in Ventoy:
+
+- **New drive:** new drives get **Catppuccin Mocha** by default, because Ventoy's built-in menu looks dated. Mactoy says so on the Install tab. To keep Ventoy's own look, click **Choose…** under *Boot menu theme* and pick **Ventoy default**; Mactoy remembers that. Mactoy adds the theme right after the install, and Catppuccin Mocha is built into the app, so no download is needed.
+- **Existing drive:** on **Manage Disk**, click **Change Theme…**. Your other Ventoy settings are kept.
+- **Your own theme:** in the picker, **Add Theme from File…** takes a theme's `.zip` or folder. Themes you add are kept in **My Themes** inside Mactoy, so you can use them again on other drives.
+- **Keeping a drive's current theme:** if a drive already has a theme that isn't in Mactoy's list, Mactoy offers to save it to My Themes before replacing it, and before erasing the drive on a fresh install. **Manage Disk** also has a **Save to My Themes** button for when you only want a copy.
+
+See [all themes](themes/README.md). Want yours in the list? [Add it with a pull request](CONTRIBUTING.md#adding-a-boot-theme).
+
 ## Reporting bugs
 
 If something goes wrong — a crash on launch, the helper not registering, the progress bar lying, a flash that never finishes — please open a GitHub issue. The fastest triage comes from one of two attachments below; **no Terminal required for either**.
@@ -224,6 +243,8 @@ The [original proof-of-concept](https://gist.github.com/VladimirMakaev/93503ab7c
 - The helper re-probes the target disk on its own side — it does not trust the `isExternal` / `isRemovable` flags set by the app layer.
 - Ventoy tarballs are SHA-256-verified against the `sha256.txt` file published alongside each Ventoy release before the bytes are handed to the driver. Cache reuse re-verifies on every install. The cached tarball (current version only, ~20 MB) lives in `/Library/Application Support/Mactoy/Cache/`; delete that folder if you remove Mactoy.
 - The helper has a narrow entitlement set (`com.apple.security.network.client` only, to fetch the Ventoy tarball).
+- **Boot themes.** The theme list is [`themes/catalog.json`](themes/catalog.json) on `main`, and changes to it go through review. Each theme is pinned to one exact download by SHA-256, and Mactoy refuses a download that doesn't match. From a download, only `.txt`, `.png`, `.jpg`, `.jpeg`, `.tga` and `.pf2` files are copied, and never `.cfg` files, which Ventoy would run as boot scripts. A `.zip` you add yourself is unpacked in a separate process with size and file-name checks, then passes the same file filter. On the drive, Mactoy changes only the `theme` setting in `ventoy.json`, keeps a copy of your original `ventoy.json` (from before Mactoy first changed it) as `ventoy.json.mactoy-backup`, never follows links, and only ever deletes theme folders it created. Catppuccin Mocha ships inside the app, and CI checks it byte for byte against its pinned download.
+- **What the theme feature fetches.** Mactoy fetches the theme list and theme previews from this repository on GitHub (raw.githubusercontent.com) when it starts and when you open the theme picker, and downloads a theme from its author's release or commit archive when you choose it. Nothing about you or your drives is sent.
 - See [`SECURITY.md`](SECURITY.md) for the full threat model and the remaining known limitations.
 
 ## Building from source
@@ -270,6 +291,8 @@ Mactoy/
 ├── Tests/MactoyKitTests/    unit tests for MBR/GPT, drivers, plan
 ├── app-support/             Info.plist (outside SPM resources)
 ├── scripts/                 build-app.sh, build-dmg.sh
+├── themes/                  Boot theme catalog, previews and generated gallery
+├── scripts/themes/          mactoy-themes tool (validate, hash, gallery, credits, install) and preview renderer
 ├── docs/specs/              design specs
 └── build/                   (git-ignored) .app + .dmg output
 ```

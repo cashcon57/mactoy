@@ -5,9 +5,11 @@ fw=[]
 if mode=='uefi':
     shutil.copy(f'{Q}/edk2-i386-vars.fd', vars_)
     fw=['-drive',f'if=pflash,format=raw,readonly=on,file={Q}/edk2-x86_64-code.fd','-drive',f'if=pflash,format=raw,file={vars_}']
+# Override to test a low-VRAM adapter, e.g. MACTOY_QEMU_VGA="-device VGA,vgamem_mb=4".
+vga=os.environ.get('MACTOY_QEMU_VGA','-vga std').split()
 p=subprocess.Popen(['qemu-system-x86_64','-machine','q35','-m','1024','-snapshot',*fw,
   '-drive',f'file={img},format=raw,if=none,id=stick','-device','qemu-xhci','-device','usb-storage,drive=stick,bootindex=0',
-  '-net','none','-serial',f'file:{prefix}-serial.log','-display','none','-vga','std','-monitor',f'unix:{sock},server,nowait'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  '-net','none','-serial',f'file:{prefix}-serial.log','-display','none',*vga,'-monitor',f'unix:{sock},server,nowait'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 time.sleep(2); s=socket.socket(socket.AF_UNIX); s.connect(sock); s.settimeout(2)
 def cmd(c):
     s.sendall((c+'\n').encode()); time.sleep(0.5)

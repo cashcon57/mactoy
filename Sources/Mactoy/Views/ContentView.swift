@@ -78,5 +78,6 @@ struct DetailPane: View {
 #Preview {
     ContentView()
         .environmentObject(AppState())
+        .environmentObject(ThemeStore())
         .frame(width: 900, height: 600)
 }

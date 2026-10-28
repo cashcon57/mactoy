@@ -74,6 +74,21 @@ if [[ -d "$BUILD_DIR/Mactoy_Mactoy.bundle" ]]; then
     cp -R "$BUILD_DIR/Mactoy_Mactoy.bundle" "$APP/Contents/Resources/"
 fi
 
+# Boot theme list, screenshots and the default theme, used when the online
+# list can't be reached. cp -R keeps the hidden .complete marker inside each
+# bundled theme folder; without it the app ignores that folder and downloads.
+mkdir -p "$APP/Contents/Resources/Themes"
+cp "$ROOT/themes/catalog.json" "$APP/Contents/Resources/Themes/catalog.json"
+cp -R "$ROOT/themes/previews" "$APP/Contents/Resources/Themes/previews"
+cp -R "$ROOT/themes/bundled" "$APP/Contents/Resources/Themes/bundled"
+
+# A bundled theme folder without its .complete marker is ignored by the app, which then
+# downloads the theme and the bundling was for nothing, so fail here rather than ship that.
+for folder in "$APP/Contents/Resources/Themes/bundled"/*/; do
+    [[ -d "$folder" ]] || continue
+    [[ -f "${folder}.complete" ]] || { echo "error: bundled theme ${folder#"$APP"/} has no .complete marker (re-run 'mactoy-themes bundle')" >&2; exit 1; }
+done
+
 # Signing:
 #   SIGN=nosign    : no codesign at all
 #   SIGN=sign      : ad-hoc sign (for local dev)

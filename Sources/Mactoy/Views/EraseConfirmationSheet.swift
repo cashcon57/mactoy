@@ -20,6 +20,7 @@ import MactoyKit
 ///   mid-update without scaring the user about data loss.
 struct EraseConfirmationSheet: View {
     @EnvironmentObject private var state: AppState
+    @EnvironmentObject private var themes: ThemeStore
     @Environment(\.dismiss) private var dismiss
     let info: EraseConfirmation
 
@@ -31,6 +32,24 @@ struct EraseConfirmationSheet: View {
     private var usedBytes: UInt64? {
         guard let live = state.pendingEraseConfirmation, live.id == info.id else { return info.usedBytes }
         return live.usedBytes
+    }
+
+    /// The theme found on the drive, filled in after the sheet opens, so read live like `usedBytes`.
+    private var liveConfirmation: EraseConfirmation {
+        guard let live = state.pendingEraseConfirmation, live.id == info.id else { return info }
+        return live
+    }
+
+    /// Writes the box through to the open confirmation, and only to this one:
+    /// the sheet may outlive it by a moment, and a stale tick must not land on a newer sheet.
+    private var saveThemeFirst: Binding<Bool> {
+        Binding(
+            get: { liveConfirmation.saveDriveThemeFirst },
+            set: { newValue in
+                guard state.pendingEraseConfirmation?.id == info.id else { return }
+                state.pendingEraseConfirmation?.saveDriveThemeFirst = newValue
+            }
+        )
     }
 
     var body: some View {
@@ -81,6 +100,25 @@ struct EraseConfirmationSheet: View {
                 tint: isUpdate ? .accentColor.opacity(0.15) : .red.opacity(0.15)
             )
 
+            // Erase waits (briefly) for the look at the drive's theme, so a theme
+            // the user would want kept isn't erased before the offer can appear.
+            if info.mode == .installVentoy, liveConfirmation.driveThemeProbePending {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking this drive for a boot theme to keep…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if info.mode == .installVentoy, let name = liveConfirmation.driveThemeName {
+                Toggle(isOn: saveThemeFirst) {
+                    Text("Save this drive's boot theme (“\(name)”) to My Themes first")
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .toggleStyle(.checkbox)
+            }
+
             Text(footnote)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -105,6 +143,7 @@ struct EraseConfirmationSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.large)
                 .tint(isUpdate ? .accentColor : .red)
+                .disabled(liveConfirmation.driveThemeProbePending)
             }
         }
         .padding(26)
@@ -128,9 +167,9 @@ struct EraseConfirmationSheet: View {
         switch info.mode {
         case .installVentoy:
             if let used = usedBytes {
-                return "Installing Ventoy will wipe the entire \(total) drive. Right now about \(sizeString(used)) of data is on it. Every partition below will be destroyed and replaced with a fresh Ventoy layout. \(secureBootSentence) \(partitionStyleSentence)"
+                return "Installing Ventoy will wipe the entire \(total) drive. Right now about \(sizeString(used)) of data is on it. Every partition below will be destroyed and replaced with a fresh Ventoy layout. \(installSettingsSentences)"
             }
-            return "Installing Ventoy will wipe the entire \(total) drive. Every partition on it will be destroyed and replaced with a fresh Ventoy layout. \(secureBootSentence) \(partitionStyleSentence)"
+            return "Installing Ventoy will wipe the entire \(total) drive. Every partition on it will be destroyed and replaced with a fresh Ventoy layout. \(installSettingsSentences)"
         case .updateVentoy:
             return "Update the Ventoy bootloader on this drive in place. Your ISOs and `/ventoy/` configuration are preserved — only the bootloader (MBR boot code, GRUB2 core, and the 32 MB VTOYEFI partition) will be rewritten. Drive total size is \(total). \(secureBootSentence)"
         case .flashImage:
@@ -140,6 +179,26 @@ struct EraseConfirmationSheet: View {
             return "Flashing this image will overwrite the entire \(total) drive. Anything on it will be lost."
         case .manageDisk:
             return ""  // not reachable — Manage Disk doesn't trigger the confirm sheet
+        }
+    }
+
+    /// What a fresh install will be set up with. The theme sentence is empty
+    /// for Ventoy's own, so the join keeps the spacing right.
+    private var installSettingsSentences: String {
+        [secureBootSentence, partitionStyleSentence, themeSentence].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    private var themeSentence: String {
+        Self.themeSentence(for: info.theme, name: themes.displayName(for: info.theme))
+    }
+
+    /// Nothing for Ventoy's own theme. Mactoy's own pick says so, because the
+    /// user may never have seen the Install tab's note about it.
+    static func themeSentence(for theme: ThemeChoice, name: String) -> String {
+        switch theme {
+        case .ventoyDefault: return ""
+        case AppState.defaultInstallTheme: return "Boot theme: \(name) (Mactoy's default; change it on the Install tab)."
+        default: return "Boot theme: \(name)."
         }
     }
 

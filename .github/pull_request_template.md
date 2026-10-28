@@ -1,3 +1,5 @@
+<!-- Adding a boot theme? Use the theme template instead: add `?template=theme.md` to this page's URL. -->
+
 ## What and why
 
 <!-- What does this change, and what problem does it solve? Link the issue: "Fixes #123". -->

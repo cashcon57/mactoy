@@ -1,0 +1,247 @@
+{
+  "schema": 1,
+  "themes": [
+    {
+      "id": "catppuccin-mocha",
+      "name": "Catppuccin Mocha",
+      "author": "Catppuccin",
+      "homepage": "https://github.com/catppuccin/grub",
+      "license": "MIT",
+      "showsVentoyHotkeys": true,
+      "notes": "Minimal dark theme. Shows seven menu entries before it scrolls. Shows a placeholder where the countdown would be if the drive sets a menu timeout.",
+      "download": {
+        "url": "https://codeload.github.com/catppuccin/grub/zip/0a37ab19f654e77129b409fed371891c01ffd0b9",
+        "sha256": "113d3bb53dc95e5e432806f5e85af34a65dbaf5676159814199e4725328c6a53",
+        "root": "grub-0a37ab19f654e77129b409fed371891c01ffd0b9/ventoy/src/mocha/catppuccin-mocha"
+      },
+      "settings": { "file": "theme.txt", "fonts": ["terminus-14.pf2"], "gfxmode": "1920x1080,auto", "ventoy_color": "#89b4fa" }
+    },
+    {
+      "id": "catppuccin-latte",
+      "name": "Catppuccin Latte",
+      "author": "Catppuccin",
+      "homepage": "https://github.com/catppuccin/grub",
+      "license": "MIT",
+      "showsVentoyHotkeys": true,
+      "notes": "Light version of Catppuccin Mocha, with the same layout. Shows a placeholder where the countdown would be if the drive sets a menu timeout.",
+      "download": {
+        "url": "https://codeload.github.com/catppuccin/grub/zip/0a37ab19f654e77129b409fed371891c01ffd0b9",
+        "sha256": "113d3bb53dc95e5e432806f5e85af34a65dbaf5676159814199e4725328c6a53",
+        "root": "grub-0a37ab19f654e77129b409fed371891c01ffd0b9/ventoy/src/latte/catppuccin-latte"
+      },
+      "settings": { "file": "theme.txt", "fonts": ["terminus-14.pf2"], "gfxmode": "1920x1080,auto", "ventoy_color": "#1e66f5" }
+    },
+    {
+      "id": "adwaita-blue",
+      "name": "Adwaita Blue",
+      "author": "Diego Duarte",
+      "homepage": "https://github.com/odiegoduarte/ventoy-themes",
+      "license": "MIT",
+      "showsVentoyHotkeys": true,
+      "notes": "GNOME-style blue waves. Menu text is small on 1080p screens.",
+      "download": {
+        "url": "https://github.com/odiegoduarte/ventoy-themes/releases/download/adwaita-blue-v3.0/ventoy-adwaita-blue-v3.zip",
+        "sha256": "66b38eb186b261195cc9cc697482e0440e8194d333b3016eba69a989480f9f74",
+        "root": "ventoy/ventoy-adwaita-blue"
+      },
+      "settings": { "file": "theme.txt", "gfxmode": "1920x1080,auto" }
+    },
+    {
+      "id": "adwaita",
+      "name": "Adwaita",
+      "author": "Diego Duarte",
+      "homepage": "https://github.com/odiegoduarte/ventoy-themes",
+      "license": "MIT",
+      "showsVentoyHotkeys": true,
+      "notes": "Same layout as Adwaita Blue, in deep plum.",
+      "download": {
+        "url": "https://github.com/odiegoduarte/ventoy-themes/releases/download/0.8/ventoy.zip",
+        "sha256": "58eaa3e6c254205ff47276c6dbbb369950bc94f2366e79af6a8d68e4c636398d",
+        "root": "ventoy/ventoy-adwaita"
+      },
+      "settings": { "file": "theme.txt", "gfxmode": "1920x1080,auto" }
+    },
+    {
+      "id": "blueprint",
+      "name": "BluePrint",
+      "author": "Diego Duarte",
+      "homepage": "https://github.com/odiegoduarte/ventoy-themes",
+      "license": "MIT",
+      "showsVentoyHotkeys": true,
+      "notes": "Drafting-grid background. Busier than the others.",
+      "download": {
+        "url": "https://github.com/odiegoduarte/ventoy-themes/releases/download/blueprint.v1/ventoy_blueprint.zip",
+        "sha256": "f60c3a84e6a49c915dea66b6a140f1aaf68e4f725416d1cb4e4475d64e07925d",
+        "root": "ventoy/ventoy-blueprint"
+      },
+      "settings": { "file": "theme.txt", "gfxmode": "1920x1080,auto" }
+    },
+    {
+      "id": "pop",
+      "name": "Pop",
+      "author": "Diego Duarte",
+      "homepage": "https://github.com/odiegoduarte/ventoy-themes",
+      "license": "MIT",
+      "showsVentoyHotkeys": true,
+      "notes": "In the style of Pop!_OS, with a hex pattern and a gold swoosh.",
+      "download": {
+        "url": "https://github.com/odiegoduarte/ventoy-themes/releases/download/0.10/ventoy.zip",
+        "sha256": "b93dfe7dac590d4221626abc434ceccb039d959bead37a36df9d7301d8128a8a",
+        "root": "ventoy/ventoy-pop"
+      },
+      "settings": { "file": "theme.txt", "gfxmode": "1920x1080,auto" }
+    },
+    {
+      "id": "purple",
+      "name": "Purple",
+      "author": "Diego Duarte",
+      "homepage": "https://github.com/odiegoduarte/ventoy-themes",
+      "license": "MIT",
+      "showsVentoyHotkeys": true,
+      "notes": "Bold magenta header.",
+      "download": {
+        "url": "https://github.com/odiegoduarte/ventoy-themes/releases/download/0.7/ventoy.zip",
+        "sha256": "602f18fef9e7a9a687c46a04c986b7c984a80a6272d41033d6a0aa69cf6fb3ea",
+        "root": "ventoy/purple-theme"
+      },
+      "settings": { "file": "theme.txt", "gfxmode": "1920x1080,auto" }
+    },
+    {
+      "id": "568flat",
+      "name": "568flat",
+      "author": "PJ568",
+      "homepage": "https://github.com/PJ-568/568flat-ventoy-theme",
+      "license": "MIT",
+      "showsVentoyHotkeys": true,
+      "notes": "Retro flat blocks with large text, designed for lower resolutions.",
+      "download": {
+        "url": "https://github.com/PJ-568/568flat-ventoy-theme/releases/download/v1.0.1/568flat-en.zip",
+        "sha256": "f2164040d1abee2cfa720ba6fb7557f25098dfe4931589c1c0f53415ed7c48b3",
+        "root": "568flat-en"
+      },
+      "settings": { "file": "theme.txt", "fonts": ["MapleMono-CN-Medium_48.pf2", "MapleMono-CN-Medium_32.pf2"], "gfxmode": "1024x768,auto" }
+    },
+    {
+      "id": "klassiker",
+      "name": "Klassiker",
+      "author": "mrdotx",
+      "homepage": "https://github.com/mrdotx/ventoy-theme",
+      "license": "GPL-3.0",
+      "showsVentoyHotkeys": true,
+      "notes": "Circuit-board photo with a framed menu.",
+      "download": {
+        "url": "https://codeload.github.com/mrdotx/ventoy-theme/zip/89daefd11b1b11ac7e535f5899372398e3763ea9",
+        "sha256": "3e801f743a3d7f375564aa07a370a94ca7e436e374bd3c9a57dba8ca8fc54f50",
+        "root": "ventoy-theme-89daefd11b1b11ac7e535f5899372398e3763ea9/ventoy/themes/klassiker"
+      },
+      "settings": { "file": "theme.txt", "gfxmode": "1920x1080,auto", "ventoy_left": "0%+2", "ventoy_top": "100%-19", "ventoy_color": "#2b2b2b" }
+    },
+    {
+      "id": "dracula",
+      "name": "Dracula",
+      "author": "Dracula Theme",
+      "homepage": "https://github.com/dracula/grub",
+      "license": "MIT",
+      "showsVentoyHotkeys": false,
+      "notes": "Minimal, with a mascot. A general GRUB theme, so Ventoy's F1–F6 hints don't show.",
+      "download": {
+        "url": "https://codeload.github.com/dracula/grub/zip/0e721d99dbf0d5d6c4fd489b88248365b7a60d12",
+        "sha256": "3710c8074e094b0f8ec0a36576da66f89eefb38f74835bd1b78ba8e9903f2442",
+        "root": "grub-0e721d99dbf0d5d6c4fd489b88248365b7a60d12/dracula"
+      },
+      "settings": { "file": "theme.txt", "fonts": ["font.pf2"], "gfxmode": "1920x1080,auto" }
+    },
+    {
+      "id": "tela",
+      "name": "Tela",
+      "author": "vinceliuice",
+      "homepage": "https://github.com/vinceliuice/grub2-themes",
+      "license": "GPL-3.0",
+      "showsVentoyHotkeys": false,
+      "notes": "From the most popular GRUB theme pack. A general GRUB theme, so Ventoy's F1–F6 hints don't show.",
+      "download": {
+        "url": "https://codeload.github.com/vinceliuice/grub2-themes/zip/4c5a77125b93f833edc9bf7b14a899faa8ac79c6",
+        "sha256": "4e7e765603a528c4ee8ddfdae2bfdbf31868fc9726a7bf3b5884b54f53722fcc",
+        "root": "grub2-themes-4c5a77125b93f833edc9bf7b14a899faa8ac79c6"
+      },
+      "files": [
+        { "from": "common/dejavu_sans_16.pf2", "to": "dejavu_sans_16.pf2" },
+        { "from": "common/terminus-14.pf2", "to": "terminus-14.pf2" },
+        { "from": "config/theme-1080p.txt", "to": "theme.txt" },
+        { "from": "backgrounds/1080p/background-tela.jpg", "to": "background.jpg" },
+        { "from": "assets/assets-select/select-1080p/*.png", "to": "." },
+        { "from": "assets/info-1080p.png", "to": "info.png" }
+      ],
+      "settings": { "file": "theme.txt", "fonts": ["dejavu_sans_16.pf2", "terminus-14.pf2"], "gfxmode": "1920x1080,auto" }
+    },
+    {
+      "id": "stylish",
+      "name": "Stylish",
+      "author": "vinceliuice",
+      "homepage": "https://github.com/vinceliuice/grub2-themes",
+      "license": "GPL-3.0",
+      "showsVentoyHotkeys": false,
+      "notes": "Diagonal colour bands, same layout as Tela.",
+      "download": {
+        "url": "https://codeload.github.com/vinceliuice/grub2-themes/zip/4c5a77125b93f833edc9bf7b14a899faa8ac79c6",
+        "sha256": "4e7e765603a528c4ee8ddfdae2bfdbf31868fc9726a7bf3b5884b54f53722fcc",
+        "root": "grub2-themes-4c5a77125b93f833edc9bf7b14a899faa8ac79c6"
+      },
+      "files": [
+        { "from": "common/dejavu_sans_16.pf2", "to": "dejavu_sans_16.pf2" },
+        { "from": "common/terminus-14.pf2", "to": "terminus-14.pf2" },
+        { "from": "config/theme-1080p.txt", "to": "theme.txt" },
+        { "from": "backgrounds/1080p/background-stylish.jpg", "to": "background.jpg" },
+        { "from": "assets/assets-select/select-1080p/*.png", "to": "." },
+        { "from": "assets/info-1080p.png", "to": "info.png" }
+      ],
+      "settings": { "file": "theme.txt", "fonts": ["dejavu_sans_16.pf2", "terminus-14.pf2"], "gfxmode": "1920x1080,auto" }
+    },
+    {
+      "id": "vimix",
+      "name": "Vimix",
+      "author": "vinceliuice",
+      "homepage": "https://github.com/vinceliuice/grub2-themes",
+      "license": "GPL-3.0",
+      "showsVentoyHotkeys": false,
+      "notes": "Cyan and silver ribbons, same layout as Tela.",
+      "download": {
+        "url": "https://codeload.github.com/vinceliuice/grub2-themes/zip/4c5a77125b93f833edc9bf7b14a899faa8ac79c6",
+        "sha256": "4e7e765603a528c4ee8ddfdae2bfdbf31868fc9726a7bf3b5884b54f53722fcc",
+        "root": "grub2-themes-4c5a77125b93f833edc9bf7b14a899faa8ac79c6"
+      },
+      "files": [
+        { "from": "common/dejavu_sans_16.pf2", "to": "dejavu_sans_16.pf2" },
+        { "from": "common/terminus-14.pf2", "to": "terminus-14.pf2" },
+        { "from": "config/theme-1080p.txt", "to": "theme.txt" },
+        { "from": "backgrounds/1080p/background-vimix.jpg", "to": "background.jpg" },
+        { "from": "assets/assets-select/select-1080p/*.png", "to": "." },
+        { "from": "assets/info-1080p.png", "to": "info.png" }
+      ],
+      "settings": { "file": "theme.txt", "fonts": ["dejavu_sans_16.pf2", "terminus-14.pf2"], "gfxmode": "1920x1080,auto" }
+    },
+    {
+      "id": "whitesur",
+      "name": "WhiteSur",
+      "author": "vinceliuice",
+      "homepage": "https://github.com/vinceliuice/grub2-themes",
+      "license": "GPL-3.0",
+      "showsVentoyHotkeys": false,
+      "notes": "Mac-like frosted panel over a Big Sur-style wallpaper, same layout as Tela.",
+      "download": {
+        "url": "https://codeload.github.com/vinceliuice/grub2-themes/zip/4c5a77125b93f833edc9bf7b14a899faa8ac79c6",
+        "sha256": "4e7e765603a528c4ee8ddfdae2bfdbf31868fc9726a7bf3b5884b54f53722fcc",
+        "root": "grub2-themes-4c5a77125b93f833edc9bf7b14a899faa8ac79c6"
+      },
+      "files": [
+        { "from": "common/dejavu_sans_16.pf2", "to": "dejavu_sans_16.pf2" },
+        { "from": "common/terminus-14.pf2", "to": "terminus-14.pf2" },
+        { "from": "config/theme-1080p.txt", "to": "theme.txt" },
+        { "from": "backgrounds/1080p/background-whitesur.jpg", "to": "background.jpg" },
+        { "from": "assets/assets-select/select-1080p/*.png", "to": "." },
+        { "from": "assets/info-1080p.png", "to": "info.png" }
+      ],
+      "settings": { "file": "theme.txt", "fonts": ["dejavu_sans_16.pf2", "terminus-14.pf2"], "gfxmode": "1920x1080,auto" }
+    }
+  ]
+}

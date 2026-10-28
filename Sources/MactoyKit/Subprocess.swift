@@ -33,14 +33,22 @@ public enum Subprocess {
         // deadlocks once a command writes more than the pipe buffer
         // (64 KiB): it blocks on write, and we block on its exit.
         // `diskutil apfs list -plist` grows by ~900 bytes per volume.
+        //
+        // Each pipe gets its own Thread, not a GCD or async task. The calling
+        // thread blocks below, so with as many callers blocked at once as GCD
+        // has pool threads, a queued reader never starts: the child fills its
+        // pipe and sits there until its timeout, or run() gives up on the
+        // output. A dedicated thread never waits for a pool thread.
         let outBox = DataBox(), errBox = DataBox()
         let readers = DispatchGroup()
-        for (pipe, box) in [(outPipe, outBox), (errPipe, errBox)] {
+        for (name, pipe, box) in [("stdout", outPipe, outBox), ("stderr", errPipe, errBox)] {
             readers.enter()
-            DispatchQueue.global(qos: .utility).async {
+            let reader = Thread {
                 box.set((try? pipe.fileHandleForReading.readToEnd()) ?? Data())
                 readers.leave()
             }
+            reader.name = "mactoy.subprocess.\(name)"
+            reader.start()
         }
 
         if let timeout {

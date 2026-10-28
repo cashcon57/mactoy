@@ -1,0 +1,54 @@
+name: Themes
+
+# Checks boot-theme pull requests: the app's own tests (they also check the bundled copy
+# against the catalog), the catalog, every download against its checksum, the bundled copy
+# that ships in the app, and that the gallery page and the preview credits are regenerated.
+# The path lists are repeated under `pull_request` and `push` on purpose (no YAML anchors).
+on:
+  pull_request:
+    paths:
+      - "themes/**"
+      - "scripts/themes/**"
+      - "Sources/MactoyKit/Theme*.swift"
+      - "Sources/MactoyKit/VentoyConfigEditor.swift"
+      - ".github/workflows/themes.yml"
+  push:
+    branches: [main]
+    paths:
+      - "themes/**"
+      - "scripts/themes/**"
+      - "Sources/MactoyKit/Theme*.swift"
+      - "Sources/MactoyKit/VentoyConfigEditor.swift"
+      - ".github/workflows/themes.yml"
+  schedule:
+    # Weekly: catches a theme whose download changed upstream.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    # macOS 26: the app's Liquid Glass code needs the macOS 26 SDK (Xcode 26) to
+    # compile. The macos-15 image defaults to an older Xcode.
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Show the toolchain
+        run: swift --version && xcodebuild -version
+      # The main package's tests need no network and touch no disk; nothing else in CI runs them.
+      # One at a time: on a 3-core runner the 48-call Subprocess stress test holds every
+      # worker thread, and the tests that check timing would miss their windows.
+      - name: Test Mactoy
+        run: swift test --no-parallel
+      - name: Test the themes tool
+        run: swift test --package-path scripts/themes
+      # No --only: the bundled-folder byte checks run only with --download, and they need the whole catalog.
+      - name: Validate the catalog and download every theme
+        run: swift run --package-path scripts/themes mactoy-themes validate themes/catalog.json --download
+      - name: Check the gallery page is up to date
+        run: swift run --package-path scripts/themes mactoy-themes gallery themes/catalog.json themes/README.md --check
+      - name: Check the preview credits are up to date
+        run: swift run --package-path scripts/themes mactoy-themes credits themes/catalog.json themes/previews/CREDITS.md --check

@@ -64,6 +64,15 @@ until a release that addresses them.
   only way to abort is quitting the app or ejecting the USB, either
   of which leaves the disk partially written.
 
+## What Mactoy fetches for boot themes
+
+Mactoy fetches the theme list and theme previews from this repository
+on GitHub (raw.githubusercontent.com) when it starts and when you open
+the theme picker, and downloads a theme from its author's release or
+commit archive when you choose it. Nothing about you or your drives is
+sent. The checks on a theme download are listed under "Boot themes" in
+the [README's security model](README.md#security-model).
+
 ## Reporting a vulnerability
 
 Open a GitHub issue at <https://github.com/cashcon57/mactoy/issues>

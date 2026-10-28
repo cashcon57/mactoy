@@ -8,6 +8,8 @@ DerivedData/
 .build/
 *.dmg
 *.zip
+# Theme tests read these archives.
+!Tests/MactoyKitTests/Fixtures/*.zip
 .env
 .env.*
 !.env.example
