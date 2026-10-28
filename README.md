@@ -47,7 +47,7 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 
 ---
 
-## Status — v0.7.0 alpha
+## Status (v0.7.0)
 
 - [x] GPT + boot-image math ported from the Python proof-of-concept (cross-validated: Swift and Python produce bit-identical layouts for the same disk).
 - [x] Ventoy install flow end-to-end (download → extract → partition → write → format).
