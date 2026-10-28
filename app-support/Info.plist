@@ -10,6 +10,8 @@
     <string>Mactoy</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.mactoy.Mactoy</string>
     <key>CFBundleInfoDictionaryVersion</key>
