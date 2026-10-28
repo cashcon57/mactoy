@@ -15,8 +15,11 @@ public enum ThemeError: Error, Equatable, LocalizedError {
     case checksumMismatch(expected: String, actual: String)
     /// The server answered "not found" or "gone" for a catalog theme's download.
     case downloadGone(host: String, status: Int)
-    /// No answer from the server (or any answer but a file or "gone"): a connection problem, not a bad link.
+    /// No answer from the server (or any answer but a file, "gone" or "refused"): a connection problem, not a bad link.
     case serverUnreachable(host: String)
+    /// The server answered 403 or 429: it won't serve the file just now (a rate limit, say). The link is fine, and
+    /// so is the connection.
+    case serverRefused(host: String)
     case unreadableArchive(String)
     case rootNotFound(String)
     case missingFile(String)
@@ -28,6 +31,8 @@ public enum ThemeError: Error, Equatable, LocalizedError {
     case tooManyThemes(Int)
     /// A file that is none of a ZIP, a folder or a theme.txt.
     case unsupportedSource
+    /// A theme.txt picked from one of the user's top-level folders (named here), which isn't the theme's own folder.
+    case looseThemeFile(folder: String)
     case readOnlyVolume
     case writeFailed(String)
     case unknownTheme(String)
@@ -42,6 +47,7 @@ public enum ThemeError: Error, Equatable, LocalizedError {
         case .checksumMismatch: return "The theme's download has changed since it was added to Mactoy's theme list, so it wasn't used."
         case .downloadGone: return "The theme's download isn't where Mactoy's theme list says it should be."
         case .serverUnreachable(let host): return "Couldn't reach \(host). Check your internet connection and try again."
+        case .serverRefused(let host): return "\(host) turned the download away for now. Try again in a while."
         case .unreadableArchive(let why): return "Couldn't open the theme's ZIP file (\(why))."
         case .rootNotFound(let root): return "The theme download doesn't contain the folder \(root)."
         case .missingFile(let path): return "The theme is missing \(path)."
@@ -51,6 +57,7 @@ public enum ThemeError: Error, Equatable, LocalizedError {
         case .ambiguousThemes(let paths): return "This contains more than one theme (\(paths.joined(separator: ", "))). Choose the folder of the one you want."
         case .tooManyThemes(let n): return "This contains \(n) themes, which is too many to choose from here. Choose the folder of the one you want instead."
         case .unsupportedSource: return "Choose the theme's folder, its .zip file, or its theme.txt."
+        case .looseThemeFile(let folder): return "That theme.txt is loose in \(folder). Put the theme's files in their own folder, then choose that folder."
         case .readOnlyVolume: return "This drive is read-only on this Mac (an NTFS drive is, for example), so Mactoy can't add a theme to it."
         case .writeFailed(let why): return "Couldn't save the theme settings: \(why)"
         // The id is all this error knows; callers that know the theme's name say it instead.

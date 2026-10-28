@@ -16,9 +16,26 @@ struct ThemeDownloadErrorTests {
         #expect(URLSessionThemeTransport.themeError(forStatus: 200, host: "github.com") == nil)
     }
 
-    @Test("any other answer is a server that can't be used right now", arguments: [500, 403, 503, 429, 301, 304, 204, 0])
+    @Test("403 and 429 say the server turned the download away for now, not that the connection is down", arguments: [403, 429])
+    func refused(status: Int) {
+        #expect(URLSessionThemeTransport.themeError(forStatus: status, host: "github.com") == .serverRefused(host: "github.com"))
+        #expect(URLSessionThemeTransport.themeError(forStatus: status, host: "example.org") == .serverRefused(host: "example.org"))
+    }
+
+    @Test("any other answer is a server that can't be used right now", arguments: [500, 502, 503, 504, 401, 301, 304, 204, 400, 0])
     func unreachable(status: Int) {
         #expect(URLSessionThemeTransport.themeError(forStatus: status, host: "github.com") == .serverUnreachable(host: "github.com"))
+    }
+
+    @Test("every status maps to exactly one outcome: a file, gone, refused or unreachable")
+    func statusTable() {
+        let table: [(Int, ThemeError?)] = [
+            (200, nil),
+            (404, .downloadGone(host: "h", status: 404)), (410, .downloadGone(host: "h", status: 410)),
+            (403, .serverRefused(host: "h")), (429, .serverRefused(host: "h")),
+            (500, .serverUnreachable(host: "h")), (503, .serverUnreachable(host: "h")),
+        ]
+        for (status, expected) in table { #expect(URLSessionThemeTransport.themeError(forStatus: status, host: "h") == expected, "\(status)") }
     }
 
     @Test("a URLError for no connection or no answer is unreachable", arguments: [
@@ -47,7 +64,7 @@ struct ThemeDownloadErrorTests {
         let unavailable: [ThemeError] = [.downloadGone(host: "github.com", status: 404), .downloadGone(host: "github.com", status: 410),
                                          .checksumMismatch(expected: "a", actual: "b")]
         let available: [ThemeError] = [
-            .serverUnreachable(host: "github.com"), .downloadTooLarge(1), .fileTooLarge(1), .unreadableArchive("x"), .rootNotFound("x"),
+            .serverUnreachable(host: "github.com"), .serverRefused(host: "github.com"), .looseThemeFile(folder: "Downloads"), .downloadTooLarge(1), .fileTooLarge(1), .unreadableArchive("x"), .rootNotFound("x"),
             .missingFile("x"), .themeTooLarge(1), .tooManyFiles(1), .noThemeFile, .ambiguousThemes(["x"]), .tooManyThemes(21),
             .unsupportedSource, .readOnlyVolume, .writeFailed("x"), .unknownTheme("x"), .destinationExists("x"), .unsafeVolumeLayout("x"),
         ]
@@ -63,9 +80,14 @@ struct ThemeDownloadErrorTests {
             == "The theme's download has changed since it was added to Mactoy's theme list, so it wasn't used.")
         #expect(ThemeError.serverUnreachable(host: "github.com").errorDescription
             == "Couldn't reach github.com. Check your internet connection and try again.")
+        #expect(ThemeError.serverRefused(host: "github.com").errorDescription
+            == "github.com turned the download away for now. Try again in a while.")
+        #expect(ThemeError.looseThemeFile(folder: "Downloads").errorDescription
+            == "That theme.txt is loose in Downloads. Put the theme's files in their own folder, then choose that folder.")
         #expect(ThemeError.unknownTheme("tela").errorDescription == "“tela” is no longer in Mactoy's theme list. Choose another theme.")
         let all: [ThemeError] = [.downloadGone(host: "h", status: 410), .checksumMismatch(expected: "a", actual: "b"),
-                                 .serverUnreachable(host: "h"), .unknownTheme("x"), .tooManyThemes(21), .unsupportedSource,
+                                 .serverUnreachable(host: "h"), .serverRefused(host: "h"), .looseThemeFile(folder: "Desktop"),
+                                 .unknownTheme("x"), .tooManyThemes(21), .unsupportedSource,
                                  .ambiguousThemes(["a/theme.txt", "b/theme.txt"])]
         for error in all {
             let text = error.errorDescription ?? ""

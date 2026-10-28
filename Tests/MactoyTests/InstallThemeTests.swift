@@ -203,12 +203,16 @@ struct InstallThemeTests {
         let head = "Install complete. The boot theme wasn't added: "
         let tail = " You can pick another theme from Manage Disk."
         // The exact text for a download that is gone.
-        let gone = ThemeUnavailableCopy.postInstallResult(for: ThemeError.downloadGone(host: "github.com", status: 404), name: "Tela")
+        let gone = ThemeUnavailableCopy.postInstallResult(for: ThemeError.downloadGone(host: "github.com", status: 404), choice: .catalog(id: "tela"), name: "Tela")
         #expect(await message(after: gone) == "Install complete. The boot theme wasn't added: Mactoy couldn't find “Tela” where its theme list says it should be. You can pick another theme from Manage Disk.")
-        let changed = ThemeUnavailableCopy.postInstallResult(for: ThemeError.checksumMismatch(expected: "a", actual: "b"), name: "Tela")
+        let changed = ThemeUnavailableCopy.postInstallResult(for: ThemeError.checksumMismatch(expected: "a", actual: "b"), choice: .catalog(id: "tela"), name: "Tela")
         #expect(await message(after: changed) == head + "“Tela” has changed since it was added to Mactoy's theme list, so Mactoy didn't use it." + tail)
-        let removed = ThemeUnavailableCopy.postInstallResult(for: ThemeError.unknownTheme("tela"), name: "Tela")
+        let removed = ThemeUnavailableCopy.postInstallResult(for: ThemeError.unknownTheme("tela"), choice: .catalog(id: "tela"), name: "Tela")
         #expect(await message(after: removed) == head + "“Tela” is no longer in Mactoy's theme list." + tail)
+        // A theme of the user's own was removed from My Themes: no list, and no internal id.
+        let savedGone = ThemeUnavailableCopy.postInstallResult(for: ThemeError.unknownTheme("custom-night-sky-1a2b3c4d"),
+                                                               choice: .custom(id: "custom-night-sky-1a2b3c4d"), name: "custom-night-sky-1a2b3c4d")
+        #expect(await message(after: savedGone) == head + "That theme is no longer in My Themes." + tail)
         // The same punctuation rules as any other problem.
         #expect(await message(after: .themeUnavailable(problem: "it is gone")) == head + "it is gone." + tail)
         #expect(await message(after: .themeUnavailable(problem: "it is gone. \n")) == head + "it is gone." + tail)

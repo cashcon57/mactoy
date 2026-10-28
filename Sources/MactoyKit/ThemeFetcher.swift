@@ -54,13 +54,16 @@ public struct URLSessionThemeTransport: ThemeTransport {
 
     /// What an HTTP status means for a theme download; nil for 200, the only
     /// answer that carries a file. 404 and 410 say the file isn't there (anymore),
-    /// which is for the catalog's maintainers to fix. Every other answer is treated
-    /// as a server that can't be used right now: a 403 or 500 usually passes by
-    /// itself, and the user can't tell it apart from being offline.
+    /// which is for the catalog's maintainers to fix. 403 and 429 say the server is
+    /// turning requests away for now (a rate limit, say), which passes by itself and
+    /// is not the user's connection. Every other answer is treated as a server that
+    /// can't be used right now: a 500 usually passes by itself too, and the user
+    /// can't tell it apart from being offline.
     static func themeError(forStatus status: Int, host: String) -> ThemeError? {
         switch status {
         case 200: return nil
         case 404, 410: return .downloadGone(host: host, status: status)
+        case 403, 429: return .serverRefused(host: host)
         default: return .serverUnreachable(host: host)
         }
     }

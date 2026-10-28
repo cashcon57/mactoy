@@ -19,11 +19,20 @@ struct ThemeChoiceSheet: View {
                 .font(.callout).foregroundStyle(.secondary)
             List(pending.choices, selection: $selection) { choice in
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(choice.name).font(.headline).lineLimit(1)
-                    Text(choice.location).font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Text(choice.name).font(.headline).lineLimit(1)
+                        if choice.isForVentoy {
+                            Text("Made for Ventoy").font(.caption2).lineLimit(1).fixedSize()
+                                .padding(.horizontal, 5).padding(.vertical, 2)
+                                .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+                        }
+                    }
+                    // Where it is in the download, so a plain GRUB copy and a Ventoy one of the same theme differ.
+                    Text(choice.path).font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle)
                 }
                 .padding(.vertical, 2)
+                .help(choice.folder)
             }
             .frame(minHeight: 220)
             HStack {

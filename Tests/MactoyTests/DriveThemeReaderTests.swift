@@ -129,8 +129,6 @@ struct DriveThemeCopyTests {
         #expect(DriveThemeCopy.saveFailed("No space.") == "Couldn't save this drive's theme to My Themes, so the drive was left as it was. No space.")
         #expect(DriveThemeCopy.changeFailed(savedName: "Mine", reason: "Read-only.") == "Saved “Mine” to My Themes. The drive's theme wasn't changed: Read-only.")
         #expect(DriveThemeCopy.changeFailed(savedName: nil, reason: "Read-only.") == "Read-only.")
-        // When the theme can't be downloaded, the alert has the reason, so this only says what is true of the drive.
-        #expect(DriveThemeCopy.savedButUnchanged(name: "Mine") == "Saved “Mine” to My Themes. The drive's theme wasn't changed.")
     }
 
     @Test("no wording uses an em-dash")

@@ -242,12 +242,13 @@ final class ThemeStore: ObservableObject {
     func startImport(from url: URL) async throws -> ThemeImportStart {
         let opened = try await Task.detached(priority: .userInitiated) { try CustomThemeImporter.open(url) }.value
         if opened.needsChoice { return .needsChoice(PendingThemeChoice(opened: opened)) }
-        return .imported(try await saveImport(opened, themeRoot: nil))
+        return .imported(try await saveImport(opened, themeRoot: nil, name: nil))
     }
 
-    /// Adds the theme the user picked from a file that holds several.
+    /// Adds the theme the user picked from a file that holds several. It is saved under the name the
+    /// choice list showed, not the folder's raw name, so My Themes calls it what the user picked.
     func finishImport(_ pending: PendingThemeChoice, choosing choice: CustomThemeImporter.Choice) async throws -> ThemeChoice {
-        try await saveImport(pending.opened, themeRoot: choice.folder)
+        try await saveImport(pending.opened, themeRoot: choice.folder, name: choice.name)
     }
 
     /// For a caller that has no way to ask which theme: a file with several is an error naming them.
@@ -258,7 +259,8 @@ final class ThemeStore: ObservableObject {
         }
     }
 
-    private func saveImport(_ opened: CustomThemeImporter.Opened, themeRoot: String?) async throws -> ThemeChoice {
+    /// `name` is what to save it as; nil keeps the importer's (the folder's or file's name).
+    private func saveImport(_ opened: CustomThemeImporter.Opened, themeRoot: String?, name: String?) async throws -> ThemeChoice {
         let library = self.library
         let (saved, skipped) = try await Task.detached(priority: .userInitiated) { () throws -> (SavedTheme, [String]) in
             // The importer's working copy lives in a folder of its own, deleted when done:
@@ -266,7 +268,7 @@ final class ThemeStore: ObservableObject {
             let work = FileManager.default.temporaryDirectory.appendingPathComponent("mactoy-import-\(UUID().uuidString)", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: work) }
             let imported = try CustomThemeImporter.importTheme(opened, themeRoot: themeRoot, cacheRoot: work)
-            let saved = try library.save(folder: imported.directory, name: imported.name, settings: imported.settings,
+            let saved = try library.save(folder: imported.directory, name: name ?? imported.name, settings: imported.settings,
                                          origin: "Added from a file")
             return (saved, imported.skippedFiles)
         }.value
@@ -459,12 +461,12 @@ final class ThemeStore: ObservableObject {
             }
             return .applied(warnings: try await write(theme, to: volume))
         } catch {
-            return ThemeUnavailableCopy.postInstallResult(for: error, name: displayName(for: choice))
+            return ThemeUnavailableCopy.postInstallResult(for: error, choice: choice, name: displayName(for: choice))
         }
     }
 
     /// What to tell the user about `error`, from changing the drive's theme to `choice`.
     func message(for error: any Error, choice: ThemeChoice) -> String {
-        ThemeUnavailableCopy.message(for: error, themeName: displayName(for: choice))
+        ThemeUnavailableCopy.message(for: error, choice: choice, themeName: displayName(for: choice))
     }
 }

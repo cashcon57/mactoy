@@ -751,11 +751,120 @@ struct CustomThemeImporterTests {
         // Other themes below it don't make it ambiguous: this one was named.
         try put([("more/theme.txt", themeText)], in: src)
         #expect(try CustomThemeImporter.importTheme(from: src.appendingPathComponent("theme.txt"), cacheRoot: tempDir()).name == "Picked Theme")
-        // A link to the file reads the folder the file is really in.
-        let link = tempDir().appendingPathComponent("theme.txt")
-        try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+    }
+
+    @Test("7. a theme.txt that is itself a link is not followed: it reads as no theme file")
+    func shapeLinkedThemeFile() throws {
+        let src = tempDir().appendingPathComponent("Picked Theme")
+        try put([("theme.txt", themeText), ("bg.png", "x")], in: src)
+        let elsewhere = tempDir()
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        let link = elsewhere.appendingPathComponent("theme.txt")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: src.appendingPathComponent("theme.txt"))
-        #expect(try CustomThemeImporter.importTheme(from: link, cacheRoot: tempDir()).name == "Picked Theme")
+        #expect(throws: ThemeError.noThemeFile) { _ = try CustomThemeImporter.importTheme(from: link, cacheRoot: tempDir()) }
+        // Not even when the folder it sits in has a theme of its own below it.
+        try put([("nested/theme.txt", themeText)], in: elsewhere)
+        #expect(throws: ThemeError.noThemeFile) { _ = try CustomThemeImporter.importTheme(from: link, cacheRoot: tempDir()) }
+        // A dangling link, and a name with nothing behind it, read the same way.
+        let dangling = tempDir().appendingPathComponent("theme.txt")
+        try FileManager.default.createDirectory(at: dangling.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: dangling, withDestinationURL: tempDir().appendingPathComponent("gone/theme.txt"))
+        #expect(throws: ThemeError.noThemeFile) { _ = try CustomThemeImporter.importTheme(from: dangling, cacheRoot: tempDir()) }
+        #expect(throws: ThemeError.noThemeFile) { _ = try CustomThemeImporter.importTheme(from: tempDir().appendingPathComponent("theme.txt"), cacheRoot: tempDir()) }
+    }
+
+    @Test("7. only the folder holding theme.txt is resolved: a link to that folder is followed")
+    func shapeThemeFileInLinkedFolder() throws {
+        let src = tempDir().appendingPathComponent("Real Theme")
+        try put([("theme.txt", themeText), ("bg.png", "x")], in: src)
+        let linkedFolder = tempDir().appendingPathComponent("Alias")
+        try FileManager.default.createDirectory(at: linkedFolder.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linkedFolder, withDestinationURL: src)
+        let imported = try CustomThemeImporter.importTheme(from: linkedFolder.appendingPathComponent("theme.txt"), cacheRoot: tempDir())
+        // Named for the folder the file is really in, as before.
+        #expect(imported.name == "Real Theme")
+        #expect(listing(imported.directory) == ["bg.png", "theme.txt"])
+    }
+
+    /// A stand-in for the user's home, so no test looks at the real one.
+    private func fakeHome() throws -> URL {
+        let home = tempDir().appendingPathComponent("home", isDirectory: true)
+        for name in ["Downloads", "Desktop", "Documents", "Music"] {
+            try FileManager.default.createDirectory(at: home.appendingPathComponent(name), withIntermediateDirectories: true)
+        }
+        return home
+    }
+
+    @Test("7. a theme.txt loose in the home folder, Downloads, Desktop or Documents is refused, naming the folder")
+    func shapeLooseThemeFile() throws {
+        let home = try fakeHome()
+        let top = CustomThemeImporter.topFolders(home: home)
+        let cases: [(String, String)] = [("", "your home folder"), ("Downloads", "Downloads"), ("Desktop", "Desktop"), ("Documents", "Documents")]
+        for (folder, name) in cases {
+            let dir = folder.isEmpty ? home : home.appendingPathComponent(folder)
+            // Other things the user keeps there must not be read: the refusal comes first.
+            try put([("theme.txt", themeText), ("tax-return.png", "private")], in: dir)
+            let file = dir.appendingPathComponent("theme.txt")
+            #expect(throws: ThemeError.looseThemeFile(folder: name), "\(name)") { _ = try CustomThemeImporter.open(file, workRoot: tempDir(), topFolders: top) }
+            #expect(throws: ThemeError.looseThemeFile(folder: name), "\(name)") {
+                _ = try CustomThemeImporter.open(file, workRoot: tempDir(), rootKnown: true, topFolders: top)
+            }
+        }
+        #expect(ThemeError.looseThemeFile(folder: "Downloads").errorDescription
+            == "That theme.txt is loose in Downloads. Put the theme's files in their own folder, then choose that folder.")
+        // The message names the folder, not its path.
+        #expect(!(ThemeError.looseThemeFile(folder: "your home folder").errorDescription ?? "").contains(home.path))
+    }
+
+    @Test("7. a theme.txt in a folder of its own is fine, in Downloads or anywhere else")
+    func shapeThemeFileInOwnFolder() throws {
+        let home = try fakeHome()
+        let top = CustomThemeImporter.topFolders(home: home)
+        try put([("theme.txt", themeText), ("bg.png", "x")], in: home.appendingPathComponent("Downloads/My Theme"))
+        try put([("theme.txt", themeText)], in: home.appendingPathComponent("Music"))
+        // A folder that only has a top folder's name is not that folder.
+        try put([("theme.txt", themeText)], in: tempDir().appendingPathComponent("Downloads"))
+        for file in [home.appendingPathComponent("Downloads/My Theme/theme.txt"), home.appendingPathComponent("Music/theme.txt"),
+                     tempDir().appendingPathComponent("Downloads/theme.txt")] {
+            if (try? CustomThemeImporter.open(file, workRoot: tempDir(), topFolders: top)) == nil && FileManager.default.fileExists(atPath: file.path) {
+                Issue.record("refused \(file.path)")
+            }
+        }
+        let opened = try CustomThemeImporter.open(home.appendingPathComponent("Downloads/My Theme/theme.txt"), workRoot: tempDir(), topFolders: top)
+        #expect(!opened.needsChoice)
+        // Picking the Downloads folder itself is a folder pick, which this check is not about.
+        #expect((try? CustomThemeImporter.open(home.appendingPathComponent("Downloads/My Theme"), workRoot: tempDir(), topFolders: top)) != nil)
+    }
+
+    @Test("7. which folders count as the user's top-level ones, by path")
+    func looseFolderNames() throws {
+        let home = try fakeHome()
+        let top = CustomThemeImporter.topFolders(home: home)
+        func name(_ url: URL) -> String? { CustomThemeImporter.looseFolderName(url, in: top) }
+        #expect(name(home) == "your home folder")
+        #expect(name(home.appendingPathComponent("Downloads")) == "Downloads")
+        #expect(name(home.appendingPathComponent("Desktop/")) == "Desktop")
+        #expect(name(home.appendingPathComponent("Documents/../Documents")) == "Documents")
+        #expect(name(URL(fileURLWithPath: "/")) == "the top level of the disk")
+        // On the disk's own terms, case does not tell folders apart.
+        #expect(name(URL(fileURLWithPath: home.path.uppercased() + "/DOWNLOADS")) == "Downloads" || !FileManager.default.fileExists(atPath: home.path.uppercased()))
+        #expect(name(home.appendingPathComponent("downloads")) == "Downloads")
+        // Below them, or beside them, is somewhere else.
+        #expect(name(home.appendingPathComponent("Downloads/Themes")) == nil)
+        #expect(name(home.appendingPathComponent("Music")) == nil)
+        #expect(name(home.deletingLastPathComponent()) == nil)
+        #expect(name(URL(fileURLWithPath: "/Volumes")) == nil)
+        #expect(name(URL(fileURLWithPath: "/tmp")) == nil)
+        // A Downloads folder that is a link to somewhere else is still Downloads.
+        let moved = tempDir().appendingPathComponent("Moved", isDirectory: true)
+        try FileManager.default.createDirectory(at: moved, withIntermediateDirectories: true)
+        let relocated = tempDir().appendingPathComponent("home2", isDirectory: true)
+        try FileManager.default.createDirectory(at: relocated, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: relocated.appendingPathComponent("Downloads"), withDestinationURL: moved)
+        #expect(CustomThemeImporter.looseFolderName(moved, in: CustomThemeImporter.topFolders(home: relocated)) == "Downloads")
+        // The defaults are the real user's, and are never read here.
+        let real = CustomThemeImporter.topFolders().map(\.name)
+        #expect(real == ["your home folder", "Downloads", "Desktop", "Documents", "the top level of the disk"])
     }
 
     @Test("7. any other .txt file is refused with a clear message")
@@ -787,10 +896,16 @@ struct CustomThemeImporterTests {
 
         let opened = try CustomThemeImporter.open(zip)
         #expect(opened.needsChoice)
-        #expect(opened.choices.map(\.folder) == expected.map { ThemeAssembler.parent($0) })
-        #expect(opened.choices.map(\.name) == ["Catppuccin Latte Grub Theme", "Catppuccin Mocha Grub Theme", "Catppuccin Latte", "Catppuccin Mocha"])
-        #expect(opened.choices.map(\.location) == ["src/catppuccin-latte-grub-theme", "src/catppuccin-mocha-grub-theme",
-                                                   "latte/catppuccin-latte", "mocha/catppuccin-mocha"])
+        // The list puts the ones made for Ventoy first, then goes by name...
+        #expect(opened.choices.map(\.name) == ["Catppuccin Latte", "Catppuccin Mocha", "Catppuccin Latte Grub Theme", "Catppuccin Mocha Grub Theme"])
+        #expect(opened.choices.map(\.isForVentoy) == [true, true, false, false])
+        #expect(opened.choices.map(\.folder) == ["\(top)/ventoy/src/latte/catppuccin-latte", "\(top)/ventoy/src/mocha/catppuccin-mocha",
+                                                 "\(top)/src/catppuccin-latte-grub-theme", "\(top)/src/catppuccin-mocha-grub-theme"])
+        // ...and shows where each is in the download, without the folder they all share.
+        #expect(opened.choices.map(\.path) == ["ventoy/src/latte/catppuccin-latte", "ventoy/src/mocha/catppuccin-mocha",
+                                               "src/catppuccin-latte-grub-theme", "src/catppuccin-mocha-grub-theme"])
+        // The error for a caller that can't ask still names them as they were found.
+        #expect(opened.themeFilePaths == expected)
 
         // The folder under the Ventoy tree, which isn't one of the shallowest, works too.
         let mocha = try CustomThemeImporter.importTheme(from: zip, themeRoot: "\(top)/ventoy/src/mocha/catppuccin-mocha", cacheRoot: tempDir())
@@ -840,7 +955,8 @@ struct CustomThemeImporterTests {
         let top = tempDir().appendingPathComponent("grub-top")
         try put(catppuccinLike(top: "x").map { (String($0.0.dropFirst(2)), $0.1) }, in: top)
         let opened = try CustomThemeImporter.open(top)
-        #expect(opened.choices.map(\.folder).last == "ventoy/src/mocha/catppuccin-mocha")
+        #expect(opened.choices.map(\.folder).contains("ventoy/src/mocha/catppuccin-mocha"))
+        #expect(opened.choices.first?.folder == "ventoy/src/latte/catppuccin-latte", "made for Ventoy, so first")
         let mocha = try CustomThemeImporter.importTheme(opened, themeRoot: "ventoy/src/mocha/catppuccin-mocha", cacheRoot: tempDir())
         #expect(mocha.settings.ventoyColor == "#89b4fa")
     }
@@ -913,9 +1029,65 @@ struct CustomThemeImporterTests {
         #expect(CustomThemeImporter.readableName("MapleMono-CN") == "MapleMono CN")
         #expect(CustomThemeImporter.readableName("a--b") == "A B")
         let choices = CustomThemeImporter.choices(for: ["one", "a/b/c/theme-x", "x/\u{202E}evil\u{200B}-name"])
-        #expect(choices.map(\.name) == ["One", "Theme X", "Evil Name"])
-        #expect(choices.map(\.location) == ["one", "c/theme-x", "x/evil-name"])
-        #expect(choices.map(\.id) == ["one", "a/b/c/theme-x", "x/\u{202E}evil\u{200B}-name"])
+        #expect(choices.map(\.name) == ["Evil Name", "One", "Theme X"])
+        #expect(choices.map(\.path) == ["x/evil-name", "one", "a/b/c/theme-x"])
+        #expect(choices.map(\.id) == ["x/\u{202E}evil\u{200B}-name", "one", "a/b/c/theme-x"])
+        // A folder with nothing readable in its name still has a name to show.
+        #expect(CustomThemeImporter.choices(for: ["a/---", "b/theme"]).map(\.name).contains("---"))
+    }
+
+    @Test("8. a theme is made for Ventoy when a ventoy folder is in its path, in any case, or a ventoy.json points at it")
+    func shapeMadeForVentoy() {
+        func forVentoy(_ folder: String, _ files: [ThemeSourceFile] = []) -> Bool { CustomThemeImporter.isMadeForVentoy(folder, in: files) }
+        #expect(forVentoy("ventoy/mocha"))
+        #expect(forVentoy("pack/Ventoy/mocha"))
+        #expect(forVentoy("pack/VENTOY"))
+        #expect(forVentoy("pack/themes/ventoy"))
+        // A folder merely containing the word is not it.
+        #expect(!forVentoy("pack/ventoy-themes/mocha"))
+        #expect(!forVentoy("pack/not_ventoy/mocha"))
+        #expect(!forVentoy("pack/src/mocha"))
+        // A ventoy.json that names a file in the folder makes it Ventoy's, wherever the folder is.
+        let json = ThemeSourceFile(path: "pack/ventoy.json", data: Data(##"{"theme":{"file":"/ventoy/mocha/theme.txt"}}"##.utf8))
+        let theme = ThemeSourceFile(path: "pack/mocha/theme.txt", data: Data("x".utf8))
+        let plain = ThemeSourceFile(path: "pack/plain/theme.txt", data: Data("x".utf8))
+        #expect(forVentoy("pack/mocha", [json, theme, plain]))
+        #expect(!forVentoy("pack/plain", [json, theme, plain]), "the json is about the other theme")
+        #expect(!forVentoy("pack/mocha", [theme, plain]), "no json, no path hint")
+        let unrelated = ThemeSourceFile(path: "pack/ventoy.json", data: Data(##"{"control":[]}"##.utf8))
+        #expect(!forVentoy("pack/mocha", [unrelated, theme]))
+        let broken = ThemeSourceFile(path: "pack/ventoy.json", data: Data("not json".utf8))
+        #expect(!forVentoy("pack/mocha", [broken, theme]))
+    }
+
+    @Test("8. Ventoy-made themes are listed first, then by name, whatever order they were found in")
+    func shapeChoiceOrder() {
+        let json = ThemeSourceFile(path: "pack/ventoy.json", data: Data(##"{"theme":{"file":"/ventoy/zed/theme.txt"}}"##.utf8))
+        let files = [json, ThemeSourceFile(path: "pack/zed/theme.txt", data: Data("x".utf8))]
+        let choices = CustomThemeImporter.choices(for: ["pack/b-plain", "pack/Ventoy/c", "pack/a-plain", "pack/zed", "pack/ventoy/a", "pack/theme-10", "pack/theme-9"], in: files)
+        #expect(choices.map(\.folder) == ["pack/ventoy/a", "pack/Ventoy/c", "pack/zed", "pack/a-plain", "pack/b-plain", "pack/theme-9", "pack/theme-10"])
+        #expect(choices.map(\.isForVentoy) == [true, true, true, false, false, false, false])
+        // The same name twice goes by path, so the order is the same however the files came.
+        let twins = CustomThemeImporter.choices(for: ["x/mocha", "a/mocha"])
+        #expect(twins.map(\.folder) == ["a/mocha", "x/mocha"])
+        #expect(CustomThemeImporter.choices(for: ["a/mocha", "x/mocha"]).map(\.folder) == twins.map(\.folder))
+    }
+
+    @Test("8. the one top folder every theme shares is left off the path shown, and no other")
+    func shapeSharedTopFolder() {
+        #expect(CustomThemeImporter.sharedTopFolder(of: ["grub-1/src/a", "grub-1/ventoy/b"]) == "grub-1")
+        #expect(CustomThemeImporter.sharedTopFolder(of: ["grub-1/a", "grub-1/b"]) == "grub-1")
+        // Not shared by all, or a theme is the top folder itself, or there is nothing above the themes.
+        #expect(CustomThemeImporter.sharedTopFolder(of: ["grub-1/a", "grub-2/b"]) == nil)
+        #expect(CustomThemeImporter.sharedTopFolder(of: ["grub-1", "grub-1/b"]) == nil)
+        #expect(CustomThemeImporter.sharedTopFolder(of: ["a", "b"]) == nil)
+        #expect(CustomThemeImporter.sharedTopFolder(of: []) == nil)
+        // Only one level goes: the rest says where the theme is.
+        let choices = CustomThemeImporter.choices(for: ["top/mid/a", "top/mid/b"])
+        #expect(choices.map(\.path) == ["mid/a", "mid/b"])
+        #expect(choices.map(\.folder) == ["top/mid/a", "top/mid/b"], "what is imported is still the whole folder")
+        // Without a shared top folder the whole path shows.
+        #expect(CustomThemeImporter.choices(for: ["x/a", "y/a"]).map(\.path) == ["x/a", "y/a"])
     }
 
     @Test("a shallower theme still wins over deeper ones, and a tie lists every theme")

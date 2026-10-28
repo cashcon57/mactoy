@@ -141,6 +141,16 @@ enum ThemeUnavailableCopy {
         "“\(name)” is no longer in Mactoy's theme list. Choose another theme."
     }
 
+    /// A theme in My Themes that was removed while it was still the pick. Its id is an internal one, and it was never in
+    /// Mactoy's theme list, so neither is said.
+    static let savedThemeRemoved = "That theme is no longer in My Themes. Choose another theme."
+
+    /// Under the Install tab's theme name, when the chosen catalog theme's download is known to be unavailable. Nil otherwise.
+    static func installNote(for choice: ThemeChoice, unavailable: [String: ThemeUnavailable]) -> String? {
+        guard case .catalog(let id) = choice, unavailable[id] != nil else { return nil }
+        return "This theme's download isn't available right now. Choose another, or add it from a file."
+    }
+
     /// For the end of "The boot theme wasn't added: ...", where the theme's own name is the subject.
     static func postInstallProblem(for reason: ThemeUnavailable.Reason, name: String) -> String {
         switch reason {
@@ -153,21 +163,68 @@ enum ThemeUnavailableCopy {
         "“\(name)” is no longer in Mactoy's theme list."
     }
 
-    /// What to tell the user about a failed theme change. Only the
-    /// theme's id is known to the error, so a name is put in its place.
-    static func message(for error: any Error, themeName: String) -> String {
-        if case ThemeError.unknownTheme = error { return unknownTheme(name: themeName) }
+    static let postInstallSavedThemeRemoved = "That theme is no longer in My Themes."
+
+    /// What to tell the user about a failed change to `choice`. Only the theme's id is known to the
+    /// error, so the theme's name is put in its place, and a theme of the user's own is told without
+    /// either: it was never in Mactoy's theme list, and its id is not for people.
+    static func message(for error: any Error, choice: ThemeChoice, themeName: String) -> String {
+        if case ThemeError.unknownTheme = error {
+            if case .custom = choice { return savedThemeRemoved }
+            return unknownTheme(name: themeName)
+        }
         return error.localizedDescription
     }
 
-    /// How a fresh install's theme step ended when it threw `error` for the theme called `name`.
+    /// How a fresh install's theme step ended when it threw `error` for `choice`, the theme called `name`.
     /// A theme that can't be used says so with its name, and the install message then points to
     /// another theme instead of trying again; any other failure is told as it is.
-    static func postInstallResult(for error: any Error, name: String) -> PostInstallThemeResult {
+    static func postInstallResult(for error: any Error, choice: ThemeChoice, name: String) -> PostInstallThemeResult {
         if let reason = ThemeUnavailable.reason(of: error) {
             return .themeUnavailable(problem: postInstallProblem(for: reason, name: name))
         }
-        if case ThemeError.unknownTheme = error { return .themeUnavailable(problem: postInstallUnknownTheme(name: name)) }
+        if case ThemeError.unknownTheme = error {
+            if case .custom = choice { return .themeUnavailable(problem: postInstallSavedThemeRemoved) }
+            return .themeUnavailable(problem: postInstallUnknownTheme(name: name))
+        }
         return .notApplied(problem: error.localizedDescription)
+    }
+}
+
+/// The dialog for a catalog theme that can't be downloaded: which theme, and what is wrong with its download.
+struct UnavailableAlert {
+    let entry: ThemeEntry
+    let problem: ThemeUnavailable
+}
+
+/// How a change to a drive's theme that threw is told in Manage Disk.
+struct ThemeChangeFailure {
+    /// The note under the section. Always there, whatever else is shown: a dialog asked for while another is
+    /// still closing can be dropped, and then this is all the user would see.
+    let message: String
+    let isError: Bool
+    /// The dialog that explains a download that is gone or changed, with the ways forward. Nil for any other failure.
+    let alert: UnavailableAlert?
+
+    /// `savedName` is the drive's old theme, when a copy of it was kept before the change failed. `catalog`
+    /// and `unavailable` are the store's (`ThemeStore.catalog` and `unavailableThemes`), and `themeName` is what
+    /// the store calls `choice`.
+    init(error: any Error, choice: ThemeChoice, savedName: String?, themeName: String,
+         catalog: [ThemeEntry], unavailable: [String: ThemeUnavailable]) {
+        message = DriveThemeCopy.changeFailed(
+            savedName: savedName, reason: ThemeUnavailableCopy.message(for: error, choice: choice, themeName: themeName))
+        isError = true
+        alert = Self.alert(for: error, choice: choice, catalog: catalog, unavailable: unavailable)
+    }
+
+    /// The dialog for `error`, when it says the download of the catalog theme in `choice` is gone or changed.
+    /// What the store recorded for that download is used when it is there: it is about the download that failed,
+    /// and the store drops it as soon as the list names another. Only without it is the entry the list has now asked.
+    static func alert(for error: any Error, choice: ThemeChoice, catalog: [ThemeEntry],
+                      unavailable: [String: ThemeUnavailable]) -> UnavailableAlert? {
+        guard case .catalog(let id) = choice, ThemeUnavailable.reason(of: error) != nil,
+              let entry = catalog.first(where: { $0.id == id }) else { return nil }
+        if let recorded = unavailable[id], recorded.describes(entry) { return UnavailableAlert(entry: entry, problem: recorded) }
+        return ThemeUnavailable(error: error, entry: entry).map { UnavailableAlert(entry: entry, problem: $0) }
     }
 }

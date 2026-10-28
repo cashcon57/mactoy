@@ -30,8 +30,11 @@ public enum CustomThemeImporter {
         public let folder: String
         /// The folder's name made readable: "catppuccin-mocha" becomes "Catppuccin Mocha".
         public let name: String
-        /// The last two folders of the path, so two themes with one name can be told apart.
-        public let location: String
+        /// The whole folder path, minus the one top folder every theme shares (a download's `grub-<sha>/`),
+        /// so a pack's plain GRUB copy of a theme and its Ventoy one can be told apart.
+        public let path: String
+        /// Made for Ventoy: a `ventoy` folder is somewhere in its path, or a `ventoy.json` in the source points at it.
+        public let isForVentoy: Bool
         public var id: String { folder }
     }
 
@@ -43,13 +46,15 @@ public enum CustomThemeImporter {
         let baseName: String
         /// The theme to use when one clearly wins; nil when the user has to choose.
         let singleRoot: String?
-        /// Every theme folder, when the user has to choose; empty otherwise.
+        /// Every theme folder in the order they were found (shallowest first), when the user has to choose; empty otherwise.
+        let themeFolders: [String]
+        /// Every theme folder as a list shows it, ones made for Ventoy first and then by name; empty unless the user has to choose.
         public let choices: [Choice]
 
         public var needsChoice: Bool { singleRoot == nil }
 
-        /// The theme.txt of each choice, which is how `ThemeError.ambiguousThemes` names them.
-        public var themeFilePaths: [String] { choices.map { $0.folder + "/theme.txt" } }
+        /// The theme.txt of each theme folder, which is how `ThemeError.ambiguousThemes` names them.
+        public var themeFilePaths: [String] { themeFolders.map { $0 + "/theme.txt" } }
     }
 
     // MARK: entry points
@@ -77,8 +82,9 @@ public enum CustomThemeImporter {
     }
 
     /// `rootKnown`: the caller names the theme folder, so how many themes there are doesn't matter
-    /// and the result is only for `importTheme(_:themeRoot:)`.
-    static func open(_ source: URL, workRoot: URL, rootKnown: Bool = false) throws -> Opened {
+    /// and the result is only for `importTheme(_:themeRoot:)`. `topFolders` are the folders a loose
+    /// `theme.txt` is refused in (see `looseFolderName`); tests name their own, and nil means the user's.
+    static func open(_ source: URL, workRoot: URL, rootKnown: Bool = false, topFolders: [TopFolder]? = nil) throws -> Opened {
         let fm = FileManager.default
         var isDirectory: ObjCBool = false
         let isFolder = fm.fileExists(atPath: source.path, isDirectory: &isDirectory) && isDirectory.boolValue
@@ -89,8 +95,12 @@ public enum CustomThemeImporter {
             read = try ThemeAssembler.files(fromFolder: source.resolvingSymlinksInPath())
             baseName = source.lastPathComponent
         } else if source.lastPathComponent == "theme.txt" {
-            // The theme file itself stands for its folder.
-            let folder = source.resolvingSymlinksInPath().deletingLastPathComponent()
+            // The theme file itself stands for its folder. Only the folder holding it is resolved: a theme.txt
+            // that is a link points somewhere else, and nothing it points to is read (as for every file in a theme).
+            guard ThemeInstaller.fileType(source) == .typeRegular else { throw ThemeError.noThemeFile }
+            let folder = source.deletingLastPathComponent().resolvingSymlinksInPath()
+            // Its folder is all that is read, and in Downloads that is everything the user has put there.
+            if let name = looseFolderName(folder, in: topFolders ?? Self.topFolders()) { throw ThemeError.looseThemeFile(folder: name) }
             read = try ThemeAssembler.files(fromFolder: folder)
             baseName = folder.lastPathComponent
         } else if source.pathExtension.lowercased() == "zip" || hasZipSignature(source) || !fm.fileExists(atPath: source.path) {
@@ -103,17 +113,45 @@ public enum CustomThemeImporter {
         }
         // Finder's ZIPs carry a __MACOSX copy of the tree; it must neither be a theme nor change the digest.
         var files = read.filter { !isJunk($0.path) }
-        if rootKnown { return Opened(files: files, baseName: baseName, singleRoot: nil, choices: []) }
+        if rootKnown { return Opened(files: files, baseName: baseName, singleRoot: nil, themeFolders: [], choices: []) }
         switch try findThemes(in: files.map(\.path)) {
         case .one(let root):
-            return Opened(files: files, baseName: baseName, singleRoot: root, choices: [])
+            return Opened(files: files, baseName: baseName, singleRoot: root, themeFolders: [], choices: [])
         case .several(let folders):
             // What is held while the user chooses: the themes, and the ventoy.json files that describe them.
             files = files.filter { file in
                 isVentoyJSON(file.path) || folders.contains { file.path.hasPrefix($0 + "/") }
             }
-            return Opened(files: files, baseName: baseName, singleRoot: nil, choices: choices(for: folders))
+            return Opened(files: files, baseName: baseName, singleRoot: nil, themeFolders: folders,
+                          choices: choices(for: folders, in: files))
         }
+    }
+
+    // MARK: a theme.txt picked on its own
+
+    /// A folder of the user's own, with what to call it in a message.
+    struct TopFolder {
+        let name: String
+        let url: URL
+    }
+
+    /// The folders a theme.txt must not sit loose in: the user's home, Downloads, Desktop and Documents, and the
+    /// disk's own top level. Picking a theme.txt means "the theme in this folder", so in one of these it would
+    /// mean reading (and keeping) whatever else the user has there.
+    static func topFolders(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [TopFolder] {
+        [TopFolder(name: "your home folder", url: home),
+         TopFolder(name: "Downloads", url: home.appendingPathComponent("Downloads", isDirectory: true)),
+         TopFolder(name: "Desktop", url: home.appendingPathComponent("Desktop", isDirectory: true)),
+         TopFolder(name: "Documents", url: home.appendingPathComponent("Documents", isDirectory: true)),
+         TopFolder(name: "the top level of the disk", url: URL(fileURLWithPath: "/", isDirectory: true))]
+    }
+
+    /// What `folder` is called when it is one of `topFolders`, else nil. Links are resolved on both sides (a Downloads
+    /// folder can be a link to another volume), and names are compared without regard to case, as on the disk.
+    static func looseFolderName(_ folder: URL, in topFolders: [TopFolder]) -> String? {
+        func canonical(_ url: URL) -> String { url.resolvingSymlinksInPath().standardizedFileURL.path }
+        let path = canonical(folder)
+        return topFolders.first { canonical($0.url).caseInsensitiveCompare(path) == .orderedSame }?.name
     }
 
     /// Imports the theme in `themeRoot` (see `importTheme(from:themeRoot:)`), or the only theme when
@@ -396,14 +434,40 @@ public enum CustomThemeImporter {
         throw files.contains { $0.path.hasPrefix(prefix) } ? ThemeError.noThemeFile : ThemeError.rootNotFound(root)
     }
 
-    static func choices(for folders: [String]) -> [Choice] {
-        folders.map { folder in
+    /// The folders as a list shows them: made for Ventoy first, then by name (a tie goes by path, so the
+    /// order never depends on how the source was read). `files` is where a `ventoy.json` is looked for.
+    static func choices(for folders: [String], in files: [ThemeSourceFile] = []) -> [Choice] {
+        let shared = sharedTopFolder(of: folders)
+        return folders.map { folder in
             let parts = folder.split(separator: "/").map(String.init)
             // Folder names come from an archive: no hidden or direction-changing characters in a list.
             let last = ThemeLibrary.cleaned(parts.last ?? folder, limit: ThemeLibrary.maxNameLength, fallback: "Theme")
-            return Choice(folder: folder, name: readableName(last),
-                          location: ThemeLibrary.cleaned(parts.suffix(2).joined(separator: "/"), limit: 80, fallback: last))
+            let readable = readableName(last)
+            let shown = shared.map { String(folder.dropFirst($0.count + 1)) } ?? folder
+            return Choice(folder: folder, name: readable.isEmpty ? last : readable,
+                          path: ThemeLibrary.cleaned(shown, limit: 200, fallback: last),
+                          isForVentoy: isMadeForVentoy(folder, in: files))
         }
+        .sorted { a, b in
+            if a.isForVentoy != b.isForVentoy { return a.isForVentoy }
+            let byName = a.name.compare(b.name, options: [.caseInsensitive, .numeric])
+            return byName == .orderedSame ? a.folder < b.folder : byName == .orderedAscending
+        }
+    }
+
+    /// The one folder every path starts with ("grub-<sha>" in a GitHub download), when each path is
+    /// somewhere below it. Only that one level: further shared folders are part of where a theme is.
+    static func sharedTopFolder(of folders: [String]) -> String? {
+        let tops = folders.map { $0.split(separator: "/", omittingEmptySubsequences: false) }
+        guard let top = tops.first?.first, !top.isEmpty, tops.allSatisfy({ $0.count > 1 && $0.first == top }) else { return nil }
+        return String(top)
+    }
+
+    /// Whether the theme in `folder` was made for Ventoy: a `ventoy` folder (in any case) is somewhere in its path,
+    /// or a `ventoy.json` in `files` has a `theme` setting that points into it.
+    static func isMadeForVentoy(_ folder: String, in files: [ThemeSourceFile]) -> Bool {
+        if folder.split(separator: "/").contains(where: { $0.lowercased() == "ventoy" }) { return true }
+        return packSettings(forRoot: folder, in: files) != nil
     }
 
     /// "catppuccin-mocha" becomes "Catppuccin Mocha". A name that already has capitals keeps them.

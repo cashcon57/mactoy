@@ -225,17 +225,21 @@ struct ThemeStoreTests {
         let store = try await offlineStore(libraryRoot: libraryRoot)
         let pack = try themePack()
         guard case .needsChoice(let pending) = try await store.startImport(from: pack) else { Issue.record("expected a choice"); return }
-        #expect(pending.choices.map(\.folder) == ["latte", "mocha"])
-        #expect(pending.choices.map(\.name) == ["Latte", "Mocha"])
+        // The pack's ventoy.json is about mocha, so that one is listed first and labelled.
+        #expect(pending.choices.map(\.folder) == ["mocha", "latte"])
+        #expect(pending.choices.map(\.name) == ["Mocha", "Latte"])
+        #expect(pending.choices.map(\.isForVentoy) == [true, false])
         // Nothing is added by asking, and walking away leaves nothing behind.
         #expect(store.savedThemes.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: libraryRoot.path))
 
-        let mocha = try #require(pending.choices.last)
+        let mocha = try #require(pending.choices.first)
         let choice = try await store.finishImport(pending, choosing: mocha)
         guard case .custom(let id) = choice else { Issue.record("expected a saved theme, got \(choice)"); return }
         #expect(store.savedThemes.map(\.id) == [id])
-        #expect(store.savedThemes[0].name == "mocha")
+        // Under the name the choice list showed, not the folder's own.
+        #expect(store.savedThemes[0].name == "Mocha")
+        #expect(store.displayName(for: choice) == "Mocha")
         // The pack's own settings came along.
         #expect(store.savedThemes[0].settings == .init(file: "theme.txt", fonts: ["f.pf2"], ventoyColor: "#89b4fa"))
         #expect(try FileManager.default.contentsOfDirectory(atPath: libraryRoot.path).count == 1)
@@ -253,11 +257,13 @@ struct ThemeStoreTests {
         p.arguments = ["-qr", zip.path, "zipped"]
         try p.run(); p.waitUntilExit()
         guard case .needsChoice(let pending) = try await store.startImport(from: zip) else { Issue.record("expected a choice"); return }
-        #expect(pending.choices.map(\.folder) == ["zipped/latte", "zipped/mocha"])
+        #expect(pending.choices.map(\.folder) == ["zipped/mocha", "zipped/latte"])
+        // The folder the download is in is every theme's, so it isn't repeated on each line.
+        #expect(pending.choices.map(\.path) == ["mocha", "latte"])
         try FileManager.default.removeItem(at: zip)
-        let latte = try #require(pending.choices.first)
+        let latte = try #require(pending.choices.last)
         let choice = try await store.finishImport(pending, choosing: latte)
-        #expect(store.displayName(for: choice) == "latte")
+        #expect(store.displayName(for: choice) == "Latte")
         // The same answer can be given again: the second add finds the theme already there.
         #expect(try await store.finishImport(pending, choosing: latte) == choice)
         #expect(store.savedThemes.count == 1)
@@ -312,6 +318,25 @@ struct ThemeStoreTests {
         await #expect(throws: ThemeError.unknownTheme("custom-gone-12345678")) {
             _ = try await store.apply(.custom(id: "custom-gone-12345678"), to: volume)
         }
+    }
+
+    @Test("a My Themes theme removed after it was picked is told without Mactoy's theme list or its id")
+    func removedSavedThemeMessage() async throws {
+        let store = try await offlineStore()
+        guard case .custom(let id) = try await store.importCustom(from: themeFolder()) else { Issue.record("not a saved theme"); return }
+        try await store.removeSaved(id: id)
+        let volume = try tempDir()
+        var thrown: (any Error)?
+        do { _ = try await store.apply(.custom(id: id), to: volume) } catch { thrown = error }
+        #expect(thrown as? ThemeError == .unknownTheme(id))
+        let told = store.message(for: try #require(thrown), choice: .custom(id: id))
+        #expect(told == "That theme is no longer in My Themes. Choose another theme.")
+        #expect(!told.contains(id))
+        #expect(!told.contains("theme list"))
+        // And a fresh install that was going to use it says so too.
+        let result = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume },
+                                                   looksFresh: { _ in true }, deviceIdentifier: onInstalledDisk)
+        #expect(result == .themeUnavailable(problem: "That theme is no longer in My Themes."))
     }
 
     @Test("a theme found on a drive is saved to My Themes, and the drive is not touched")
@@ -683,8 +708,14 @@ struct ThemeStoreTests {
             switch choice { case .catalog(let x), .custom(let x): id = x; case .ventoyDefault: id = "" }
             let problem = await store.applyAfterInstall(choice, disk: installedDisk(), findVolume: { _ in volume },
                                                        looksFresh: { looked.add($0.path); return true }, deviceIdentifier: onInstalledDisk)
-            // Not in the list, so the id is all there is to call it by.
-            #expect(problem == .themeUnavailable(problem: "“\(id)” is no longer in Mactoy's theme list."))
+            switch choice {
+            case .custom:
+                // Never in the list, and its id is an internal one: neither is said.
+                #expect(problem == .themeUnavailable(problem: "That theme is no longer in My Themes."))
+            default:
+                // Not in the list, so the id is all there is to call it by.
+                #expect(problem == .themeUnavailable(problem: "“\(id)” is no longer in Mactoy's theme list."))
+            }
         }
         #expect(looked.values.isEmpty)
         #expect(try snapshot(volume).isEmpty)

@@ -172,28 +172,51 @@ struct ThemeUnavailableTests {
 
     @Test("a theme that left the list is named, not its id, and is not reported")
     func unknownTheme() {
+        let tela = ThemeChoice.catalog(id: "tela")
         #expect(ThemeUnavailableCopy.unknownTheme(name: "Tela") == "“Tela” is no longer in Mactoy's theme list. Choose another theme.")
-        #expect(ThemeUnavailableCopy.message(for: ThemeError.unknownTheme("tela"), themeName: "Tela")
+        #expect(ThemeUnavailableCopy.message(for: ThemeError.unknownTheme("tela"), choice: tela, themeName: "Tela")
             == "“Tela” is no longer in Mactoy's theme list. Choose another theme.")
         // Any other failure is told as it is.
-        #expect(ThemeUnavailableCopy.message(for: ThemeError.serverUnreachable(host: "github.com"), themeName: "Tela")
+        #expect(ThemeUnavailableCopy.message(for: ThemeError.serverUnreachable(host: "github.com"), choice: tela, themeName: "Tela")
             == "Couldn't reach github.com. Check your internet connection and try again.")
-        #expect(ThemeUnavailableCopy.message(for: DriverError.network("offline"), themeName: "Tela") == DriverError.network("offline").localizedDescription)
+        #expect(ThemeUnavailableCopy.message(for: DriverError.network("offline"), choice: tela, themeName: "Tela") == DriverError.network("offline").localizedDescription)
+    }
+
+    @Test("a removed My Themes theme is not blamed on Mactoy's theme list and shows no internal id")
+    func savedThemeRemoved() {
+        let id = "custom-night-sky-1a2b3c4d"
+        let removed = ThemeError.unknownTheme(id)
+        // What the store calls a theme it no longer has is its id: that must not reach the user.
+        let told = ThemeUnavailableCopy.message(for: removed, choice: .custom(id: id), themeName: id)
+        #expect(told == "That theme is no longer in My Themes. Choose another theme.")
+        #expect(!told.contains("Mactoy's theme list"))
+        #expect(!told.contains(id))
+        #expect(!told.contains("custom-"))
+        // After an install the tail already says to pick another theme.
+        let afterInstall = ThemeUnavailableCopy.postInstallResult(for: removed, choice: .custom(id: id), name: id)
+        #expect(afterInstall == .themeUnavailable(problem: "That theme is no longer in My Themes."))
+        // A catalog theme keeps its own wording, and any other failure of a saved theme is told as it is.
+        #expect(ThemeUnavailableCopy.message(for: removed, choice: .catalog(id: id), themeName: "Night Sky")
+            == "“Night Sky” is no longer in Mactoy's theme list. Choose another theme.")
+        let busy = ThemeStoreError.busy
+        #expect(ThemeUnavailableCopy.message(for: busy, choice: .custom(id: id), themeName: "Night Sky") == busy.localizedDescription)
+        #expect(ThemeUnavailableCopy.postInstallResult(for: busy, choice: .custom(id: id), name: "Night Sky") == .notApplied(problem: busy.localizedDescription))
     }
 
     @Test("after an install, a theme that can't be used is named, and any other failure is told as it is")
     func postInstall() {
-        #expect(ThemeUnavailableCopy.postInstallResult(for: ThemeError.downloadGone(host: "github.com", status: 404), name: "Tela")
+        let tela = ThemeChoice.catalog(id: "tela")
+        #expect(ThemeUnavailableCopy.postInstallResult(for: ThemeError.downloadGone(host: "github.com", status: 404), choice: tela, name: "Tela")
             == .themeUnavailable(problem: "Mactoy couldn't find “Tela” where its theme list says it should be."))
-        #expect(ThemeUnavailableCopy.postInstallResult(for: ThemeError.checksumMismatch(expected: "a", actual: "b"), name: "Tela")
+        #expect(ThemeUnavailableCopy.postInstallResult(for: ThemeError.checksumMismatch(expected: "a", actual: "b"), choice: tela, name: "Tela")
             == .themeUnavailable(problem: "“Tela” has changed since it was added to Mactoy's theme list, so Mactoy didn't use it."))
-        #expect(ThemeUnavailableCopy.postInstallResult(for: ThemeError.unknownTheme("tela"), name: "Tela")
+        #expect(ThemeUnavailableCopy.postInstallResult(for: ThemeError.unknownTheme("tela"), choice: tela, name: "Tela")
             == .themeUnavailable(problem: "“Tela” is no longer in Mactoy's theme list."))
         let unreachable = ThemeError.serverUnreachable(host: "github.com")
-        #expect(ThemeUnavailableCopy.postInstallResult(for: unreachable, name: "Tela") == .notApplied(problem: unreachable.localizedDescription))
-        #expect(ThemeUnavailableCopy.postInstallResult(for: DriverError.network("offline"), name: "Tela")
+        #expect(ThemeUnavailableCopy.postInstallResult(for: unreachable, choice: tela, name: "Tela") == .notApplied(problem: unreachable.localizedDescription))
+        #expect(ThemeUnavailableCopy.postInstallResult(for: DriverError.network("offline"), choice: tela, name: "Tela")
             == .notApplied(problem: DriverError.network("offline").localizedDescription))
-        #expect(ThemeUnavailableCopy.postInstallResult(for: ThemeStoreError.busy, name: "Tela") == .notApplied(problem: ThemeStoreError.busy.localizedDescription))
+        #expect(ThemeUnavailableCopy.postInstallResult(for: ThemeStoreError.busy, choice: tela, name: "Tela") == .notApplied(problem: ThemeStoreError.busy.localizedDescription))
     }
 
     @Test("no wording uses an em-dash")
@@ -202,13 +225,188 @@ struct ThemeUnavailableTests {
         let problems = [gone(404, for: tela), gone(410, for: tela), changed(for: tela)]
         var all = [ThemeUnavailableCopy.reportButton, ThemeUnavailableCopy.pageButton, ThemeUnavailableCopy.fileButton, ThemeUnavailableCopy.okButton,
                    ThemeUnavailableCopy.chip, ThemeUnavailableCopy.title(name: "X"), ThemeUnavailableCopy.unknownTheme(name: "X"),
-                   ThemeUnavailableCopy.postInstallUnknownTheme(name: "X"), DriveThemeCopy.savedButUnchanged(name: "X")]
+                   ThemeUnavailableCopy.postInstallUnknownTheme(name: "X"), ThemeUnavailableCopy.savedThemeRemoved,
+                   ThemeUnavailableCopy.postInstallSavedThemeRemoved,
+                   ThemeUnavailableCopy.installNote(for: .catalog(id: "tela"), unavailable: ["tela": gone(for: tela)]) ?? "",
+                   ThemeError.serverRefused(host: "github.com").errorDescription ?? "",
+                   ThemeError.looseThemeFile(folder: "Downloads").errorDescription ?? ""]
         for problem in problems {
             all += [ThemeUnavailableCopy.message(for: problem), ThemeUnavailableCopy.pickerNote(for: problem),
                     ThemeUnavailableCopy.postInstallProblem(for: problem.reason, name: "X")]
             all.append(ThemeIssueReport.url(for: tela, problem: problem, appVersion: "1", macOSVersion: "macOS 26.0").absoluteString.removingPercentEncoding ?? "")
         }
         for text in all { #expect(!text.contains("\u{2014}"), "\(text)") }
+    }
+
+    // MARK: The Install tab's note
+
+    @Test("the Install tab says so, in one plain line, when the chosen catalog theme's download is unavailable")
+    func installNote() {
+        let tela = entry()
+        let unavailable = ["tela": gone(for: tela)]
+        #expect(ThemeUnavailableCopy.installNote(for: .catalog(id: "tela"), unavailable: unavailable)
+            == "This theme's download isn't available right now. Choose another, or add it from a file.")
+        // Whatever the reason, the line is the same.
+        #expect(ThemeUnavailableCopy.installNote(for: .catalog(id: "tela"), unavailable: ["tela": changed(for: tela)])
+            == ThemeUnavailableCopy.installNote(for: .catalog(id: "tela"), unavailable: unavailable))
+        // Nothing for any other theme, or when nothing is known to be wrong.
+        #expect(ThemeUnavailableCopy.installNote(for: .catalog(id: "other"), unavailable: unavailable) == nil)
+        #expect(ThemeUnavailableCopy.installNote(for: .catalog(id: "tela"), unavailable: [:]) == nil)
+        #expect(ThemeUnavailableCopy.installNote(for: .ventoyDefault, unavailable: unavailable) == nil)
+        #expect(ThemeUnavailableCopy.installNote(for: .custom(id: "tela"), unavailable: unavailable) == nil)
+    }
+
+    // MARK: A change that failed
+
+    @Test("whenever the dialog is to be shown there is a plain note as well, with the short error text")
+    func failureAlwaysHasNote() {
+        let tela = entry()
+        let live = [tela]
+        let errors: [any Error] = [ThemeError.downloadGone(host: "github.com", status: 404), ThemeError.downloadGone(host: "github.com", status: 410),
+                                   ThemeError.checksumMismatch(expected: "a", actual: "b"), ThemeError.serverUnreachable(host: "github.com"),
+                                   ThemeError.serverRefused(host: "github.com"), ThemeError.unknownTheme("tela"), ThemeStoreError.busy,
+                                   DriverError.network("offline")]
+        for error in errors {
+            for saved in [nil, "Mine"] as [String?] {
+                for noted in [[:], ["tela": gone(for: tela)]] as [[String: ThemeUnavailable]] {
+                    let failure = ThemeChangeFailure(error: error, choice: .catalog(id: "tela"), savedName: saved, themeName: "Tela",
+                                                     catalog: live, unavailable: noted)
+                    #expect(!failure.message.isEmpty, "\(error)")
+                    #expect(failure.isError)
+                    // The note ends with what the error says, so it is the reason even if the dialog never shows.
+                    let reason = ThemeUnavailableCopy.message(for: error, choice: .catalog(id: "tela"), themeName: "Tela")
+                    #expect(failure.message.hasSuffix(reason), "\(error)")
+                    if let saved { #expect(failure.message.hasPrefix("Saved “\(saved)” to My Themes. The drive's theme wasn't changed: ")) }
+                    else { #expect(failure.message == reason) }
+                    // The dialog is only for a download that is gone or changed.
+                    #expect((failure.alert != nil) == ((error as? ThemeError)?.meansThemeIsUnavailable == true), "\(error)")
+                }
+            }
+        }
+        let gone = ThemeChangeFailure(error: ThemeError.downloadGone(host: "github.com", status: 404), choice: .catalog(id: "tela"), savedName: nil,
+                                      themeName: "Tela", catalog: live, unavailable: [:])
+        #expect(gone.message == "The theme's download isn't where Mactoy's theme list says it should be.")
+        #expect(gone.alert != nil)
+    }
+
+    @Test("a theme of the user's own, or one the list no longer has, never gets the dialog")
+    func failureDialogOnlyForListedCatalogTheme() {
+        let tela = entry()
+        let error = ThemeError.downloadGone(host: "github.com", status: 404)
+        #expect(ThemeChangeFailure.alert(for: error, choice: .custom(id: "tela"), catalog: [tela], unavailable: ["tela": gone(for: tela)]) == nil)
+        #expect(ThemeChangeFailure.alert(for: error, choice: .ventoyDefault, catalog: [tela], unavailable: [:]) == nil)
+        #expect(ThemeChangeFailure.alert(for: error, choice: .catalog(id: "tela"), catalog: [], unavailable: [:]) == nil)
+    }
+
+    @Test("the dialog is built from what the store recorded, and from the list's entry only without it")
+    func failureDialogSource() throws {
+        let tela = entry()
+        let error = ThemeError.downloadGone(host: "github.com", status: 404)
+        // The store recorded a 410; the error in hand says 404. The record is about the download that failed, so it wins.
+        let recorded = gone(410, for: tela)
+        let fromRecord = try #require(ThemeChangeFailure.alert(for: error, choice: .catalog(id: "tela"), catalog: [tela], unavailable: ["tela": recorded]))
+        #expect(fromRecord.problem == recorded)
+        #expect(fromRecord.entry.id == "tela")
+        // Nothing recorded (the list moved on, say): the live entry stands in.
+        let fromEntry = try #require(ThemeChangeFailure.alert(for: error, choice: .catalog(id: "tela"), catalog: [tela], unavailable: [:]))
+        #expect(fromEntry.problem == gone(404, for: tela))
+        // A record about another download of the id is not this one.
+        var moved = tela
+        moved.download.sha256 = String(repeating: "c", count: 64)
+        let stale = gone(410, for: tela)
+        let other = try #require(ThemeChangeFailure.alert(for: error, choice: .catalog(id: "tela"), catalog: [moved], unavailable: ["tela": stale]))
+        #expect(other.problem == gone(404, for: moved))
+        // A connection problem is not made into "gone" by an older record.
+        #expect(ThemeChangeFailure.alert(for: ThemeError.serverUnreachable(host: "github.com"), choice: .catalog(id: "tela"),
+                                         catalog: [tela], unavailable: ["tela": recorded]) == nil)
+    }
+
+    // MARK: Sheets after adding a theme from a file
+
+    private func pendingChoice() throws -> PendingThemeChoice {
+        let pack = FileManager.default.temporaryDirectory.appendingPathComponent("mactoy-flow-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: pack) }
+        for flavour in ["latte", "mocha"] {
+            let dir = pack.appendingPathComponent(flavour, isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data("title-text: \"x\"\n".utf8).write(to: dir.appendingPathComponent("theme.txt"))
+        }
+        return PendingThemeChoice(opened: try CustomThemeImporter.open(pack))
+    }
+
+    @Test("after choosing, the picker opens only once the choice sheet has gone, and the choice is acted on once")
+    func pickerWaitsForChoiceSheet() throws {
+        let pending = try pendingChoice()
+        let mocha = try #require(pending.choices.first { $0.name == "Mocha" })
+        var flow = ThemeImportFlow()
+        flow.started(.needsChoice(pending))
+        #expect(flow.pendingChoice?.id == pending.id, "the sheet is up")
+        #expect(!flow.showPicker)
+
+        flow.choose(mocha, from: pending)
+        // The sheet is closing: it is no longer asked for, and the picker is not asked for yet.
+        #expect(flow.pendingChoice == nil)
+        #expect(!flow.showPicker, "not while the choice sheet is still closing")
+        #expect(flow.pickerStart == nil)
+
+        // The sheet has gone: now the chosen theme is added.
+        let answered = flow.choiceSheetDismissed()
+        let answer = try #require(answered)
+        #expect(answer.choice == mocha)
+        #expect(answer.pending.id == pending.id)
+        #expect(!flow.showPicker, "still not: the theme isn't in My Themes yet")
+        let again = flow.choiceSheetDismissed()
+        #expect(again == nil, "the answer is used once")
+
+        // It is in My Themes: the picker opens on it.
+        flow.openPicker(on: .custom(id: "custom-mocha-1a2b3c4d"))
+        #expect(flow.showPicker)
+        #expect(flow.pickerStart == .custom(id: "custom-mocha-1a2b3c4d"))
+    }
+
+    @Test("cancelling the choice sheet leaves nothing pending and opens nothing")
+    func cancelLeavesNothing() throws {
+        let pending = try pendingChoice()
+        var flow = ThemeImportFlow()
+        flow.started(.needsChoice(pending))
+        flow.cancel()
+        #expect(flow.pendingChoice == nil)
+        let afterCancel = flow.choiceSheetDismissed()
+        #expect(afterCancel == nil)
+        #expect(!flow.showPicker)
+        #expect(flow.pickerStart == nil)
+        // A sheet that goes some other way (its window closed) with no answer is the same.
+        flow.started(.needsChoice(pending))
+        flow.pendingChoice = nil
+        let afterClose = flow.choiceSheetDismissed()
+        #expect(afterClose == nil)
+        #expect(!flow.showPicker)
+    }
+
+    @Test("a cancelled choice is not carried over to the next file")
+    func cancelForgetsAnswer() throws {
+        let pending = try pendingChoice()
+        let latte = try #require(pending.choices.first)
+        var flow = ThemeImportFlow()
+        flow.started(.needsChoice(pending))
+        flow.choose(latte, from: pending)
+        flow.cancel()
+        let left = flow.choiceSheetDismissed()
+        #expect(left == nil)
+    }
+
+    @Test("a file with one theme opens the picker on it at once; there is no sheet to wait for")
+    func oneThemeOpensPicker() {
+        var flow = ThemeImportFlow()
+        flow.started(.imported(.custom(id: "custom-x-12345678")))
+        #expect(flow.showPicker)
+        #expect(flow.pickerStart == .custom(id: "custom-x-12345678"))
+        #expect(flow.pendingChoice == nil)
+        // The Change Theme button opens it on the drive's theme.
+        var plain = ThemeImportFlow()
+        plain.openPicker()
+        #expect(plain.showPicker)
+        #expect(plain.pickerStart == nil)
     }
 
     // MARK: The picker
