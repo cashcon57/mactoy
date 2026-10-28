@@ -23,6 +23,7 @@ Boot menu themes, and a new app icon.
 
 ### Changed
 
+- `SECURITY.md` is rewritten to match the current code. Its list of known limitations still dated from v0.1 and described problems that were fixed long ago; it now lists the ones that remain.
 - The app is 0.7.0 (build 15). The helper's protocol didn't change, so it keeps protocol version 0.5.0 and updating doesn't ask you to approve it again. Themes are written by the app, not the helper.
 - Mactoy now fetches the theme list and previews from this repository on GitHub when it starts and when you open the theme picker, and downloads a theme from its author's release or commit archive when you choose it. Nothing about you or your drives is sent.
 
