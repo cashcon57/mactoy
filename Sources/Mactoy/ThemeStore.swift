@@ -50,6 +50,27 @@ enum PostInstallThemeResult: Equatable, Sendable {
     case applied(warnings: [String])
     /// Nothing was added, or the write failed: why, as the end of a sentence.
     case notApplied(problem: String)
+    /// The theme can't be used as it is: its download is gone or changed, or it left the theme
+    /// list. Adding it later wouldn't help, so the message points to another theme. `problem` is
+    /// the end of a sentence, as in `notApplied`.
+    case themeUnavailable(problem: String)
+}
+
+/// A file or folder with several themes in it, waiting for the user to choose one. It holds
+/// what was read, so choosing doesn't read (or unzip) the file again and nothing is left on disk.
+struct PendingThemeChoice: Identifiable, Sendable {
+    let id = UUID()
+    let opened: CustomThemeImporter.Opened
+
+    var choices: [CustomThemeImporter.Choice] { opened.choices }
+}
+
+/// How adding a theme from a file began.
+enum ThemeImportStart: Sendable {
+    /// The file held one theme and it is in My Themes.
+    case imported(ThemeChoice)
+    /// The file holds several. Nothing was added yet.
+    case needsChoice(PendingThemeChoice)
 }
 
 enum ThemeStoreError: Error, Equatable, LocalizedError {
@@ -85,6 +106,10 @@ final class ThemeStore: ObservableObject {
     /// the session that imported it can say so.
     @Published private(set) var importSkipped: [String: [String]] = [:]
     @Published private(set) var isLoading = false
+    /// Catalog themes whose download turned out to be gone or changed, by id. Only this
+    /// session's findings. An entry goes when a download of that theme works again, or
+    /// when the catalog names a different download for the id.
+    @Published private(set) var unavailableThemes: [String: ThemeUnavailable] = [:]
 
     let loader: ThemeCatalogLoader
     let fetcher: ThemeFetcher
@@ -95,6 +120,8 @@ final class ThemeStore: ObservableObject {
         ThemeAvailability(savedIDs: Set(savedThemes.map(\.id)), catalogIDs: Set(catalog.map(\.id)), catalogSource: catalogSource)
     }
 
+    /// Names of catalog themes seen this session, so one the list drops later can still be called by name.
+    private var catalogNames: [String: String] = [:]
     private var previewsInFlight = Set<String>()
     /// A listing that finishes after a newer one started is dropped, so a slow
     /// first read can't bring back a theme that was just removed.
@@ -127,15 +154,24 @@ final class ThemeStore: ObservableObject {
         // back to the cached copy of it would make the picker flicker.
         if catalog.isEmpty {
             let local = await Task.detached(priority: .userInitiated) { loader.loadLocal() }.value
-            catalog = local.catalog.usableThemes
+            setCatalog(local.catalog.usableThemes)
             catalogSource = local.source
         }
         let remote = await loader.load()
         // Anything but `.remote` is the local copy again, which is already showing.
         let themes = remote.catalog.usableThemes
         guard remote.source == .remote, !themes.isEmpty else { return }
-        catalog = themes
+        setCatalog(themes)
         catalogSource = .remote
+    }
+
+    private func setCatalog(_ themes: [ThemeEntry]) {
+        catalog = themes
+        for theme in themes { catalogNames[theme.id] = theme.name }
+        // A problem belongs to one download. If the list now names another one for the
+        // id (or no longer has the theme), the theme is worth trying again.
+        let stillTrue = unavailableThemes.filter { id, problem in themes.first { $0.id == id }.map(problem.describes) == true }
+        if stillTrue.count != unavailableThemes.count { unavailableThemes = stillTrue }
     }
 
     /// Reads the bundled picture off the main actor; only the image is made here. Asked for
@@ -159,7 +195,7 @@ final class ThemeStore: ObservableObject {
     func displayName(for choice: ThemeChoice) -> String {
         switch choice {
         case .ventoyDefault: return "Ventoy default"
-        case .catalog(let id): return catalog.first { $0.id == id }?.name ?? id
+        case .catalog(let id): return catalog.first { $0.id == id }?.name ?? catalogNames[id] ?? id
         case .custom(let id): return savedThemes.first { $0.id == id }?.name ?? id
         }
     }
@@ -200,17 +236,39 @@ final class ThemeStore: ObservableObject {
 
     nonisolated static let maxPreviewBytes = 20 * 1024 * 1024
 
-    /// Adds a ZIP file or folder to My Themes. Importing runs `zipinfo` and
-    /// `ditto` and can take a minute, so it stays off the main actor.
+    /// Adds a ZIP file, folder or theme.txt to My Themes. Reading it runs `zipinfo` and
+    /// `ditto` and can take a minute, so it stays off the main actor. A file with several
+    /// themes isn't added: the answer is `.needsChoice`, and `finishImport` adds the one chosen.
+    func startImport(from url: URL) async throws -> ThemeImportStart {
+        let opened = try await Task.detached(priority: .userInitiated) { try CustomThemeImporter.open(url) }.value
+        if opened.needsChoice { return .needsChoice(PendingThemeChoice(opened: opened)) }
+        return .imported(try await saveImport(opened, themeRoot: nil, name: nil))
+    }
+
+    /// Adds the theme the user picked from a file that holds several. It is saved under the name the
+    /// choice list showed, not the folder's raw name, so My Themes calls it what the user picked.
+    func finishImport(_ pending: PendingThemeChoice, choosing choice: CustomThemeImporter.Choice) async throws -> ThemeChoice {
+        try await saveImport(pending.opened, themeRoot: choice.folder, name: choice.name)
+    }
+
+    /// For a caller that has no way to ask which theme: a file with several is an error naming them.
     func importCustom(from url: URL) async throws -> ThemeChoice {
+        switch try await startImport(from: url) {
+        case .imported(let choice): return choice
+        case .needsChoice(let pending): throw ThemeError.ambiguousThemes(pending.opened.themeFilePaths)
+        }
+    }
+
+    /// `name` is what to save it as; nil keeps the importer's (the folder's or file's name).
+    private func saveImport(_ opened: CustomThemeImporter.Opened, themeRoot: String?, name: String?) async throws -> ThemeChoice {
         let library = self.library
         let (saved, skipped) = try await Task.detached(priority: .userInitiated) { () throws -> (SavedTheme, [String]) in
             // The importer's working copy lives in a folder of its own, deleted when done:
             // the library now holds the theme, and Caches would only collect copies.
             let work = FileManager.default.temporaryDirectory.appendingPathComponent("mactoy-import-\(UUID().uuidString)", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: work) }
-            let imported = try CustomThemeImporter.importTheme(from: url, cacheRoot: work)
-            let saved = try library.save(folder: imported.directory, name: imported.name, settings: imported.settings,
+            let imported = try CustomThemeImporter.importTheme(opened, themeRoot: themeRoot, cacheRoot: work)
+            let saved = try library.save(folder: imported.directory, name: name ?? imported.name, settings: imported.settings,
                                          origin: "Added from a file")
             return (saved, imported.skippedFiles)
         }.value
@@ -277,11 +335,34 @@ final class ThemeStore: ObservableObject {
         return !catalog.contains { $0.id == managed } && !savedThemes.contains { $0.id == managed }
     }
 
-    /// Download early so a later apply doesn't wait (catalog themes only).
-    func prefetch(_ choice: ThemeChoice) {
-        guard case .catalog(let id) = choice, let entry = catalog.first(where: { $0.id == id }) else { return }
+    /// Download early so a later apply doesn't wait (catalog themes only). The task is
+    /// returned for tests, which wait for the download to end; callers can ignore it.
+    @discardableResult
+    func prefetch(_ choice: ThemeChoice) -> Task<Void, Never>? {
+        guard case .catalog(let id) = choice, let entry = catalog.first(where: { $0.id == id }) else { return nil }
         let fetcher = self.fetcher
-        Task.detached(priority: .utility) { _ = try? await fetcher.themeDirectory(for: entry) }
+        return Task.detached(priority: .utility) { [weak self] in
+            do {
+                _ = try await fetcher.themeDirectory(for: entry)
+                await self?.downloadSucceeded(entry)
+            } catch {
+                await self?.downloadFailed(entry, error)
+            }
+        }
+    }
+
+    /// Notes a good download of `entry`: if it was marked unavailable, it is not now.
+    private func downloadSucceeded(_ entry: ThemeEntry) {
+        if let problem = unavailableThemes[entry.id], problem.describes(entry) { unavailableThemes[entry.id] = nil }
+    }
+
+    /// Notes a failed download of `entry`, when the failure says the download is gone or changed.
+    /// A connection problem says nothing about the theme.
+    private func downloadFailed(_ entry: ThemeEntry, _ error: any Error) {
+        guard let problem = ThemeUnavailable(error: error, entry: entry),
+              // The list may have moved on while this was downloading; the failure is about the old entry then.
+              catalog.first(where: { $0.id == entry.id }).map(problem.describes) == true else { return }
+        unavailableThemes[entry.id] = problem
     }
 
     /// A theme found in the catalog or My Themes, with its files on this Mac: all
@@ -302,7 +383,12 @@ final class ThemeStore: ObservableObject {
             return nil
         case .catalog(let id):
             guard let entry = catalog.first(where: { $0.id == id }) else { throw ThemeError.unknownTheme(id) }
-            let directory = try await fetcher.themeDirectory(for: entry)
+            let directory: URL
+            do { directory = try await fetcher.themeDirectory(for: entry) } catch {
+                downloadFailed(entry, error)
+                throw error
+            }
+            downloadSucceeded(entry)
             return ResolvedTheme(id: entry.id, name: entry.name, settings: entry.settings, directory: directory)
         case .custom(let id):
             guard let saved = savedThemes.first(where: { $0.id == id }) else { throw ThemeError.unknownTheme(id) }
@@ -375,7 +461,12 @@ final class ThemeStore: ObservableObject {
             }
             return .applied(warnings: try await write(theme, to: volume))
         } catch {
-            return .notApplied(problem: error.localizedDescription)
+            return ThemeUnavailableCopy.postInstallResult(for: error, choice: choice, name: displayName(for: choice))
         }
+    }
+
+    /// What to tell the user about `error`, from changing the drive's theme to `choice`.
+    func message(for error: any Error, choice: ThemeChoice) -> String {
+        ThemeUnavailableCopy.message(for: error, choice: choice, themeName: displayName(for: choice))
     }
 }

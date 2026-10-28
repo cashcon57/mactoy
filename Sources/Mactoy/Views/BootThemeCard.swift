@@ -16,6 +16,10 @@ struct BootThemeCard: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Boot menu theme").font(.headline)
                 Text(themes.displayName(for: state.installTheme)).font(.callout).foregroundStyle(.secondary)
+                if let note = ThemeUnavailableCopy.installNote(for: state.installTheme, unavailable: themes.unavailableThemes) {
+                    Text(note).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if state.installTheme == AppState.defaultInstallTheme {
                     Text("Mactoy uses Catppuccin Mocha by default because Ventoy's built-in menu looks dated. Prefer the original? Choose Ventoy default.")
                         .font(.caption).foregroundStyle(.secondary)

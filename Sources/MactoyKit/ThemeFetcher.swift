@@ -7,16 +7,26 @@ public protocol ThemeTransport: Sendable {
 
 public struct URLSessionThemeTransport: ThemeTransport {
     public init() {}
+
     public func data(from url: URL, maxBytes: Int) async throws -> Data {
+        do {
+            return try await download(from: url, maxBytes: maxBytes)
+        } catch let error as URLError {
+            // Said in the user's terms (see ThemeError); anything else URLSession reports stays as it is.
+            throw Self.themeError(for: error, host: Self.hostName(of: url)) ?? error
+        }
+    }
+
+    private func download(from url: URL, maxBytes: Int) async throws -> Data {
         var request = URLRequest(url: url)
         request.timeoutInterval = 60
         request.setValue("Mactoy", forHTTPHeaderField: "User-Agent")
         // Streamed, so an oversized or endless body is cut off at the limit
         // instead of being held in memory first.
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw DriverError.network("\(url.host ?? "server") returned \((response as? HTTPURLResponse)?.statusCode ?? 0)")
-        }
+        let host = Self.hostName(of: url)
+        guard let http = response as? HTTPURLResponse else { throw ThemeError.serverUnreachable(host: host) }
+        if let failure = Self.themeError(forStatus: http.statusCode, host: host) { throw failure }
         // -1 when the server doesn't say.
         let declared = http.expectedContentLength
         guard declared <= Int64(maxBytes) else { throw ThemeError.downloadTooLarge(Int(clamping: declared)) }
@@ -38,6 +48,36 @@ public struct URLSessionThemeTransport: ThemeTransport {
         }
         data.append(contentsOf: chunk)
         return data
+    }
+
+    static func hostName(of url: URL) -> String { url.host ?? "the server" }
+
+    /// What an HTTP status means for a theme download; nil for 200, the only
+    /// answer that carries a file. 404 and 410 say the file isn't there (anymore),
+    /// which is for the catalog's maintainers to fix. 403 and 429 say the server is
+    /// turning requests away for now (a rate limit, say), which passes by itself and
+    /// is not the user's connection. Every other answer is treated as a server that
+    /// can't be used right now: a 500 usually passes by itself too, and the user
+    /// can't tell it apart from being offline.
+    static func themeError(forStatus status: Int, host: String) -> ThemeError? {
+        switch status {
+        case 200: return nil
+        case 404, 410: return .downloadGone(host: host, status: status)
+        case 403, 429: return .serverRefused(host: host)
+        default: return .serverUnreachable(host: host)
+        }
+    }
+
+    /// The network failures that mean nobody answered. Others (a cancelled request,
+    /// a certificate problem) are not for this to explain, so they are nil.
+    static func themeError(for error: URLError, host: String) -> ThemeError? {
+        switch error.code {
+        case .notConnectedToInternet, .timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost,
+             .dnsLookupFailed, .internationalRoamingOff, .dataNotAllowed:
+            return .serverUnreachable(host: host)
+        default:
+            return nil
+        }
     }
 }
 

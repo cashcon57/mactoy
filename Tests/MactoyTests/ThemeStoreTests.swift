@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Testing
 import Foundation
+import UniformTypeIdentifiers
 @testable import Mactoy
 import MactoyKit
 
@@ -205,6 +206,94 @@ struct ThemeStoreTests {
         #expect(store.importSkipped[id] == nil)
     }
 
+    /// A download with two themes side by side and a ventoy.json for one of them, as a pack ships.
+    private func themePack(name: String = "Pack") throws -> URL {
+        let dir = try tempDir().appendingPathComponent(name)
+        for flavour in ["mocha", "latte"] {
+            try FileManager.default.createDirectory(at: dir.appendingPathComponent(flavour), withIntermediateDirectories: true)
+            try Data("title-text: \"\(flavour)\"\n".utf8).write(to: dir.appendingPathComponent("\(flavour)/theme.txt"))
+            try Data([1]).write(to: dir.appendingPathComponent("\(flavour)/f.pf2"))
+        }
+        try Data(##"{"theme":{"file":"/ventoy/mocha/theme.txt","fonts":["/ventoy/mocha/f.pf2"],"ventoy_color":"#89b4fa"}}"##.utf8)
+            .write(to: dir.appendingPathComponent("ventoy.json"))
+        return dir
+    }
+
+    @Test("a file with several themes asks which one, and adds nothing until the user answers")
+    func importSeveralAsks() async throws {
+        let libraryRoot = try tempDir().appendingPathComponent("My Themes")
+        let store = try await offlineStore(libraryRoot: libraryRoot)
+        let pack = try themePack()
+        guard case .needsChoice(let pending) = try await store.startImport(from: pack) else { Issue.record("expected a choice"); return }
+        // The pack's ventoy.json is about mocha, so that one is listed first and labelled.
+        #expect(pending.choices.map(\.folder) == ["mocha", "latte"])
+        #expect(pending.choices.map(\.name) == ["Mocha", "Latte"])
+        #expect(pending.choices.map(\.isForVentoy) == [true, false])
+        // Nothing is added by asking, and walking away leaves nothing behind.
+        #expect(store.savedThemes.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: libraryRoot.path))
+
+        let mocha = try #require(pending.choices.first)
+        let choice = try await store.finishImport(pending, choosing: mocha)
+        guard case .custom(let id) = choice else { Issue.record("expected a saved theme, got \(choice)"); return }
+        #expect(store.savedThemes.map(\.id) == [id])
+        // Under the name the choice list showed, not the folder's own.
+        #expect(store.savedThemes[0].name == "Mocha")
+        #expect(store.displayName(for: choice) == "Mocha")
+        // The pack's own settings came along.
+        #expect(store.savedThemes[0].settings == .init(file: "theme.txt", fonts: ["f.pf2"], ventoyColor: "#89b4fa"))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: libraryRoot.path).count == 1)
+    }
+
+    @Test("the chosen theme is added from what was read, even after the file is gone")
+    func importChoiceReadsOnce() async throws {
+        let store = try await offlineStore()
+        let work = try tempDir()
+        let src = try themePack(name: "zipped")
+        let zip = work.appendingPathComponent("zipped.zip")
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        p.currentDirectoryURL = src.deletingLastPathComponent()
+        p.arguments = ["-qr", zip.path, "zipped"]
+        try p.run(); p.waitUntilExit()
+        guard case .needsChoice(let pending) = try await store.startImport(from: zip) else { Issue.record("expected a choice"); return }
+        #expect(pending.choices.map(\.folder) == ["zipped/mocha", "zipped/latte"])
+        // The folder the download is in is every theme's, so it isn't repeated on each line.
+        #expect(pending.choices.map(\.path) == ["mocha", "latte"])
+        try FileManager.default.removeItem(at: zip)
+        let latte = try #require(pending.choices.last)
+        let choice = try await store.finishImport(pending, choosing: latte)
+        #expect(store.displayName(for: choice) == "Latte")
+        // The same answer can be given again: the second add finds the theme already there.
+        #expect(try await store.finishImport(pending, choosing: latte) == choice)
+        #expect(store.savedThemes.count == 1)
+    }
+
+    @Test("a caller that can't ask is told which themes there are")
+    func importCustomSeveral() async throws {
+        let store = try await offlineStore()
+        await #expect(throws: ThemeError.ambiguousThemes(["latte/theme.txt", "mocha/theme.txt"])) {
+            _ = try await store.importCustom(from: try themePack())
+        }
+        #expect(store.savedThemes.isEmpty)
+        // One theme is still added straight away, from a folder or from its theme.txt.
+        let folder = try themeFolder()
+        let viaFile = try await store.importCustom(from: folder.appendingPathComponent("theme.txt"))
+        let viaFolder = try await store.importCustom(from: folder)
+        #expect(viaFile == viaFolder)
+        #expect(store.savedThemes.count == 1)
+    }
+
+    @Test("the file panel offers ZIPs, folders and plain text, so a theme.txt can be picked")
+    func panelTypes() throws {
+        // Only the list of types: no panel is made or shown.
+        let types = ThemeUnavailableActions.themeSourceTypes
+        let txt = try #require(UTType(filenameExtension: "txt"))
+        #expect(types.contains(.zip))
+        #expect(types.contains(.folder))
+        #expect(types.contains { txt.conforms(to: $0) })
+    }
+
     @Test("a saved theme's picture is read from its folder")
     func savedPreview() async throws {
         let store = try await offlineStore()
@@ -229,6 +318,25 @@ struct ThemeStoreTests {
         await #expect(throws: ThemeError.unknownTheme("custom-gone-12345678")) {
             _ = try await store.apply(.custom(id: "custom-gone-12345678"), to: volume)
         }
+    }
+
+    @Test("a My Themes theme removed after it was picked is told without Mactoy's theme list or its id")
+    func removedSavedThemeMessage() async throws {
+        let store = try await offlineStore()
+        guard case .custom(let id) = try await store.importCustom(from: themeFolder()) else { Issue.record("not a saved theme"); return }
+        try await store.removeSaved(id: id)
+        let volume = try tempDir()
+        var thrown: (any Error)?
+        do { _ = try await store.apply(.custom(id: id), to: volume) } catch { thrown = error }
+        #expect(thrown as? ThemeError == .unknownTheme(id))
+        let told = store.message(for: try #require(thrown), choice: .custom(id: id))
+        #expect(told == "That theme is no longer in My Themes. Choose another theme.")
+        #expect(!told.contains(id))
+        #expect(!told.contains("theme list"))
+        // And a fresh install that was going to use it says so too.
+        let result = await store.applyAfterInstall(.custom(id: id), disk: installedDisk(), findVolume: { _ in volume },
+                                                   looksFresh: { _ in true }, deviceIdentifier: onInstalledDisk)
+        #expect(result == .themeUnavailable(problem: "That theme is no longer in My Themes."))
     }
 
     @Test("a theme found on a drive is saved to My Themes, and the drive is not touched")
@@ -600,7 +708,14 @@ struct ThemeStoreTests {
             switch choice { case .catalog(let x), .custom(let x): id = x; case .ventoyDefault: id = "" }
             let problem = await store.applyAfterInstall(choice, disk: installedDisk(), findVolume: { _ in volume },
                                                        looksFresh: { looked.add($0.path); return true }, deviceIdentifier: onInstalledDisk)
-            #expect(problem == .notApplied(problem: ThemeError.unknownTheme(id).localizedDescription))
+            switch choice {
+            case .custom:
+                // Never in the list, and its id is an internal one: neither is said.
+                #expect(problem == .themeUnavailable(problem: "That theme is no longer in My Themes."))
+            default:
+                // Not in the list, so the id is all there is to call it by.
+                #expect(problem == .themeUnavailable(problem: "“\(id)” is no longer in Mactoy's theme list."))
+            }
         }
         #expect(looked.values.isEmpty)
         #expect(try snapshot(volume).isEmpty)
@@ -693,6 +808,263 @@ struct ThemeStoreTests {
         #expect(try await store.apply(.ventoyDefault, to: volume).isEmpty, "and the drive is free again")
     }
 
+    // MARK: Themes whose download is gone or changed
+
+    private let tela = "tela"
+    private var telaURL: URL { entry(tela).download.url }
+
+    /// A catalog of `ids` whose downloads all have the checksum made of `digit`, so a later list can change it.
+    private func catalogData(_ ids: [String], digit: Character) throws -> Data {
+        let themes = ids.map { id -> ThemeEntry in
+            var e = entry(id)
+            e.download.sha256 = String(repeating: digit, count: 64)
+            return e
+        }
+        return try JSONEncoder().encode(ThemeCatalog(schema: ThemeCatalog.supportedSchema, themes: themes))
+    }
+
+    /// A store whose bundled list has "tela" (checksum "b…"), with the online list and the downloads both in the test's hands.
+    private func scriptedStore(bundledIDs: [String] = ["tela"]) throws -> (store: ThemeStore, list: ScriptedTransport, downloads: ScriptedTransport) {
+        let list = ScriptedTransport()
+        let downloads = ScriptedTransport()
+        return (try makeStore(bundledIDs: bundledIDs, loaderTransport: list, fetcherTransport: downloads), list, downloads)
+    }
+
+    private let gone404 = ThemeError.downloadGone(host: "github.com", status: 404)
+
+    private func problem(_ reason: ThemeUnavailable.Reason, digit: Character = "b") -> ThemeUnavailable {
+        ThemeUnavailable(reason: reason, downloadURL: telaURL, sha256: String(repeating: digit, count: 64))
+    }
+
+    @Test("an apply whose download is gone marks the theme unavailable, with the status")
+    func applyGoneMarks() async throws {
+        let (store, _, downloads) = try scriptedStore()
+        await store.load()
+        downloads.answerEverything(.failure(gone404))
+        await #expect(throws: gone404) { _ = try await store.apply(.catalog(id: "tela"), to: try tempDir()) }
+        #expect(store.unavailableThemes == ["tela": problem(.gone(status: 404))])
+        // A 410 says the same, with its own number for the report.
+        downloads.answerEverything(.failure(ThemeError.downloadGone(host: "github.com", status: 410)))
+        await #expect(throws: ThemeError.self) { _ = try await store.apply(.catalog(id: "tela"), to: try tempDir()) }
+        #expect(store.unavailableThemes == ["tela": problem(.gone(status: 410))])
+    }
+
+    @Test("a download that doesn't match the list's checksum marks the theme changed")
+    func applyChangedMarks() async throws {
+        let (store, _, downloads) = try scriptedStore()
+        await store.load()
+        downloads.answerEverything(.success(Data("not the file the list was written for".utf8)))
+        await #expect(throws: ThemeError.self) { _ = try await store.apply(.catalog(id: "tela"), to: try tempDir()) }
+        #expect(store.unavailableThemes == ["tela": problem(.changed)])
+    }
+
+    @Test("a download that can't be reached marks nothing: that is the connection, not the theme")
+    func unreachableDoesNotMark() async throws {
+        let (store, _, downloads) = try scriptedStore()
+        await store.load()
+        let failures: [any Error] = [ThemeError.serverUnreachable(host: "github.com"), DriverError.network("offline"),
+                                     URLError(.notConnectedToInternet), ThemeError.downloadTooLarge(70 << 20), ThemeError.missingFile("theme.txt")]
+        for failure in failures {
+            downloads.answerEverything(.failure(failure))
+            await #expect(throws: (any Error).self) { _ = try await store.apply(.catalog(id: "tela"), to: try tempDir()) }
+            await store.prefetch(.catalog(id: "tela"))?.value
+            let volume = try tempDir()
+            let after = await store.applyAfterInstall(.catalog(id: "tela"), disk: installedDisk(), findVolume: { _ in volume },
+                                                      looksFresh: { _ in true }, deviceIdentifier: onInstalledDisk)
+            guard case .notApplied = after else { Issue.record("\(failure): \(after)"); continue }
+            #expect(store.unavailableThemes.isEmpty, "\(failure)")
+        }
+    }
+
+    @Test("a prefetch whose download is gone marks the theme, so the picker can say so before anything is applied")
+    func prefetchMarks() async throws {
+        let (store, _, downloads) = try scriptedStore()
+        await store.load()
+        downloads.answerEverything(.failure(gone404))
+        await store.prefetch(.catalog(id: "tela"))?.value
+        #expect(store.unavailableThemes == ["tela": problem(.gone(status: 404))])
+        // Ventoy's own theme, a saved one, and a theme the list doesn't have download nothing.
+        #expect(store.prefetch(.ventoyDefault) == nil)
+        #expect(store.prefetch(.custom(id: "custom-x-12345678")) == nil)
+        #expect(store.prefetch(.catalog(id: "nope")) == nil)
+    }
+
+    @Test("a fresh install's download that is gone or changed marks the theme too")
+    func afterInstallMarks() async throws {
+        let (store, _, downloads) = try scriptedStore()
+        await store.load()
+        downloads.answerEverything(.failure(gone404))
+        let volume = try tempDir()
+        let result = await store.applyAfterInstall(.catalog(id: "tela"), disk: installedDisk(), findVolume: { _ in volume },
+                                                   looksFresh: { _ in true }, deviceIdentifier: onInstalledDisk)
+        #expect(result == .themeUnavailable(problem: "Mactoy couldn't find “tela” where its theme list says it should be."))
+        #expect(store.unavailableThemes == ["tela": problem(.gone(status: 404))])
+        #expect(try snapshot(volume).isEmpty, "nothing was written")
+    }
+
+    @Test("a later download that works clears the mark: from a prefetch or from an apply")
+    func successClears() async throws {
+        let archive = try themeZip()
+        let gate = ScriptedTransport()
+        let (store, cache) = try await storeWithDownloadableTheme(archive: archive, fetcherTransport: gate)
+        gate.answerEverything(.failure(gone404))
+        await store.prefetch(.catalog(id: "fetched-theme"))?.value
+        #expect(store.unavailableThemes.keys.sorted() == ["fetched-theme"])
+
+        gate.answerEverything(.success(archive))
+        await store.prefetch(.catalog(id: "fetched-theme"))?.value
+        #expect(store.unavailableThemes.isEmpty, "the prefetch worked")
+
+        // The good download is kept on this Mac; clear it so the next one has to go to the server.
+        try FileManager.default.removeItem(at: cache)
+        gate.answerEverything(.failure(gone404))
+        await #expect(throws: gone404) { _ = try await store.apply(.catalog(id: "fetched-theme"), to: try tempDir()) }
+        #expect(store.unavailableThemes.keys.sorted() == ["fetched-theme"])
+        gate.answerEverything(.success(archive))
+        let volume = try tempDir()
+        _ = try await store.apply(.catalog(id: "fetched-theme"), to: volume)
+        #expect(store.unavailableThemes.isEmpty, "the apply worked")
+        #expect(try ThemeInstaller.current(on: volume) == .managed(id: "fetched-theme", name: "Fetched"))
+    }
+
+    @Test("a download that works doesn't clear the mark of another theme")
+    func successIsPerTheme() async throws {
+        let (store, _, downloads) = try scriptedStore(bundledIDs: ["tela", "other"])
+        await store.load()
+        downloads.answerEverything(.failure(gone404))
+        await store.prefetch(.catalog(id: "tela"))?.value
+        await store.prefetch(.catalog(id: "other"))?.value
+        #expect(store.unavailableThemes.keys.sorted() == ["other", "tela"])
+        // "other" still has no good download; a good one for it would leave "tela" marked.
+        downloads.answerEverything(.failure(ThemeError.serverUnreachable(host: "github.com")))
+        await store.prefetch(.catalog(id: "other"))?.value
+        #expect(store.unavailableThemes.keys.sorted() == ["other", "tela"], "an unreachable server doesn't clear a mark either")
+    }
+
+    @Test("a list with another download for the theme clears the mark; the same download, or a list without the theme, is judged by its own rules")
+    func catalogReloadClears() async throws {
+        // Same download: the mark stays.
+        do {
+            let (store, list, downloads) = try scriptedStore()
+            await store.load()
+            downloads.answerEverything(.failure(gone404))
+            await store.prefetch(.catalog(id: "tela"))?.value
+            list.answer(ThemeCatalogLoader.remoteCatalogURL, .success(try catalogData(["tela", "new"], digit: "b")))
+            await store.load()
+            #expect(store.catalogSource == .remote)
+            #expect(store.catalog.map(\.id) == ["tela", "new"])
+            #expect(store.unavailableThemes.keys.sorted() == ["tela"], "the list still names the download that failed")
+        }
+        // A different checksum: the list was fixed, so the theme is worth trying again.
+        do {
+            let (store, list, downloads) = try scriptedStore()
+            await store.load()
+            downloads.answerEverything(.failure(gone404))
+            await store.prefetch(.catalog(id: "tela"))?.value
+            #expect(!store.unavailableThemes.isEmpty)
+            list.answer(ThemeCatalogLoader.remoteCatalogURL, .success(try catalogData(["tela"], digit: "c")))
+            await store.load()
+            #expect(store.catalogSource == .remote)
+            #expect(store.unavailableThemes.isEmpty)
+            #expect(store.catalog.first?.download.sha256 == String(repeating: "c", count: 64))
+        }
+        // A different address with the same checksum is another download too.
+        do {
+            let (store, list, downloads) = try scriptedStore()
+            await store.load()
+            downloads.answerEverything(.failure(gone404))
+            await store.prefetch(.catalog(id: "tela"))?.value
+            var moved = entry("tela")
+            moved.download.url = URL(string: "https://github.com/a/b/releases/download/v2/x.zip")!
+            list.answer(ThemeCatalogLoader.remoteCatalogURL, .success(try JSONEncoder().encode(ThemeCatalog(schema: ThemeCatalog.supportedSchema, themes: [moved]))))
+            await store.load()
+            #expect(store.unavailableThemes.isEmpty)
+        }
+        // The theme is gone from the list: nothing left to mark.
+        do {
+            let (store, list, downloads) = try scriptedStore()
+            await store.load()
+            downloads.answerEverything(.failure(gone404))
+            await store.prefetch(.catalog(id: "tela"))?.value
+            list.answer(ThemeCatalogLoader.remoteCatalogURL, .success(try catalogData(["new"], digit: "b")))
+            await store.load()
+            #expect(store.catalog.map(\.id) == ["new"])
+            #expect(store.unavailableThemes.isEmpty)
+        }
+    }
+
+    @Test("a failure for a download the list has replaced since doesn't mark the new entry")
+    func staleFailureIsIgnored() async throws {
+        let list = ScriptedTransport()
+        let gate = GatedTransport()   // holds the download until the test opens it
+        let downloads = ScriptedTransport(gate: gate)
+        let store = try makeStore(bundledIDs: ["tela"], loaderTransport: list, fetcherTransport: downloads)
+        await store.load()
+        downloads.answerEverything(.failure(gone404))
+        let pending = store.prefetch(.catalog(id: "tela"))
+        // The list is fixed while that download is still waiting.
+        list.answer(ThemeCatalogLoader.remoteCatalogURL, .success(try catalogData(["tela"], digit: "c")))
+        await store.load()
+        #expect(store.catalog.first?.download.sha256 == String(repeating: "c", count: 64))
+        await gate.open()
+        await pending?.value
+        #expect(store.unavailableThemes.isEmpty, "the failure was about the old download")
+    }
+
+    @Test("a theme that leaves the list keeps its name, so what is said about it isn't an id")
+    func nameOutlivesTheList() async throws {
+        let dir = try tempDir()
+        var named = entry("tela")
+        named.name = "Tela"
+        let bundled = dir.appendingPathComponent("bundled.json")
+        try JSONEncoder().encode(ThemeCatalog(schema: ThemeCatalog.supportedSchema, themes: [named])).write(to: bundled)
+        let list = ScriptedTransport()
+        let store = ThemeStore(loader: ThemeCatalogLoader(transport: list, cacheDirectory: dir.appendingPathComponent("cache"),
+                                                          bundledCatalog: bundled, bundledPreviews: nil),
+                               fetcher: ThemeFetcher(transport: ScriptedTransport(), cacheRoot: dir.appendingPathComponent("themes"), bundledRoot: nil),
+                               library: ThemeLibrary(root: dir.appendingPathComponent("My Themes")))
+        await store.load()
+        #expect(store.displayName(for: .catalog(id: "tela")) == "Tela")
+        // The online list arrives without it.
+        list.answer(ThemeCatalogLoader.remoteCatalogURL, .success(try catalogData(["other"], digit: "b")))
+        await store.load()
+        #expect(store.catalog.map(\.id) == ["other"])
+        #expect(store.displayName(for: .catalog(id: "tela")) == "Tela", "known from the list it came from")
+        #expect(store.displayName(for: .catalog(id: "never-seen")) == "never-seen", "an id nobody named is all there is")
+        #expect(store.message(for: ThemeError.unknownTheme("tela"), choice: .catalog(id: "tela"))
+            == "“Tela” is no longer in Mactoy's theme list. Choose another theme.")
+        // And after an install:
+        let volume = try tempDir()
+        let result = await store.applyAfterInstall(.catalog(id: "tela"), disk: installedDisk(), findVolume: { _ in volume },
+                                                   looksFresh: { _ in true }, deviceIdentifier: onInstalledDisk)
+        #expect(result == .themeUnavailable(problem: "“Tela” is no longer in Mactoy's theme list."))
+        #expect(store.unavailableThemes.isEmpty, "a theme that left the list is not a download that failed")
+    }
+
+    @Test("after an install, a theme whose download changed is named in the problem")
+    func afterInstallChanged() async throws {
+        let archive = try themeZip()
+        let (store, _) = try await storeWithDownloadableTheme(archive: archive, fetcherTransport: ScriptedTransport(.success(Data("changed".utf8))))
+        let volume = try tempDir()
+        let result = await store.applyAfterInstall(.catalog(id: "fetched-theme"), disk: installedDisk(), findVolume: { _ in volume },
+                                                   looksFresh: { _ in true }, deviceIdentifier: onInstalledDisk)
+        #expect(result == .themeUnavailable(problem: "“Fetched” has changed since it was added to Mactoy's theme list, so Mactoy didn't use it."))
+        #expect(store.unavailableThemes.keys.sorted() == ["fetched-theme"])
+        #expect(try snapshot(volume).isEmpty, "nothing was written")
+    }
+
+    @Test("after an install, a server that can't be reached is told as it is, and the theme can be added later")
+    func afterInstallUnreachable() async throws {
+        let (store, _, downloads) = try scriptedStore()
+        await store.load()
+        downloads.answerEverything(.failure(ThemeError.serverUnreachable(host: "github.com")))
+        let volume = try tempDir()
+        let result = await store.applyAfterInstall(.catalog(id: "tela"), disk: installedDisk(), findVolume: { _ in volume },
+                                                   looksFresh: { _ in true }, deviceIdentifier: onInstalledDisk)
+        #expect(result == .notApplied(problem: "Couldn't reach github.com. Check your internet connection and try again."))
+        #expect(store.unavailableThemes.isEmpty)
+    }
+
 }
 
 /// A thread-safe list for closures that must be `@Sendable`.
@@ -701,4 +1073,33 @@ fileprivate final class Box: @unchecked Sendable {
     private var items: [String] = []
     func add(_ value: String) { lock.lock(); items.append(value); lock.unlock() }
     var values: [String] { lock.lock(); defer { lock.unlock() }; return items }
+}
+
+/// Answers each request with whatever the test last said. Unknown addresses fail like an offline network.
+fileprivate final class ScriptedTransport: ThemeTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var answers: [URL: Result<Data, any Error>] = [:]
+    private var everything: Result<Data, any Error> = .failure(DriverError.network("offline"))
+    private let gate: ThemeStoreTests.GatedTransport?
+
+    /// `gate` holds each request until the test opens it, as `GatedTransport` does.
+    init(_ everything: Result<Data, any Error>? = nil, gate: ThemeStoreTests.GatedTransport? = nil) {
+        if let everything { self.everything = everything }
+        self.gate = gate
+    }
+
+    func answer(_ url: URL, _ result: Result<Data, any Error>) { lock.lock(); answers[url] = result; lock.unlock() }
+    func answerEverything(_ result: Result<Data, any Error>) { lock.lock(); everything = result; lock.unlock() }
+
+    private func answer(for url: URL) -> Result<Data, any Error> {
+        lock.lock(); defer { lock.unlock() }
+        return answers[url] ?? everything
+    }
+
+    func data(from url: URL, maxBytes: Int) async throws -> Data {
+        // The answer is read when the request is made, so a held request keeps the answer it started with.
+        let result = answer(for: url)
+        if let gate { _ = try? await gate.data(from: url, maxBytes: maxBytes) }
+        return try result.get()
+    }
 }

@@ -156,7 +156,7 @@ Ventoy's boot menu can be themed. Mactoy has a picker with previews of community
 
 - **New drive:** new drives get **Catppuccin Mocha** by default, because Ventoy's built-in menu looks dated. Mactoy says so on the Install tab. To keep Ventoy's own look, click **Choose…** under *Boot menu theme* and pick **Ventoy default**; Mactoy remembers that. Mactoy adds the theme right after the install, and Catppuccin Mocha is built into the app, so no download is needed.
 - **Existing drive:** on **Manage Disk**, click **Change Theme…**. Your other Ventoy settings are kept.
-- **Your own theme:** in the picker, **Add Theme from File…** takes a theme's `.zip` or folder. Themes you add are kept in **My Themes** inside Mactoy, so you can use them again on other drives.
+- **Your own theme:** in the picker, **Add Theme from File…** takes a theme's `.zip` file, its folder, or its `theme.txt`, whether the theme sits at the top or inside other folders. If a download holds several themes (a repository with a few flavours, say), Mactoy asks which one to add. Themes you add are kept in **My Themes** inside Mactoy, so you can use them again on other drives.
 - **Keeping a drive's current theme:** if a drive already has a theme that isn't in Mactoy's list, Mactoy offers to save it to My Themes before replacing it, and before erasing the drive on a fresh install. **Manage Disk** also has a **Save to My Themes** button for when you only want a copy.
 
 <p align="center">

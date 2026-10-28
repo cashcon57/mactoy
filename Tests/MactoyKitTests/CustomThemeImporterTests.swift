@@ -563,4 +563,693 @@ struct CustomThemeImporterTests {
         // A file type the assembler drops can't be the preview.
         #expect(try theme("desktop-image: \"bg.gif\"\n", extra: ["bg.gif"]).previewImage == nil)
     }
+
+    // MARK: any shape of download
+
+    private let themeText = "title-text: \"\"\n"
+
+    /// Writes `files` (text, by relative path) under `dir`.
+    private func put(_ files: [(String, String)], in dir: URL) throws {
+        for (path, text) in files { try write(text, to: dir.appendingPathComponent(path)) }
+    }
+
+    /// A ZIP with exactly these entries, in this order.
+    private func zipFile(_ entries: [(String, String)], named name: String = "pack.zip", in work: URL) throws -> URL {
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        let zip = work.appendingPathComponent(name)
+        try ThemeAssemblerTests.zip(entries.map { .init(name: $0.0, data: Data($0.1.utf8)) }).write(to: zip)
+        return zip
+    }
+
+    /// The kind of `ventoy.json` Diego Duarte's releases carry.
+    private func duarteJSON(_ folder: String) -> String {
+        """
+        {
+            "theme":{
+                "file":[
+                    "/ventoy/\(folder)/theme.txt",
+                    "/ventoy/\(folder)/theme_legacy.txt"
+                ],
+                "default_file": 1,
+                "resolution_fit": 1,
+                "gfxmode": "1920x1080"
+            }
+        }
+        """
+    }
+
+    @Test("1. a folder whose top level is the theme")
+    func shapeFolderAtTop() throws {
+        let src = tempDir().appendingPathComponent("Plain Theme")
+        try put([("theme.txt", themeText), ("bg.png", "x"), ("icons/a.png", "y")], in: src)
+        let imported = try CustomThemeImporter.importTheme(from: src, cacheRoot: tempDir())
+        #expect(imported.name == "Plain Theme")
+        #expect(imported.id == "custom-plain-theme")
+        #expect(listing(imported.directory) == ["bg.png", "icons/a.png", "theme.txt"])
+        #expect(imported.skippedFiles.isEmpty)
+    }
+
+    @Test("2. a folder with the theme nested below it, at any depth")
+    func shapeFolderNested() throws {
+        // What Diego Duarte's release looks like once unzipped, and the folder picked is its top.
+        let src = tempDir().appendingPathComponent("ventoy-pop")
+        try put([("ventoy/ventoy.json", duarteJSON("ventoy-pop")), ("ventoy/ventoy-pop/theme.txt", themeText),
+                 ("ventoy/ventoy-pop/background.png", "x")], in: src)
+        let imported = try CustomThemeImporter.importTheme(from: src, cacheRoot: tempDir())
+        #expect(imported.name == "ventoy-pop")
+        #expect(listing(imported.directory) == ["background.png", "theme.txt"])
+        #expect(imported.skippedFiles.isEmpty)
+        // Deeper still, with the picked folder's own name not mattering.
+        let deep = tempDir().appendingPathComponent("Downloads")
+        try put([("a/b/c/d/Deep Theme/theme.txt", themeText), ("a/b/c/d/Deep Theme/bg.png", "x"), ("a/readme.md", "hi")], in: deep)
+        let found = try CustomThemeImporter.importTheme(from: deep, cacheRoot: tempDir())
+        #expect(found.name == "Deep Theme")
+        #expect(listing(found.directory) == ["bg.png", "theme.txt"])
+    }
+
+    @Test("3. a zip with theme.txt at the archive root")
+    func shapeZipAtRoot() throws {
+        let zip = try zipFile([("theme.txt", themeText), ("bg.png", "x"), ("icons/a.png", "y")], named: "Flat Pack.zip", in: tempDir())
+        let imported = try CustomThemeImporter.importTheme(from: zip, cacheRoot: tempDir())
+        #expect(imported.name == "Flat Pack")
+        #expect(listing(imported.directory) == ["bg.png", "icons/a.png", "theme.txt"])
+        #expect(imported.skippedFiles.isEmpty)
+    }
+
+    @Test("4. a zip with one top folder that holds the theme at its root")
+    func shapeZipOneFolder() throws {
+        let zip = try zipFile([("Folder Theme/theme.txt", themeText), ("Folder Theme/bg.png", "x"), ("Folder Theme/icons/a.png", "y")], in: tempDir())
+        let imported = try CustomThemeImporter.importTheme(from: zip, cacheRoot: tempDir())
+        #expect(imported.name == "Folder Theme")
+        #expect(listing(imported.directory) == ["bg.png", "icons/a.png", "theme.txt"])
+    }
+
+    @Test("5. a zip with the theme nested deeper, as Diego Duarte's releases are")
+    func shapeZipNested() throws {
+        let zip = try zipFile([("ventoy/ventoy.json", duarteJSON("ventoy-blueprint")),
+                               ("ventoy/ventoy-blueprint/theme.txt", "desktop-image: \"background.png\"\n"),
+                               ("ventoy/ventoy-blueprint/theme_legacy.txt", themeText),
+                               ("ventoy/ventoy-blueprint/background.png", "x")], named: "ventoy_blueprint.zip", in: tempDir())
+        let imported = try CustomThemeImporter.importTheme(from: zip, cacheRoot: tempDir())
+        #expect(imported.name == "ventoy-blueprint")
+        #expect(imported.id == "custom-ventoy-blueprint")
+        #expect(listing(imported.directory) == ["background.png", "theme.txt", "theme_legacy.txt"])
+        #expect(imported.previewImage?.lastPathComponent == "background.png")
+        #expect(imported.skippedFiles.isEmpty)
+    }
+
+    @Test("6. Finder's __MACOSX copy and ._ files are never a theme, never copied and never reported")
+    func shapeFinderZip() throws {
+        let junk: [(String, String)] = [("__MACOSX/Pack/._theme.txt", "a"), ("__MACOSX/Pack/._bg.png", "b"), ("Pack/.DS_Store", "c"),
+                                        ("__MACOSX/._Pack", "d"), ("__MACOSX/theme.txt", themeText)]
+        let clean = try CustomThemeImporter.importTheme(
+            from: try zipFile([("Pack/theme.txt", themeText), ("Pack/bg.png", "x")], named: "clean.zip", in: tempDir()), cacheRoot: tempDir())
+        let finder = try CustomThemeImporter.importTheme(
+            from: try zipFile([("Pack/theme.txt", themeText), ("Pack/bg.png", "x")] + junk, named: "finder.zip", in: tempDir()), cacheRoot: tempDir())
+        // The look-alike theme.txt under __MACOSX isn't a second theme.
+        #expect(finder.name == "Pack")
+        #expect(listing(finder.directory) == ["bg.png", "theme.txt"])
+        #expect(finder.skippedFiles.isEmpty)
+        // Same name, same digest: the junk changed nothing.
+        #expect(finder.directory.lastPathComponent == clean.directory.lastPathComponent)
+
+        // Files compressed together put the theme at the root of the archive, where the junk sits beside it.
+        let flatJunk: [(String, String)] = [("__MACOSX/._theme.txt", "a"), ("__MACOSX/._bg.png", "b"), (".DS_Store", "c"), ("._bg.png", "d")]
+        let flat = try CustomThemeImporter.importTheme(
+            from: try zipFile([("theme.txt", themeText), ("bg.png", "x")] + flatJunk, named: "Flat.zip", in: tempDir()), cacheRoot: tempDir())
+        let flatClean = try CustomThemeImporter.importTheme(
+            from: try zipFile([("theme.txt", themeText), ("bg.png", "x")], named: "Flat.zip", in: tempDir()), cacheRoot: tempDir())
+        #expect(flat.name == "Flat")
+        #expect(listing(flat.directory) == ["bg.png", "theme.txt"])
+        #expect(flat.skippedFiles.isEmpty)
+        #expect(flat.directory.lastPathComponent == flatClean.directory.lastPathComponent)
+
+        // Nothing but junk is no theme.
+        let onlyJunk = try zipFile([("__MACOSX/Pack/theme.txt", themeText), ("__MACOSX/Pack/._theme.txt", "a")], named: "junk.zip", in: tempDir())
+        #expect(throws: ThemeError.noThemeFile) { _ = try CustomThemeImporter.importTheme(from: onlyJunk, cacheRoot: tempDir()) }
+    }
+
+    @Test("6. a ZIP that Finder's own tool makes, with real extended attributes")
+    func shapeRealFinderZip() throws {
+        let work = tempDir()
+        let pack = work.appendingPathComponent("Pack")
+        try put([("theme.txt", themeText), ("bg.png", "x")], in: pack)
+        // An extended attribute is what makes the archiver write a __MACOSX/._ copy.
+        for name in ["theme.txt", "bg.png"] {
+            let status = pack.appendingPathComponent(name).path.withCString { path in
+                "mactoy-test".withCString { value in setxattr(path, "com.mactoy.test", value, 11, 0, 0) }
+            }
+            try #require(status == 0)
+        }
+        try Data("junk".utf8).write(to: pack.appendingPathComponent(".DS_Store"))
+        let zip = work.appendingPathComponent("Pack.zip")
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        p.arguments = ["-c", "-k", "--sequesterRsrc", "--keepParent", pack.path, zip.path]
+        try p.run(); p.waitUntilExit()
+        let entries = try CustomThemeImporter.parseListing(try Subprocess.run("/usr/bin/zipinfo", ["-l", zip.path]).stdout).map(\.name)
+        #expect(entries.contains { $0.hasPrefix("__MACOSX/") }, "the archive should hold a __MACOSX copy: \(entries)")
+
+        let imported = try CustomThemeImporter.importTheme(from: zip, cacheRoot: tempDir())
+        #expect(imported.name == "Pack")
+        #expect(listing(imported.directory) == ["bg.png", "theme.txt"])
+        #expect(imported.skippedFiles.isEmpty)
+    }
+
+    @Test("6. a picked folder's .DS_Store, ._ files and __MACOSX are left out and not reported")
+    func shapeFolderJunk() throws {
+        let src = tempDir().appendingPathComponent("Pack")
+        try put([("theme.txt", themeText), ("bg.png", "x"), (".DS_Store", "c"), ("._bg.png", "d"), ("icons/.DS_Store", "e"),
+                 ("__MACOSX/._theme.txt", "f")], in: src)
+        let imported = try CustomThemeImporter.importTheme(from: src, cacheRoot: tempDir())
+        #expect(listing(imported.directory) == ["bg.png", "theme.txt"])
+        #expect(imported.skippedFiles.isEmpty)
+    }
+
+    @Test("a cloned repository's .git folder is not read")
+    func shapeClonedRepository() throws {
+        let src = tempDir().appendingPathComponent("grub-theme")
+        try put([("theme.txt", themeText), ("bg.png", "x"), (".git/HEAD", "ref"), (".git/objects/ab/cdef", "blob")], in: src)
+        let imported = try CustomThemeImporter.importTheme(from: src, cacheRoot: tempDir())
+        #expect(listing(imported.directory) == ["bg.png", "theme.txt"])
+        #expect(imported.skippedFiles.isEmpty)
+        #expect(try ThemeAssembler.files(fromFolder: src).map(\.path).sorted() == ["bg.png", "theme.txt"])
+    }
+
+    @Test("7. picking the theme.txt file itself imports its folder")
+    func shapePickThemeFile() throws {
+        let src = tempDir().appendingPathComponent("Picked Theme")
+        try put([("theme.txt", "desktop-image: \"bg.png\"\n"), ("bg.png", "x"), ("b.pf2", "f"), ("sub/a.png", "y")], in: src)
+        let viaFile = try CustomThemeImporter.importTheme(from: src.appendingPathComponent("theme.txt"), cacheRoot: tempDir())
+        let viaFolder = try CustomThemeImporter.importTheme(from: src, cacheRoot: tempDir())
+        #expect(viaFile.name == "Picked Theme")
+        #expect(viaFile.id == "custom-picked-theme")
+        #expect(listing(viaFile.directory) == ["b.pf2", "bg.png", "sub/a.png", "theme.txt"])
+        #expect(viaFile.settings.fonts == ["b.pf2"])
+        #expect(viaFile.previewImage?.lastPathComponent == "bg.png")
+        #expect(viaFile.directory.lastPathComponent == viaFolder.directory.lastPathComponent)
+        // Other themes below it don't make it ambiguous: this one was named.
+        try put([("more/theme.txt", themeText)], in: src)
+        #expect(try CustomThemeImporter.importTheme(from: src.appendingPathComponent("theme.txt"), cacheRoot: tempDir()).name == "Picked Theme")
+    }
+
+    @Test("7. a theme.txt that is itself a link is not followed: it reads as no theme file")
+    func shapeLinkedThemeFile() throws {
+        let src = tempDir().appendingPathComponent("Picked Theme")
+        try put([("theme.txt", themeText), ("bg.png", "x")], in: src)
+        let elsewhere = tempDir()
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        let link = elsewhere.appendingPathComponent("theme.txt")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: src.appendingPathComponent("theme.txt"))
+        #expect(throws: ThemeError.noThemeFile) { _ = try CustomThemeImporter.importTheme(from: link, cacheRoot: tempDir()) }
+        // Not even when the folder it sits in has a theme of its own below it.
+        try put([("nested/theme.txt", themeText)], in: elsewhere)
+        #expect(throws: ThemeError.noThemeFile) { _ = try CustomThemeImporter.importTheme(from: link, cacheRoot: tempDir()) }
+        // A dangling link, and a name with nothing behind it, read the same way.
+        let dangling = tempDir().appendingPathComponent("theme.txt")
+        try FileManager.default.createDirectory(at: dangling.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: dangling, withDestinationURL: tempDir().appendingPathComponent("gone/theme.txt"))
+        #expect(throws: ThemeError.noThemeFile) { _ = try CustomThemeImporter.importTheme(from: dangling, cacheRoot: tempDir()) }
+        #expect(throws: ThemeError.noThemeFile) { _ = try CustomThemeImporter.importTheme(from: tempDir().appendingPathComponent("theme.txt"), cacheRoot: tempDir()) }
+    }
+
+    @Test("7. only the folder holding theme.txt is resolved: a link to that folder is followed")
+    func shapeThemeFileInLinkedFolder() throws {
+        let src = tempDir().appendingPathComponent("Real Theme")
+        try put([("theme.txt", themeText), ("bg.png", "x")], in: src)
+        let linkedFolder = tempDir().appendingPathComponent("Alias")
+        try FileManager.default.createDirectory(at: linkedFolder.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linkedFolder, withDestinationURL: src)
+        let imported = try CustomThemeImporter.importTheme(from: linkedFolder.appendingPathComponent("theme.txt"), cacheRoot: tempDir())
+        // Named for the folder the file is really in, as before.
+        #expect(imported.name == "Real Theme")
+        #expect(listing(imported.directory) == ["bg.png", "theme.txt"])
+    }
+
+    /// A stand-in for the user's home, so no test looks at the real one.
+    private func fakeHome() throws -> URL {
+        let home = tempDir().appendingPathComponent("home", isDirectory: true)
+        for name in ["Downloads", "Desktop", "Documents", "Music"] {
+            try FileManager.default.createDirectory(at: home.appendingPathComponent(name), withIntermediateDirectories: true)
+        }
+        return home
+    }
+
+    @Test("7. a theme.txt loose in the home folder, Downloads, Desktop or Documents is refused, naming the folder")
+    func shapeLooseThemeFile() throws {
+        let home = try fakeHome()
+        let top = CustomThemeImporter.topFolders(home: home)
+        let cases: [(String, String)] = [("", "your home folder"), ("Downloads", "Downloads"), ("Desktop", "Desktop"), ("Documents", "Documents")]
+        for (folder, name) in cases {
+            let dir = folder.isEmpty ? home : home.appendingPathComponent(folder)
+            // Other things the user keeps there must not be read: the refusal comes first.
+            try put([("theme.txt", themeText), ("tax-return.png", "private")], in: dir)
+            let file = dir.appendingPathComponent("theme.txt")
+            #expect(throws: ThemeError.looseThemeFile(folder: name), "\(name)") { _ = try CustomThemeImporter.open(file, workRoot: tempDir(), topFolders: top) }
+            #expect(throws: ThemeError.looseThemeFile(folder: name), "\(name)") {
+                _ = try CustomThemeImporter.open(file, workRoot: tempDir(), rootKnown: true, topFolders: top)
+            }
+        }
+        #expect(ThemeError.looseThemeFile(folder: "Downloads").errorDescription
+            == "That theme.txt is loose in Downloads. Put the theme's files in their own folder, then choose that folder.")
+        // The message names the folder, not its path.
+        #expect(!(ThemeError.looseThemeFile(folder: "your home folder").errorDescription ?? "").contains(home.path))
+    }
+
+    @Test("7. a theme.txt in a folder of its own is fine, in Downloads or anywhere else")
+    func shapeThemeFileInOwnFolder() throws {
+        let home = try fakeHome()
+        let top = CustomThemeImporter.topFolders(home: home)
+        try put([("theme.txt", themeText), ("bg.png", "x")], in: home.appendingPathComponent("Downloads/My Theme"))
+        try put([("theme.txt", themeText)], in: home.appendingPathComponent("Music"))
+        // A folder that only has a top folder's name is not that folder.
+        try put([("theme.txt", themeText)], in: tempDir().appendingPathComponent("Downloads"))
+        for file in [home.appendingPathComponent("Downloads/My Theme/theme.txt"), home.appendingPathComponent("Music/theme.txt"),
+                     tempDir().appendingPathComponent("Downloads/theme.txt")] {
+            if (try? CustomThemeImporter.open(file, workRoot: tempDir(), topFolders: top)) == nil && FileManager.default.fileExists(atPath: file.path) {
+                Issue.record("refused \(file.path)")
+            }
+        }
+        let opened = try CustomThemeImporter.open(home.appendingPathComponent("Downloads/My Theme/theme.txt"), workRoot: tempDir(), topFolders: top)
+        #expect(!opened.needsChoice)
+        // Picking the Downloads folder itself is a folder pick, which this check is not about.
+        #expect((try? CustomThemeImporter.open(home.appendingPathComponent("Downloads/My Theme"), workRoot: tempDir(), topFolders: top)) != nil)
+    }
+
+    @Test("7. which folders count as the user's top-level ones, by path")
+    func looseFolderNames() throws {
+        let home = try fakeHome()
+        let top = CustomThemeImporter.topFolders(home: home)
+        func name(_ url: URL) -> String? { CustomThemeImporter.looseFolderName(url, in: top) }
+        #expect(name(home) == "your home folder")
+        #expect(name(home.appendingPathComponent("Downloads")) == "Downloads")
+        #expect(name(home.appendingPathComponent("Desktop/")) == "Desktop")
+        #expect(name(home.appendingPathComponent("Documents/../Documents")) == "Documents")
+        #expect(name(URL(fileURLWithPath: "/")) == "the top level of the disk")
+        // On the disk's own terms, case does not tell folders apart.
+        #expect(name(URL(fileURLWithPath: home.path.uppercased() + "/DOWNLOADS")) == "Downloads" || !FileManager.default.fileExists(atPath: home.path.uppercased()))
+        #expect(name(home.appendingPathComponent("downloads")) == "Downloads")
+        // Below them, or beside them, is somewhere else.
+        #expect(name(home.appendingPathComponent("Downloads/Themes")) == nil)
+        #expect(name(home.appendingPathComponent("Music")) == nil)
+        #expect(name(home.deletingLastPathComponent()) == nil)
+        #expect(name(URL(fileURLWithPath: "/Volumes")) == nil)
+        #expect(name(URL(fileURLWithPath: "/tmp")) == nil)
+        // A Downloads folder that is a link to somewhere else is still Downloads.
+        let moved = tempDir().appendingPathComponent("Moved", isDirectory: true)
+        try FileManager.default.createDirectory(at: moved, withIntermediateDirectories: true)
+        let relocated = tempDir().appendingPathComponent("home2", isDirectory: true)
+        try FileManager.default.createDirectory(at: relocated, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: relocated.appendingPathComponent("Downloads"), withDestinationURL: moved)
+        #expect(CustomThemeImporter.looseFolderName(moved, in: CustomThemeImporter.topFolders(home: relocated)) == "Downloads")
+        // The defaults are the real user's, and are never read here.
+        let real = CustomThemeImporter.topFolders().map(\.name)
+        #expect(real == ["your home folder", "Downloads", "Desktop", "Documents", "the top level of the disk"])
+    }
+
+    @Test("7. any other .txt file is refused with a clear message")
+    func shapeOtherTextFile() throws {
+        let src = tempDir().appendingPathComponent("Pack")
+        try put([("theme.txt", themeText)], in: src)
+        for name in ["notes.txt", "README.TXT", "theme_legacy.txt", "README.md", "theme.7z"] {
+            let file = src.appendingPathComponent(name)
+            try write("x", to: file)
+            #expect(throws: ThemeError.unsupportedSource, "\(name)") { _ = try CustomThemeImporter.importTheme(from: file, cacheRoot: tempDir()) }
+        }
+        #expect(ThemeError.unsupportedSource.errorDescription == "Choose the theme's folder, its .zip file, or its theme.txt.")
+        // A ZIP is a ZIP whatever it is called; a file that is missing is still reported as an unreadable archive.
+        let zip = try zipFile([("theme.txt", themeText)], named: "download", in: tempDir())
+        #expect(try CustomThemeImporter.importTheme(from: zip, cacheRoot: tempDir()).name == "download")
+        #expect(throws: ThemeError.unreadableArchive("it doesn't look like a ZIP file")) {
+            _ = try CustomThemeImporter.importTheme(from: src.appendingPathComponent("missing"), cacheRoot: tempDir())
+        }
+    }
+
+    @Test("8. a download with several themes lists them, and the chosen folder imports from a zip")
+    func shapeSeveralThemesZip() throws {
+        let top = "grub-0a37ab"
+        let zip = try zipFile(catppuccinLike(top: top), named: "grub-0a37ab.zip", in: tempDir())
+        // The one-shot call still refuses, naming every theme.txt (shallowest first).
+        let expected = ["\(top)/src/catppuccin-latte-grub-theme/theme.txt", "\(top)/src/catppuccin-mocha-grub-theme/theme.txt",
+                        "\(top)/ventoy/src/latte/catppuccin-latte/theme.txt", "\(top)/ventoy/src/mocha/catppuccin-mocha/theme.txt"]
+        #expect(throws: ThemeError.ambiguousThemes(expected)) { _ = try CustomThemeImporter.importTheme(from: zip, cacheRoot: tempDir()) }
+
+        let opened = try CustomThemeImporter.open(zip)
+        #expect(opened.needsChoice)
+        // The list puts the ones made for Ventoy first, then goes by name...
+        #expect(opened.choices.map(\.name) == ["Catppuccin Latte", "Catppuccin Mocha", "Catppuccin Latte Grub Theme", "Catppuccin Mocha Grub Theme"])
+        #expect(opened.choices.map(\.isForVentoy) == [true, true, false, false])
+        #expect(opened.choices.map(\.folder) == ["\(top)/ventoy/src/latte/catppuccin-latte", "\(top)/ventoy/src/mocha/catppuccin-mocha",
+                                                 "\(top)/src/catppuccin-latte-grub-theme", "\(top)/src/catppuccin-mocha-grub-theme"])
+        // ...and shows where each is in the download, without the folder they all share.
+        #expect(opened.choices.map(\.path) == ["ventoy/src/latte/catppuccin-latte", "ventoy/src/mocha/catppuccin-mocha",
+                                               "src/catppuccin-latte-grub-theme", "src/catppuccin-mocha-grub-theme"])
+        // The error for a caller that can't ask still names them as they were found.
+        #expect(opened.themeFilePaths == expected)
+
+        // The folder under the Ventoy tree, which isn't one of the shallowest, works too.
+        let mocha = try CustomThemeImporter.importTheme(from: zip, themeRoot: "\(top)/ventoy/src/mocha/catppuccin-mocha", cacheRoot: tempDir())
+        #expect(mocha.name == "catppuccin-mocha")
+        #expect(mocha.id == "custom-catppuccin-mocha")
+        #expect(listing(mocha.directory) == ["terminus-14.pf2", "theme.txt"])
+        #expect(mocha.settings == .init(file: "theme.txt", fonts: ["terminus-14.pf2"], ventoyColor: "#89b4fa"))
+        // And a plain GRUB flavour, with nothing from the other themes in it.
+        let plain = try CustomThemeImporter.importTheme(from: zip, themeRoot: "\(top)/src/catppuccin-latte-grub-theme", cacheRoot: tempDir())
+        #expect(plain.name == "catppuccin-latte-grub-theme")
+        #expect(listing(plain.directory) == ["font.pf2", "theme.txt"])
+        #expect(plain.settings == .init(file: "theme.txt", fonts: ["font.pf2"]))
+    }
+
+    /// A repository like Catppuccin's: plain GRUB themes under `src` and the Ventoy ones deeper, each with its own ventoy.json.
+    private func catppuccinLike(top: String) -> [(String, String)] {
+        var entries: [(String, String)] = [("\(top)/README.md", "hi"), ("\(top)/assets/preview.png", "p")]
+        for flavour in ["latte", "mocha"] {
+            entries += [("\(top)/src/catppuccin-\(flavour)-grub-theme/theme.txt", themeText),
+                        ("\(top)/src/catppuccin-\(flavour)-grub-theme/font.pf2", "f"),
+                        ("\(top)/ventoy/src/\(flavour)/catppuccin-\(flavour)/theme.txt", themeText),
+                        ("\(top)/ventoy/src/\(flavour)/catppuccin-\(flavour)/terminus-14.pf2", "t"),
+                        ("\(top)/ventoy/src/\(flavour)/ventoy.json", """
+                         {
+                             "theme":{
+                                 "file": "/ventoy/catppuccin-\(flavour)/theme.txt",
+                                 "ventoy_color": "\(flavour == "mocha" ? "#89b4fa" : "#1e66f5")",
+                                 "fonts":[ "/ventoy/catppuccin-\(flavour)/terminus-14.pf2" ]
+                             }
+                         }
+                         """)]
+        }
+        return entries
+    }
+
+    @Test("8. several themes in a folder: the chosen one imports, and an extracted top folder works the same")
+    func shapeSeveralThemesFolder() throws {
+        let src = tempDir().appendingPathComponent("grub-extracted")
+        try put(catppuccinLike(top: "inner"), in: src)
+        #expect(throws: ThemeError.self) { _ = try CustomThemeImporter.importTheme(from: src, cacheRoot: tempDir()) }
+        let imported = try CustomThemeImporter.importTheme(from: src, themeRoot: "inner/ventoy/src/latte/catppuccin-latte", cacheRoot: tempDir())
+        #expect(imported.name == "catppuccin-latte")
+        #expect(imported.settings.ventoyColor == "#1e66f5")
+        #expect(listing(imported.directory) == ["terminus-14.pf2", "theme.txt"])
+
+        // Picking the extracted top folder itself: paths start below it.
+        let top = tempDir().appendingPathComponent("grub-top")
+        try put(catppuccinLike(top: "x").map { (String($0.0.dropFirst(2)), $0.1) }, in: top)
+        let opened = try CustomThemeImporter.open(top)
+        #expect(opened.choices.map(\.folder).contains("ventoy/src/mocha/catppuccin-mocha"))
+        #expect(opened.choices.first?.folder == "ventoy/src/latte/catppuccin-latte", "made for Ventoy, so first")
+        let mocha = try CustomThemeImporter.importTheme(opened, themeRoot: "ventoy/src/mocha/catppuccin-mocha", cacheRoot: tempDir())
+        #expect(mocha.settings.ventoyColor == "#89b4fa")
+    }
+
+    @Test("8. choosing from an opened source doesn't read the source again")
+    func shapeChoiceReadsOnce() throws {
+        let work = tempDir()
+        let zip = try zipFile(catppuccinLike(top: "repo"), in: work)
+        let scratch = tempDir()
+        let opened = try CustomThemeImporter.open(zip, workRoot: scratch)
+        #expect(names(in: scratch).isEmpty, "the unpack area is gone as soon as the source is read")
+        try FileManager.default.removeItem(at: zip)
+        // With the zip gone, every choice still imports.
+        for choice in opened.choices {
+            let imported = try CustomThemeImporter.importTheme(opened, themeRoot: choice.folder, cacheRoot: tempDir())
+            #expect(imported.name == ThemeAssembler.last(choice.folder))
+        }
+        #expect(throws: ThemeError.self) { _ = try CustomThemeImporter.importTheme(opened, cacheRoot: tempDir()) }
+        // What is held is the themes and their ventoy.json files, not the rest of the download.
+        let held = Set(opened.files.map(\.path))
+        #expect(!held.contains("repo/README.md"))
+        #expect(!held.contains("repo/assets/preview.png"))
+        #expect(held.contains("repo/ventoy/src/mocha/ventoy.json"))
+        #expect(held.contains("repo/src/catppuccin-mocha-grub-theme/font.pf2"))
+    }
+
+    @Test("8. a folder that isn't a theme can't be chosen")
+    func shapeBadChoice() throws {
+        let zip = try zipFile(catppuccinLike(top: "repo") + [("repo/docs/guide.txt", "g")], in: tempDir())
+        let cache = tempDir()
+        #expect(throws: ThemeError.rootNotFound("repo/nowhere")) { _ = try CustomThemeImporter.importTheme(from: zip, themeRoot: "repo/nowhere", cacheRoot: cache) }
+        // The folder is there but holds no theme.txt.
+        #expect(throws: ThemeError.noThemeFile) { _ = try CustomThemeImporter.importTheme(from: zip, themeRoot: "repo/ventoy/src", cacheRoot: cache) }
+        #expect(throws: ThemeError.noThemeFile) { _ = try CustomThemeImporter.importTheme(from: zip, themeRoot: "repo/docs", cacheRoot: cache) }
+        // Names that climb out or are hidden are never looked up.
+        for bad in ["../repo/src/catppuccin-mocha-grub-theme", "/repo/src/catppuccin-mocha-grub-theme/../..", "repo/.git", "repo/src/*"] {
+            #expect(throws: ThemeError.rootNotFound(bad), "\(bad)") { _ = try CustomThemeImporter.importTheme(from: zip, themeRoot: bad, cacheRoot: cache) }
+        }
+        // A trailing slash is the same folder.
+        #expect(try CustomThemeImporter.importTheme(from: zip, themeRoot: "repo/src/catppuccin-mocha-grub-theme/", cacheRoot: cache).name == "catppuccin-mocha-grub-theme")
+        #expect(names(in: cache).count == 1)
+    }
+
+    @Test("8. at most 20 themes are listed; more asks for the theme's own folder")
+    func shapeChoiceCap() throws {
+        func pack(_ count: Int) throws -> URL {
+            let dir = tempDir().appendingPathComponent("pack\(count)")
+            for i in 0..<count { try write(themeText, to: dir.appendingPathComponent("themes/theme-\(String(format: "%02d", i))/theme.txt")) }
+            return dir
+        }
+        let atCap = try CustomThemeImporter.open(try pack(20))
+        #expect(atCap.choices.count == 20)
+        #expect(atCap.choices.first?.name == "Theme 00")
+        let over = try pack(21)
+        #expect(throws: ThemeError.tooManyThemes(21)) { _ = try CustomThemeImporter.open(over) }
+        #expect(throws: ThemeError.tooManyThemes(21)) { _ = try CustomThemeImporter.importTheme(from: over, cacheRoot: tempDir()) }
+        // Naming the folder needs no list, so the cap doesn't apply.
+        #expect(try CustomThemeImporter.importTheme(from: over, themeRoot: "themes/theme-03", cacheRoot: tempDir()).name == "theme-03")
+        let message = try #require(ThemeError.tooManyThemes(21).errorDescription)
+        #expect(message == "This contains 21 themes, which is too many to choose from here. Choose the folder of the one you want instead.")
+        #expect(!message.contains("\u{2014}"))
+        // The theme's own folder is the way out.
+        #expect(try CustomThemeImporter.importTheme(from: over.appendingPathComponent("themes/theme-03"), cacheRoot: tempDir()).name == "theme-03")
+    }
+
+    @Test("8. choice names read well and can't carry hidden characters")
+    func shapeChoiceNames() {
+        #expect(CustomThemeImporter.readableName("catppuccin-mocha") == "Catppuccin Mocha")
+        #expect(CustomThemeImporter.readableName("ventoy_pop") == "Ventoy Pop")
+        #expect(CustomThemeImporter.readableName("MapleMono-CN") == "MapleMono CN")
+        #expect(CustomThemeImporter.readableName("a--b") == "A B")
+        let choices = CustomThemeImporter.choices(for: ["one", "a/b/c/theme-x", "x/\u{202E}evil\u{200B}-name"])
+        #expect(choices.map(\.name) == ["Evil Name", "One", "Theme X"])
+        #expect(choices.map(\.path) == ["x/evil-name", "one", "a/b/c/theme-x"])
+        #expect(choices.map(\.id) == ["x/\u{202E}evil\u{200B}-name", "one", "a/b/c/theme-x"])
+        // A folder with nothing readable in its name still has a name to show.
+        #expect(CustomThemeImporter.choices(for: ["a/---", "b/theme"]).map(\.name).contains("---"))
+    }
+
+    @Test("8. a theme is made for Ventoy when a ventoy folder is in its path, in any case, or a ventoy.json points at it")
+    func shapeMadeForVentoy() {
+        func forVentoy(_ folder: String, _ files: [ThemeSourceFile] = []) -> Bool { CustomThemeImporter.isMadeForVentoy(folder, in: files) }
+        #expect(forVentoy("ventoy/mocha"))
+        #expect(forVentoy("pack/Ventoy/mocha"))
+        #expect(forVentoy("pack/VENTOY"))
+        #expect(forVentoy("pack/themes/ventoy"))
+        // A folder merely containing the word is not it.
+        #expect(!forVentoy("pack/ventoy-themes/mocha"))
+        #expect(!forVentoy("pack/not_ventoy/mocha"))
+        #expect(!forVentoy("pack/src/mocha"))
+        // A ventoy.json that names a file in the folder makes it Ventoy's, wherever the folder is.
+        let json = ThemeSourceFile(path: "pack/ventoy.json", data: Data(##"{"theme":{"file":"/ventoy/mocha/theme.txt"}}"##.utf8))
+        let theme = ThemeSourceFile(path: "pack/mocha/theme.txt", data: Data("x".utf8))
+        let plain = ThemeSourceFile(path: "pack/plain/theme.txt", data: Data("x".utf8))
+        #expect(forVentoy("pack/mocha", [json, theme, plain]))
+        #expect(!forVentoy("pack/plain", [json, theme, plain]), "the json is about the other theme")
+        #expect(!forVentoy("pack/mocha", [theme, plain]), "no json, no path hint")
+        let unrelated = ThemeSourceFile(path: "pack/ventoy.json", data: Data(##"{"control":[]}"##.utf8))
+        #expect(!forVentoy("pack/mocha", [unrelated, theme]))
+        let broken = ThemeSourceFile(path: "pack/ventoy.json", data: Data("not json".utf8))
+        #expect(!forVentoy("pack/mocha", [broken, theme]))
+    }
+
+    @Test("8. Ventoy-made themes are listed first, then by name, whatever order they were found in")
+    func shapeChoiceOrder() {
+        let json = ThemeSourceFile(path: "pack/ventoy.json", data: Data(##"{"theme":{"file":"/ventoy/zed/theme.txt"}}"##.utf8))
+        let files = [json, ThemeSourceFile(path: "pack/zed/theme.txt", data: Data("x".utf8))]
+        let choices = CustomThemeImporter.choices(for: ["pack/b-plain", "pack/Ventoy/c", "pack/a-plain", "pack/zed", "pack/ventoy/a", "pack/theme-10", "pack/theme-9"], in: files)
+        #expect(choices.map(\.folder) == ["pack/ventoy/a", "pack/Ventoy/c", "pack/zed", "pack/a-plain", "pack/b-plain", "pack/theme-9", "pack/theme-10"])
+        #expect(choices.map(\.isForVentoy) == [true, true, true, false, false, false, false])
+        // The same name twice goes by path, so the order is the same however the files came.
+        let twins = CustomThemeImporter.choices(for: ["x/mocha", "a/mocha"])
+        #expect(twins.map(\.folder) == ["a/mocha", "x/mocha"])
+        #expect(CustomThemeImporter.choices(for: ["a/mocha", "x/mocha"]).map(\.folder) == twins.map(\.folder))
+    }
+
+    @Test("8. the one top folder every theme shares is left off the path shown, and no other")
+    func shapeSharedTopFolder() {
+        #expect(CustomThemeImporter.sharedTopFolder(of: ["grub-1/src/a", "grub-1/ventoy/b"]) == "grub-1")
+        #expect(CustomThemeImporter.sharedTopFolder(of: ["grub-1/a", "grub-1/b"]) == "grub-1")
+        // Not shared by all, or a theme is the top folder itself, or there is nothing above the themes.
+        #expect(CustomThemeImporter.sharedTopFolder(of: ["grub-1/a", "grub-2/b"]) == nil)
+        #expect(CustomThemeImporter.sharedTopFolder(of: ["grub-1", "grub-1/b"]) == nil)
+        #expect(CustomThemeImporter.sharedTopFolder(of: ["a", "b"]) == nil)
+        #expect(CustomThemeImporter.sharedTopFolder(of: []) == nil)
+        // Only one level goes: the rest says where the theme is.
+        let choices = CustomThemeImporter.choices(for: ["top/mid/a", "top/mid/b"])
+        #expect(choices.map(\.path) == ["mid/a", "mid/b"])
+        #expect(choices.map(\.folder) == ["top/mid/a", "top/mid/b"], "what is imported is still the whole folder")
+        // Without a shared top folder the whole path shows.
+        #expect(CustomThemeImporter.choices(for: ["x/a", "y/a"]).map(\.path) == ["x/a", "y/a"])
+    }
+
+    @Test("a shallower theme still wins over deeper ones, and a tie lists every theme")
+    func shapeDepthRule() throws {
+        #expect(try CustomThemeImporter.themeRoot(in: ["pack/theme.txt", "pack/old/theme.txt", "pack/old/deeper/theme.txt"]) == "pack")
+        #expect(try CustomThemeImporter.themeRoot(in: ["theme.txt", "a/theme.txt", "b/theme.txt"]) == "")
+        #expect(throws: ThemeError.ambiguousThemes(["a/theme.txt", "b/theme.txt", "a/old/theme.txt"])) {
+            _ = try CustomThemeImporter.themeRoot(in: ["a/old/theme.txt", "b/theme.txt", "a/theme.txt"])
+        }
+        #expect(throws: ThemeError.noThemeFile) { _ = try CustomThemeImporter.themeRoot(in: ["a/Theme.txt", "a/.hidden/theme.txt", "a/theme.txt.bak"]) }
+    }
+
+    // MARK: ventoy.json next to the theme
+
+    @Test("9. a pack's ventoy.json gives the fonts and settings, as paths inside the theme folder")
+    func packSettingsApply() throws {
+        let zip = try zipFile([
+            ("ventoy/ventoy.json", """
+             {
+                 "control": [ { "VTOY_DEFAULT_MENU_MODE": "1" } ],
+                 "theme": {
+                     "file": [ "/ventoy/ventoy-pop/theme.txt", "/ventoy/ventoy-pop/theme_legacy.txt" ],
+                     "default_file": 1,
+                     "resolution_fit": 1,
+                     "display_mode": "GUI",
+                     "serial_param": "--unit=0",
+                     "gfxmode": "1280x720,auto",
+                     "ventoy_left": "5%",
+                     "ventoy_top": "100%-19",
+                     "ventoy_color": "#2b2b2b",
+                     "fonts": [ "/ventoy/ventoy-pop/fonts/b.pf2", "/ventoy/ventoy-pop/a.pf2" ]
+                 },
+                 "menu_alias": [ { "dir": "/isos", "alias": "ISOs" } ]
+             }
+             """),
+            ("ventoy/ventoy-pop/theme.txt", themeText), ("ventoy/ventoy-pop/theme_legacy.txt", themeText),
+            ("ventoy/ventoy-pop/a.pf2", "a"), ("ventoy/ventoy-pop/fonts/b.pf2", "b"), ("ventoy/ventoy-pop/c.pf2", "c"),
+        ], in: tempDir())
+        let imported = try CustomThemeImporter.importTheme(from: zip, cacheRoot: tempDir())
+        // Only the fonts it names (c.pf2 is not one of them), in its order; every other key is left alone.
+        #expect(imported.settings == .init(file: "theme.txt", fonts: ["fonts/b.pf2", "a.pf2"], gfxmode: "1280x720,auto",
+                                           ventoyLeft: "5%", ventoyTop: "100%-19", ventoyColor: "#2b2b2b"))
+        // ventoy.json itself is never copied.
+        #expect(listing(imported.directory) == ["a.pf2", "c.pf2", "fonts/b.pf2", "theme.txt", "theme_legacy.txt"])
+        #expect(imported.skippedFiles.isEmpty)
+    }
+
+    @Test("9. the same pack picked as a folder, or by its theme.txt, gives the same settings")
+    func packSettingsFromFolder() throws {
+        let src = tempDir().appendingPathComponent("pack")
+        try put([("ventoy/ventoy.json", duarteJSON("ventoy-blueprint")), ("ventoy/ventoy-blueprint/theme.txt", themeText)], in: src)
+        let fromFolder = try CustomThemeImporter.importTheme(from: src, cacheRoot: tempDir())
+        #expect(fromFolder.settings == .init(file: "theme.txt", gfxmode: "1920x1080"))
+        // The theme.txt alone has the ventoy.json out of reach: today's settings.
+        let fromFile = try CustomThemeImporter.importTheme(from: src.appendingPathComponent("ventoy/ventoy-blueprint/theme.txt"), cacheRoot: tempDir())
+        #expect(fromFile.settings == .init(file: "theme.txt"))
+    }
+
+    @Test("9. a top-level ventoy.json whose paths start at the drive's root")
+    func packSettingsTopLevel() throws {
+        let zip = try zipFile([
+            ("ventoy.json", #"{"theme":{"file":"/ventoy/themes/x/theme.txt","fonts":"/ventoy/themes/x/f.pf2","gfxmode":"max","ventoy_top":"90%"}}"#),
+            ("ventoy/themes/x/theme.txt", themeText), ("ventoy/themes/x/f.pf2", "f"), ("ventoy/themes/x/g.pf2", "g"),
+        ], in: tempDir())
+        let imported = try CustomThemeImporter.importTheme(from: zip, cacheRoot: tempDir())
+        #expect(imported.name == "x")
+        #expect(imported.settings == .init(file: "theme.txt", fonts: ["f.pf2"], gfxmode: "max", ventoyTop: "90%"))
+        #expect(listing(imported.directory) == ["f.pf2", "g.pf2", "theme.txt"])
+
+        // The same, with the folder holding ventoy.json standing for the drive's root.
+        let root = try zipFile([
+            ("ventoy.json", #"{"theme":{"file":"/themes/y/theme.txt","fonts":["/themes/y/f.pf2"],"ventoy_left":"5%"}}"#),
+            ("themes/y/theme.txt", themeText), ("themes/y/f.pf2", "f"),
+        ], named: "root.zip", in: tempDir())
+        #expect(try CustomThemeImporter.importTheme(from: root, cacheRoot: tempDir()).settings == .init(file: "theme.txt", fonts: ["f.pf2"], ventoyLeft: "5%"))
+    }
+
+    @Test("9. a ventoy.json that is about another theme, or none, leaves today's behaviour")
+    func packSettingsNotForThisTheme() throws {
+        let src = tempDir().appendingPathComponent("pack")
+        try put([
+            ("ventoy/ventoy.json", ##"{"theme":{"file":"/ventoy/b/theme.txt","gfxmode":"1024x768","ventoy_color":"#112233","fonts":["/ventoy/b/b.pf2"]}}"##),
+            ("ventoy/a/theme.txt", themeText), ("ventoy/a/a.pf2", "a"),
+            ("ventoy/b/theme.txt", themeText), ("ventoy/b/b.pf2", "b"), ("ventoy/b/extra.pf2", "e"),
+        ], in: src)
+        let cache = tempDir()
+        // Theme a: its top-level .pf2 files, the default gfxmode (nil here, filled in when written to a drive).
+        let a = try CustomThemeImporter.importTheme(from: src, themeRoot: "ventoy/a", cacheRoot: cache)
+        #expect(a.settings == .init(file: "theme.txt", fonts: ["a.pf2"]))
+        let b = try CustomThemeImporter.importTheme(from: src, themeRoot: "ventoy/b", cacheRoot: cache)
+        #expect(b.settings == .init(file: "theme.txt", fonts: ["b.pf2"], gfxmode: "1024x768", ventoyColor: "#112233"))
+        // No ventoy.json at all.
+        let plain = tempDir().appendingPathComponent("plain")
+        try put([("theme.txt", themeText), ("z.pf2", "z"), ("a.pf2", "a")], in: plain)
+        #expect(try CustomThemeImporter.importTheme(from: plain, cacheRoot: cache).settings == .init(file: "theme.txt", fonts: ["a.pf2", "z.pf2"]))
+    }
+
+    @Test("9. values that fail the catalog's rules are dropped, and fonts that aren't there")
+    func packSettingsValidated() throws {
+        let json = """
+            {"theme":{"file":"/ventoy/x/theme.txt","gfxmode":"fast","ventoy_left":"left","ventoy_top":"1%+","ventoy_color":"red",
+             "fonts":["/ventoy/x/ok.pf2","/ventoy/x/missing.pf2","/ventoy/x/../../etc/evil.pf2","/ventoy/x/image.png","/etc/passwd","/ventoy/x/ok.pf2"]}}
+            """
+        let src = tempDir().appendingPathComponent("pack")
+        try put([("ventoy/ventoy.json", json), ("ventoy/x/theme.txt", themeText), ("ventoy/x/ok.pf2", "o"), ("ventoy/x/image.png", "i"),
+                 ("ventoy/x/other.pf2", "t")], in: src)
+        let imported = try CustomThemeImporter.importTheme(from: src, cacheRoot: tempDir())
+        #expect(imported.settings == .init(file: "theme.txt", fonts: ["ok.pf2"]))
+        // A pack whose fonts all fail falls back to the .pf2 files beside theme.txt.
+        let none = tempDir().appendingPathComponent("pack")
+        try put([("ventoy/ventoy.json", #"{"theme":{"file":"/ventoy/x/theme.txt","fonts":["/ventoy/x/gone.pf2"],"gfxmode":"800x600"}}"#),
+                 ("ventoy/x/theme.txt", themeText), ("ventoy/x/b.pf2", "b")], in: none)
+        #expect(try CustomThemeImporter.importTheme(from: none, cacheRoot: tempDir()).settings == .init(file: "theme.txt", fonts: ["b.pf2"], gfxmode: "800x600"))
+    }
+
+    @Test("9. a ventoy.json that can't be used is ignored, not an error")
+    func packSettingsUnusable() throws {
+        let bad: [String] = ["", "not json", "[1,2]", #"{"theme":"/ventoy/x/theme.txt"}"#, #"{"theme":{"file":5}}"#, #"{"theme":{"gfxmode":"max"}}"#,
+                             #"{"theme":{"file":"/ventoy/x/theme.txt"#, String(repeating: " ", count: CustomThemeImporter.maxVentoyJSONBytes)
+                             + #"{"theme":{"file":"/ventoy/x/theme.txt","gfxmode":"max"}}"#]
+        for text in bad {
+            let src = tempDir().appendingPathComponent("pack")
+            try put([("ventoy/ventoy.json", text), ("ventoy/x/theme.txt", themeText)], in: src)
+            let imported = try CustomThemeImporter.importTheme(from: src, cacheRoot: tempDir())
+            #expect(imported.settings == .init(file: "theme.txt"), "\(text.prefix(40))")
+        }
+        // A byte order mark, as editors on Windows write one, doesn't hide a good file.
+        let src = tempDir().appendingPathComponent("pack")
+        try put([("ventoy/x/theme.txt", themeText)], in: src)
+        try (Data([0xEF, 0xBB, 0xBF]) + Data(#"{"theme":{"file":"/ventoy/x/theme.txt","gfxmode":"max"}}"#.utf8)).write(to: src.appendingPathComponent("ventoy/ventoy.json"))
+        #expect(try CustomThemeImporter.importTheme(from: src, cacheRoot: tempDir()).settings == .init(file: "theme.txt", gfxmode: "max"))
+    }
+
+    @Test("9. names are matched without regard to case, as on the drive, and the closest ventoy.json wins")
+    func packSettingsCaseAndNearest() throws {
+        let src = tempDir().appendingPathComponent("pack")
+        try put([
+            ("ventoy/ventoy.json", #"{"theme":{"file":"/ventoy/Pop/Theme.TXT","gfxmode":"640x480"}}"#),
+            ("ventoy/pop/ventoy.json", #"{"theme":{"file":"/ventoy/theme.txt","fonts":["/VENTOY/F.PF2"],"gfxmode":"800x600"}}"#),
+            ("ventoy/pop/theme.txt", themeText), ("ventoy/pop/f.pf2", "f"),
+        ], in: src)
+        let imported = try CustomThemeImporter.importTheme(from: src, cacheRoot: tempDir())
+        #expect(imported.settings == .init(file: "theme.txt", fonts: ["f.pf2"], gfxmode: "800x600"))
+    }
+
+    @Test("9. a ventoy.json inside the theme folder is read, not copied, and not reported")
+    func packSettingsInsideFolder() throws {
+        let src = tempDir().appendingPathComponent("pack")
+        try put([("ventoy.json", #"{"theme":{"file":"/ventoy/theme.txt","gfxmode":"max"}}"#), ("theme.txt", themeText), ("notes.md", "n")], in: src)
+        let imported = try CustomThemeImporter.importTheme(from: src, cacheRoot: tempDir())
+        #expect(imported.settings.gfxmode == "max")
+        #expect(listing(imported.directory) == ["theme.txt"])
+        #expect(imported.skippedFiles == ["notes.md"])
+    }
+
+    @Test("9. a pack's settings survive being saved to My Themes")
+    func packSettingsSaved() throws {
+        let zip = try zipFile(catppuccinLike(top: "repo"), in: tempDir())
+        let imported = try CustomThemeImporter.importTheme(from: zip, themeRoot: "repo/ventoy/src/mocha/catppuccin-mocha", cacheRoot: tempDir())
+        let library = ThemeLibrary(root: tempDir().appendingPathComponent("My Themes"))
+        let saved = try library.save(folder: imported.directory, name: imported.name, settings: imported.settings, origin: "Added from a file")
+        #expect(saved.settings == .init(file: "theme.txt", fonts: ["terminus-14.pf2"], ventoyColor: "#89b4fa"))
+        #expect(library.list() == [saved])
+    }
 }

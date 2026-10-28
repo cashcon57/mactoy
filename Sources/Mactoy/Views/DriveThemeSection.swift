@@ -93,6 +93,59 @@ enum DriveThemeCopy {
     }
 }
 
+/// The order of the section's sheets after a theme is added from a file, kept out of the view so a test can walk it.
+///
+/// SwiftUI shows one sheet at a time, and a sheet asked for while another is still animating out can be dropped,
+/// which leaves its flag set and nothing on screen. So the picker is never asked for in the same breath as the
+/// choice sheet closing: the user's answer is only noted, the sheet goes, and the rest happens from its `onDismiss`.
+struct ThemeImportFlow {
+    /// What the user chose, with the file it came from, for the moment the choice sheet is gone.
+    struct Answer {
+        let pending: PendingThemeChoice
+        let choice: CustomThemeImporter.Choice
+    }
+
+    /// A file that held several themes, while the user chooses one. Drives the choice sheet.
+    var pendingChoice: PendingThemeChoice?
+    /// Drives the picker's sheet.
+    var showPicker = false
+    /// Where the picker opens when it isn't on the drive's current theme: on a theme just added from a file.
+    var pickerStart: ThemeChoice?
+    private var answer: Answer?
+
+    /// A file was read: one theme is in My Themes already, so the picker opens on it; or there are several, so the choice sheet opens.
+    mutating func started(_ start: ThemeImportStart) {
+        switch start {
+        case .imported(let choice): openPicker(on: choice)
+        case .needsChoice(let pending): pendingChoice = pending
+        }
+    }
+
+    /// The user chose. This only closes the choice sheet and notes the answer; nothing else may be asked for while it closes.
+    mutating func choose(_ choice: CustomThemeImporter.Choice, from pending: PendingThemeChoice) {
+        answer = Answer(pending: pending, choice: choice)
+        pendingChoice = nil
+    }
+
+    /// The user backed out: nothing stays pending.
+    mutating func cancel() {
+        answer = nil
+        pendingChoice = nil
+    }
+
+    /// The choice sheet is gone. The answer to act on now, once; nil when the user backed out.
+    mutating func choiceSheetDismissed() -> Answer? {
+        defer { answer = nil }
+        return answer
+    }
+
+    /// The picker opens, on `choice` when there is one.
+    mutating func openPicker(on choice: ThemeChoice? = nil) {
+        pickerStart = choice
+        showPicker = true
+    }
+}
+
 struct DriveThemeSection: View {
     @EnvironmentObject private var themes: ThemeStore
     let volumeURL: URL
@@ -100,11 +153,16 @@ struct DriveThemeSection: View {
     @State private var driveTheme: DriveTheme?
     @State private var readOnly = false
     @State private var readError: String?
-    @State private var showPicker = false
+    /// The picker and the sheet that asks which theme a file holds, in the order they may open.
+    @State private var flow = ThemeImportFlow()
     /// Set by the picker; acted on once the sheet is gone, so the
     /// confirmation below never opens while the sheet is still closing.
     @State private var picked: ThemeChoice?
     @State private var pendingReplace: PendingReplace?
+    /// A catalog theme that couldn't be used: the alert that says so and offers the ways forward.
+    @State private var unavailableAlert: UnavailableAlert?
+    /// A theme file is being added (from the alert's button).
+    @State private var importing = false
     @State private var working = false
     /// Keeping a copy of the drive's theme (the standalone button). The drive isn't changed.
     @State private var saving = false
@@ -146,8 +204,33 @@ struct DriveThemeSection: View {
                 Text("Boot menu theme").font(.headline)
                 Spacer()
                 if working { ProgressView().controlSize(.small); Text("Changing the theme…").font(.callout) }
-                Button("Change Theme…") { showPicker = true }
-                    .disabled(working || saving || readOnly || current == nil)
+                if importing { ProgressView().controlSize(.small); Text("Adding theme…").font(.callout) }
+                Button("Change Theme…") { flow.openPicker() }
+                    .disabled(working || saving || importing || readOnly || current == nil)
+            }
+            // A confirmation dialog, not an alert: on macOS an alert shows only three buttons, and this has four.
+            // It hangs on this row so it doesn't compete with the other dialog on the section.
+            .confirmationDialog(
+                unavailableAlert.map { ThemeUnavailableCopy.title(name: $0.entry.name) } ?? "",
+                isPresented: Binding(get: { unavailableAlert != nil }, set: { if !$0 { unavailableAlert = nil } }),
+                titleVisibility: .visible,
+                presenting: unavailableAlert
+            ) { shown in
+                Button(ThemeUnavailableCopy.reportButton) { ThemeUnavailableActions.report(shown.entry, shown.problem) }
+                Button(ThemeUnavailableCopy.pageButton) { ThemeUnavailableActions.openPage(of: shown.entry) }
+                Button(ThemeUnavailableCopy.fileButton) { Task { await addThemeFromFile() } }
+                // Return closes the dialog; nothing it offers happens by accident.
+                Button(ThemeUnavailableCopy.okButton, role: .cancel) {}
+                    .keyboardShortcut(.defaultAction)
+            } message: { shown in
+                Text(ThemeUnavailableCopy.message(for: shown.problem))
+            }
+            // On this row and not on the section, which already presents the picker's sheet. What the user chose is
+            // added once this sheet is gone, so the picker that follows is never asked for while it is closing.
+            .sheet(item: $flow.pendingChoice, onDismiss: {
+                if let answer = flow.choiceSheetDismissed() { Task { await addChosen(answer) } }
+            }) { pending in
+                ThemeChoiceSheet(pending: pending, onChoose: { flow.choose($0, from: pending) }, onCancel: { flow.cancel() })
             }
             Text(currentText).font(.callout).foregroundStyle(readError == nil ? Color.secondary : Color.red)
                 .fixedSize(horizontal: false, vertical: true)
@@ -178,12 +261,13 @@ struct DriveThemeSection: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .mactoyGlass(cornerRadius: 16)
         .task(id: volumeURL) { await refresh() }
-        .sheet(isPresented: $showPicker, onDismiss: {
+        .sheet(isPresented: $flow.showPicker, onDismiss: {
+            flow.pickerStart = nil
             guard let choice = picked else { return }
             picked = nil
             Task { await choose(choice) }
         }) {
-            ThemePickerSheet(initial: initialChoice, confirmTitle: "Apply to Drive") { picked = $0 }
+            ThemePickerSheet(initial: flow.pickerStart ?? initialChoice, confirmTitle: "Apply to Drive") { picked = $0 }
                 .environmentObject(themes)
         }
         .confirmationDialog(
@@ -277,6 +361,7 @@ struct DriveThemeSection: View {
         message = nil
         var savedName: String?
         var warnings: [String] = []
+        var alert: UnavailableAlert?
         do {
             try await ThemeReplacement.perform(answer, save: { savedName = try await saveDriveTheme().name },
                                                apply: { warnings = try await themes.apply(choice, to: volumeURL) })
@@ -287,11 +372,60 @@ struct DriveThemeSection: View {
             isError = true
             message = DriveThemeCopy.saveFailed(failure.underlying.localizedDescription)
         } catch {
-            isError = true
-            message = DriveThemeCopy.changeFailed(savedName: savedName, reason: error.localizedDescription)
+            // The note is there even when a dialog follows: the dialog can be dropped if another is closing.
+            let failure = ThemeChangeFailure(error: error, choice: choice, savedName: savedName, themeName: themes.displayName(for: choice),
+                                             catalog: themes.catalog, unavailable: themes.unavailableThemes)
+            isError = failure.isError
+            message = failure.message
+            alert = failure.alert
         }
         await refresh()
+        if let alert { await present(alert) }
         working = false
+    }
+
+    /// How long a dialog takes to finish closing once its binding is false. One asked for in that time can be dropped.
+    private static let dialogCloseTime: Duration = .milliseconds(300)
+
+    /// Shows the dialog for a theme that can't be downloaded, once the dialog this change began with (the replace
+    /// prompt) has closed. The note under the section says the same, so a dialog that still doesn't show loses nothing.
+    private func present(_ alert: UnavailableAlert) async {
+        var polls = 0
+        // Bounded, so a prompt that somehow stays open can't hold the section in its "changing" state.
+        while pendingReplace != nil, polls < 40 {
+            try? await Task.sleep(for: .milliseconds(25))
+            polls += 1
+        }
+        try? await Task.sleep(for: Self.dialogCloseTime)
+        unavailableAlert = alert
+    }
+
+    /// The alert's third button: add the theme from a ZIP file or folder, then open the picker on it.
+    /// The note under the section is left as it is (it may be the one that explains why this was needed) until
+    /// this has a message of its own to put there.
+    private func addThemeFromFile() async {
+        guard let url = ThemeUnavailableActions.chooseThemeFile() else { return }
+        importing = true
+        defer { importing = false }
+        do {
+            flow.started(try await themes.startImport(from: url))
+        } catch {
+            isError = true
+            message = "Couldn't add that theme: \(error.localizedDescription)"
+        }
+    }
+
+    /// Adds the theme the user chose from a file that held several, then opens the picker on it. Runs once the
+    /// choice sheet is gone (see `ThemeImportFlow`).
+    private func addChosen(_ answer: ThemeImportFlow.Answer) async {
+        importing = true
+        defer { importing = false }
+        do {
+            flow.openPicker(on: try await themes.finishImport(answer.pending, choosing: answer.choice))
+        } catch {
+            isError = true
+            message = "Couldn't add that theme: \(error.localizedDescription)"
+        }
     }
 
     /// The standalone button. Never changes the drive.
