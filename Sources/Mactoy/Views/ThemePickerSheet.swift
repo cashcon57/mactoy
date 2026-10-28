@@ -67,7 +67,10 @@ struct ThemePickerSheet: View {
             }
         }
         .padding(20)
-        .frame(minWidth: 820, minHeight: 560)
+        // A fixed size: the grid would otherwise ask for every column it can
+        // fit, and macOS grows a sheet to match, past the edges of the window.
+        // 860 × 560 fits inside Mactoy's smallest window (880 × 600).
+        .frame(width: 860, height: 560)
         // Also retries when the app started offline and kept a local copy.
         .task { if themes.catalogSource != .remote { await themes.load() } }
         .alert(problem?.title ?? "", isPresented: Binding(get: { problem != nil }, set: { if !$0 { problem = nil } })) {
