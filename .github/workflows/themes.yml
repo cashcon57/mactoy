@@ -30,10 +30,14 @@ permissions:
 
 jobs:
   validate:
-    runs-on: macos-15
+    # macOS 26: the app's Liquid Glass code needs the macOS 26 SDK (Xcode 26) to
+    # compile. The macos-15 image defaults to an older Xcode.
+    runs-on: macos-26
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - name: Show the toolchain
+        run: swift --version && xcodebuild -version
       # The main package's tests need no network and touch no disk; nothing else in CI runs them.
       - name: Test Mactoy
         run: swift test
