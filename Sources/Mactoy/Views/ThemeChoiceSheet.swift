@@ -32,7 +32,7 @@ struct ThemeChoiceSheet: View {
                         .lineLimit(1).truncationMode(.middle)
                 }
                 .padding(.vertical, 2)
-                .help(choice.folder)
+                .help(choice.path)
             }
             .frame(minHeight: 220)
             HStack {
