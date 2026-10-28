@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.7.0] — 2026-10-28
+
+Boot menu themes, and a new app icon.
+
+### Added
+
+- **Boot menu themes** ([#14](https://github.com/cashcon57/mactoy/pull/14), [#15](https://github.com/cashcon57/mactoy/pull/15)). Ventoy's boot menu can be themed, and Mactoy now does it for you.
+  - A picker with previews of 14 community themes. Each preview is a capture of the theme booted in Ventoy.
+  - **New drives get Catppuccin Mocha** unless you choose otherwise, because Ventoy's built-in menu looks dated. The Install tab says so, and picking **Ventoy default** keeps Ventoy's own look; Mactoy remembers that choice. Catppuccin Mocha is built into the app, so a fresh install needs no download for it.
+  - **Existing drives:** **Manage Disk** has **Change Theme…**. Only the `theme` setting in `/ventoy/ventoy.json` changes; your other settings are kept, and the original file is saved once as `ventoy.json.mactoy-backup`.
+  - **Your own themes:** **Add Theme from File…** takes a theme's `.zip`, its folder or its `theme.txt`, whether the theme is at the top or inside other folders. If a download holds several themes, Mactoy asks which one to add, listing the ones made for Ventoy first. Added themes are kept in **My Themes** for use on other drives.
+  - **Nothing gets lost:** if a drive already has a theme that isn't in Mactoy's list, Mactoy offers to save it to My Themes before replacing it, and before erasing the drive for a fresh install. **Save to My Themes** on Manage Disk makes a copy without changing anything.
+  - **If a theme's download disappears or changes,** Mactoy says so plainly instead of showing a download error. It offers **Report Problem** (a new GitHub issue), **Open Theme's Page** and **Add Theme from File…**, and marks the theme **Unavailable** in the picker. A connection problem, or a server turning the download away for a while, gets its own message.
+  - The theme list is [`themes/catalog.json`](themes/catalog.json) in this repository. Anyone can propose a theme with a pull request and a screenshot ([how](CONTRIBUTING.md#adding-a-boot-theme)). Each theme is pinned to one exact download by SHA-256.
+  - Safety: only image, font and `theme.txt`-style files are copied from a theme (`.txt`, `.png`, `.jpg`, `.jpeg`, `.tga`, `.pf2`), never `.cfg` files, which Ventoy would run as boot scripts. Zip files are checked before they're unpacked, and unpacked in a separate process. Mactoy never follows links on the drive and only deletes theme folders it created.
+- **New app icon**, drawn as SVG layers in Icon Composer ([#16](https://github.com/cashcon57/mactoy/pull/16)). On macOS 26 it's a Liquid Glass icon with light, dark, tinted and clear looks; macOS 13 to 15 get a matching standard icon.
+
+### Fixed
+
+- Commands run at the same time could stall until their time limit: each waited for a shared background thread to read its output, and with enough of them waiting, none was free. Output is now read on dedicated threads.
+
+### Changed
+
+- The app is 0.7.0 (build 15). The helper's protocol didn't change, so it keeps protocol version 0.5.0 and updating doesn't ask you to approve it again. Themes are written by the app, not the helper.
+- Mactoy now fetches the theme list and previews from this repository on GitHub when it starts and when you open the theme picker, and downloads a theme from its author's release or commit archive when you choose it. Nothing about you or your drives is sent.
+
 ## [0.6.0] — 2026-10-26
 
 Two pull requests from [@gbentz2](https://github.com/gbentz2), with thanks: a fix for long UI freezes ([#12](https://github.com/cashcon57/mactoy/pull/12)) and protection for Time Machine drives ([#13](https://github.com/cashcon57/mactoy/pull/13)).

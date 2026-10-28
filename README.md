@@ -47,7 +47,7 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 
 ---
 
-## Status — v0.6.0 alpha
+## Status — v0.7.0 alpha
 
 - [x] GPT + boot-image math ported from the Python proof-of-concept (cross-validated: Swift and Python produce bit-identical layouts for the same disk).
 - [x] Ventoy install flow end-to-end (download → extract → partition → write → format).
@@ -55,6 +55,8 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 - [x] **Secure Boot support toggle** (v0.4.0). Same choice as Ventoy2Disk's `-s` / `-S`, on both Install and Update. Turn it off for sticks that need to boot Macs or firmware that hangs in the UEFI shim.
 - [x] **MBR or GPT partition style** (v0.5.0, issue #11). Install Ventoy defaults to MBR, Ventoy2Disk's default, which boots on legacy BIOS and UEFI; GPT is one click away, and drives over 2 TiB always get GPT.
 - [x] **Time Machine drives are protected** (v0.6.0). A drive holding APFS Time Machine backups (the format macOS has used since Big Sur) is listed but locked: Mactoy won't install, update or flash it unless you unlock that drive for the session, after a warning that its backups will be lost.
+- [x] **Boot menu themes** (v0.7.0). Pick a theme for Ventoy's boot menu from 14 community themes with previews, when installing or on an existing drive. New drives get Catppuccin Mocha unless you choose otherwise. Add your own theme from a `.zip`, folder or `theme.txt` in any layout, and keep it in **My Themes**. A drive's existing theme is offered a save before it's replaced or erased, and a theme whose download has moved is flagged with a way to report it. See [below](#give-your-drive-a-boot-menu-theme).
+- [x] **New app icon** (v0.7.0). Drawn as vector layers in Icon Composer: a Liquid Glass icon with default, dark, tinted and clear looks on macOS 26, and a matching standard icon on macOS 13 to 15.
 - [x] **Iron-clad targeting defense** (v0.3.1). Six-layer defense against wrong-disk wipes: fingerprint capture at confirmation, selection freeze while sheet is open, captured-target threading through run(), app-side + daemon-side re-verification (with re-verify immediately before write to bracket long-running download/decompress), and BSD-name guard.
 - [x] Raw image flashing with `.xz` and `.gz` decompression.
 - [x] Liquid Glass SwiftUI interface on macOS 26 Tahoe; automatic `regularMaterial` fallback on macOS 13–15 so the same binary runs on Ventura, Sonoma, Sequoia, and Tahoe — Apple Silicon *and* Intel.
@@ -72,7 +74,7 @@ Grab `Mactoy-<version>.dmg` from the [Releases page](https://github.com/cashcon5
 
 ### Open it
 
-1. Open `Mactoy-0.6.0.dmg` (or whichever `Mactoy-*.dmg` is on the latest release page).
+1. Open `Mactoy-0.7.0.dmg` (or whichever `Mactoy-*.dmg` is on the latest release page).
 2. Drag `Mactoy.app` into `/Applications`.
 3. Launch from Launchpad or `/Applications`. Opens normally — no right-click dance needed. The DMG is Apple-notarized, so Gatekeeper sees it as a known-good Developer ID build.
 
@@ -156,6 +158,7 @@ Ventoy's boot menu can be themed. Mactoy has a picker with previews of community
 - **Existing drive:** on **Manage Disk**, click **Change Theme…**. Your other Ventoy settings are kept.
 - **Your own theme:** in the picker, **Add Theme from File…** takes a theme's `.zip` file, its folder, or its `theme.txt`, whether the theme sits at the top or inside other folders. If a download holds several themes (a repository with a few flavours, say), Mactoy asks which one to add. Themes you add are kept in **My Themes** inside Mactoy, so you can use them again on other drives.
 - **Keeping a drive's current theme:** if a drive already has a theme that isn't in Mactoy's list, Mactoy offers to save it to My Themes before replacing it, and before erasing the drive on a fresh install. **Manage Disk** also has a **Save to My Themes** button for when you only want a copy.
+- **If a theme's download has moved:** themes download from their authors' pages, which can change. When one is gone or no longer matches, Mactoy says so instead of showing a download error, marks it **Unavailable** in the picker, and offers **Report Problem**, **Open Theme's Page** and **Add Theme from File…** so you can still use it.
 
 <p align="center">
   <img src="docs/assets/install-theme-card.png" width="640" alt="The Install tab, with Catppuccin Mocha as the boot menu theme">
@@ -277,7 +280,7 @@ swift test
 
 # Build the signed release bundle + DMG (requires a Developer ID cert in Keychain)
 ./scripts/build-app.sh release devid
-./scripts/build-dmg.sh 0.6.0 devid
+./scripts/build-dmg.sh 0.7.0 devid
 
 # Build a universal (arm64 + x86_64) app bundle — ship this if you
 # want one binary that runs on both Apple Silicon and Intel Macs.
