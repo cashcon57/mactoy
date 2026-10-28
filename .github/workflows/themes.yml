@@ -39,8 +39,10 @@ jobs:
       - name: Show the toolchain
         run: swift --version && xcodebuild -version
       # The main package's tests need no network and touch no disk; nothing else in CI runs them.
+      # One at a time: on a 3-core runner the 48-call Subprocess stress test holds every
+      # worker thread, and the tests that check timing would miss their windows.
       - name: Test Mactoy
-        run: swift test
+        run: swift test --no-parallel
       - name: Test the themes tool
         run: swift test --package-path scripts/themes
       # No --only: the bundled-folder byte checks run only with --download, and they need the whole catalog.

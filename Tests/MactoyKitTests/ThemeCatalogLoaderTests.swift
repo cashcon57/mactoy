@@ -382,7 +382,9 @@ struct ThemeCatalogLoaderTests {
             try? await Task.sleep(nanoseconds: 300_000_000)
             try? FileManager.default.createDirectory(at: mount, withIntermediateDirectories: true)
         }
-        let found = await VentoyVolumeLocator.waitForVolume(onDisk: "disk7", timeout: 10, pollInterval: 0.05,
+        // A generous timeout: on a small CI machine other tests can hold the
+        // worker threads for several seconds.
+        let found = await VentoyVolumeLocator.waitForVolume(onDisk: "disk7", timeout: 60, pollInterval: 0.05,
                                                             volumesDirectory: vols) { _ in "disk7s1" }
         #expect(found?.lastPathComponent == "Ventoy")
     }
@@ -396,6 +398,8 @@ struct ThemeCatalogLoaderTests {
                                                             volumesDirectory: vols) { _ in "disk7s1" }
         let elapsed = Date().timeIntervalSince(start)
         #expect(found == nil)
-        #expect(elapsed >= 0.4 && elapsed < 5)
+        // Only the lower bound is exact; the upper one just catches a wait
+        // that never gives up, with room for a busy CI machine.
+        #expect(elapsed >= 0.4 && elapsed < 60)
     }
 }

@@ -12,6 +12,15 @@ fileprivate final class Counter: @unchecked Sendable { var n = 0 }
 
 fileprivate final class Events: @unchecked Sendable { var list: [String] = [] }
 
+/// Lets a test decide when a stubbed probe answers, instead of racing two timers.
+fileprivate actor Gate {
+    private var isOpen = false
+    func open() { isOpen = true }
+    func wait() async {
+        while !isOpen { try? await Task.sleep(nanoseconds: 5_000_000) }
+    }
+}
+
 fileprivate struct SaveFailure: LocalizedError {
     let errorDescription: String?
 }
@@ -45,10 +54,11 @@ fileprivate enum Fixture {
                           partitionStyle: .gpt, partition2StartSector: 1000, layoutIssues: [], looksLikeBrokenVentoy: false)
     }
 
-    /// Polls until `condition` holds, for up to about 3 seconds.
+    /// Polls until `condition` holds, for up to about 10 seconds (longer on
+    /// a busy machine, since each poll's sleep can run late).
     static func wait(until condition: () -> Bool) async {
         var waited = 0
-        while !condition() && waited < 300 {
+        while !condition() && waited < 1000 {
             try? await Task.sleep(nanoseconds: 10_000_000)
             waited += 1
         }
@@ -442,9 +452,11 @@ struct InstallThemeSaveFirstTests {
         let d = TempDefaults(); defer { d.remove() }
         let s = Fixture.state(d)
         let url = volume
+        let gate = Gate()
         s.driveThemeProbeCap = 100_000_000
         s.driveThemeProbe = { _ in
-            try? await Task.sleep(nanoseconds: 700_000_000)
+            // Answers only once the test has seen the cap release Erase.
+            await gate.wait()
             return (name: "Sunset", volume: url)
         }
         s.mode = .installVentoy
@@ -453,6 +465,7 @@ struct InstallThemeSaveFirstTests {
         await Fixture.wait { s.pendingEraseConfirmation?.driveThemeProbePending == false }
         #expect(s.pendingEraseConfirmation?.driveThemeProbePending == false, "the cap released it")
         #expect(s.pendingEraseConfirmation?.driveThemeName == nil, "the probe hasn't answered; no box yet")
+        await gate.open()
         await Fixture.wait { s.pendingEraseConfirmation?.driveThemeName != nil }
         #expect(s.pendingEraseConfirmation?.driveThemeName == "Sunset")
         #expect(s.pendingEraseConfirmation?.driveThemeProbePending == false)
