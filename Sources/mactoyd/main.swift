@@ -183,6 +183,12 @@ final class MactoydService: NSObject, MactoydProtocol {
         }
     }
 
+    func cancelCurrentRun(reply: @escaping (Bool) -> Void) {
+        let accepted = runGate.cancelAll()
+        daemonLog.info("cancelCurrentRun: accepted=\(accepted, privacy: .public)")
+        reply(accepted)
+    }
+
     func clearDownloads(reply: @escaping (UInt64, String?) -> Void) {
         do {
             guard let freed = try runGate.whenIdle({ try VentoyDownloader.clearCache() }) else {
@@ -215,7 +221,8 @@ final class MactoydService: NSObject, MactoydProtocol {
             deliver.send(data)
         }
 
-        runGate.planStarted()
+        let control = RunControl()
+        runGate.planStarted(control)
         Task.detached {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
@@ -226,13 +233,13 @@ final class MactoydService: NSObject, MactoydProtocol {
 
                 let driver: any InstallDriver
                 switch plan.driver {
-                case .ventoy:   driver = VentoyDriver()
+                case .ventoy:   driver = VentoyDriver(control: control)
                 case .rawImage:
                     // Never open the plan's path as root: it could name a file the user can't read (#36).
                     guard let image = imageBox.handle else {
                         throw DriverError.validation("Mactoy didn't hand over the image file, so nothing was written. Update Mactoy and try again.")
                     }
-                    driver = RawImageDriver(image: image)
+                    driver = RawImageDriver(image: image, control: control)
                 }
 
                 sink.report(.init(phase: .preparing, message: "mactoyd started, plan received"))
@@ -240,7 +247,7 @@ final class MactoydService: NSObject, MactoydProtocol {
                 daemonLog.info("executePlan: complete")
                 sink.report(.init(phase: .done, message: "Install complete"))
                 // Before replying: the app may clear downloads as soon as it hears back.
-                runGate.planEnded()
+                runGate.planEnded(control)
                 replyBox.call(true, nil)
             } catch {
                 // .private — error descriptions can include filesystem
@@ -248,7 +255,7 @@ final class MactoydService: NSObject, MactoydProtocol {
                 // the local user; redacted in shared `log show` output.
                 daemonLog.error("executePlan failed: \(error.localizedDescription, privacy: .private)")
                 sink.report(.init(phase: .failed, message: "\(error)"))
-                runGate.planEnded()
+                runGate.planEnded(control)
                 replyBox.call(false, "\(error)")
             }
         }
@@ -261,8 +268,22 @@ final class RunGate: @unchecked Sendable {
     private let lock = NSLock()
     private var running = 0
 
-    func planStarted() { lock.lock(); running += 1; lock.unlock() }
-    func planEnded() { lock.lock(); running = max(0, running - 1); lock.unlock() }
+    private var controls: [ObjectIdentifier: RunControl] = [:]
+
+    func planStarted(_ control: RunControl) {
+        lock.lock(); running += 1; controls[ObjectIdentifier(control)] = control; lock.unlock()
+    }
+    func planEnded(_ control: RunControl) {
+        lock.lock(); running = max(0, running - 1); controls[ObjectIdentifier(control)] = nil; lock.unlock()
+    }
+
+    /// Asks every running plan to stop (there's normally one). True if any accepted.
+    func cancelAll() -> Bool {
+        lock.lock()
+        let current = Array(controls.values)
+        lock.unlock()
+        return current.map { $0.requestCancel() }.contains(true)
+    }
 
     /// Runs `body` only when no plan is running; nil when one is.
     func whenIdle<T>(_ body: () throws -> T) rethrows -> T? {

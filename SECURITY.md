@@ -128,11 +128,14 @@ any of them, take that into account before using Mactoy.
   placeholder serial for every drive, or when cards are swapped in one
   USB card reader (the serial is the reader's, not the card's). The
   IOKit registry entry ID isn't pinned.
-- **No cancel button.** Once you confirm an install, update or flash,
-  there's no way to cancel it in the app, including during the download
-  or decompression. Quitting Mactoy stops the helper about half a
-  second later: before the first write, the drive is left untouched;
-  during writing, it's left partly written.
+- **Cancel stops at the next safe point, not instantly.** An install or
+  update can be cancelled until Mactoy unmounts the drive to write it;
+  after that, Cancel is refused, because stopping between the partition
+  writes would leave a drive that neither starts nor mounts. A cancel
+  during the Ventoy download takes effect when the download finishes.
+  A flash can be stopped at any point, after a warning that the drive
+  will be left partly written. Quitting Mactoy stops the helper about
+  half a second later, wherever it is.
 - **Time Machine detection is APFS only.** Older Time Machine drives
   formatted as Mac OS Extended (HFS+) aren't recognised or locked.
 - **The theme catalog is trusted from this repository.** Mactoy fetches

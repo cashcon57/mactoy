@@ -158,6 +158,24 @@ extension HelperInvoker {
         }
     }
 
+    /// Ask the helper to stop the run in progress (#21). False when it's too late to stop safely
+    /// or nothing is running.
+    static func cancelCurrentRun() async throws -> Bool {
+        let connection = NSXPCConnection(machServiceName: mactoydMachServiceName, options: .privileged)
+        connection.remoteObjectInterface = NSXPCInterface(with: MactoydProtocol.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Bool, Error>) in
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ err in
+                cont.resume(throwing: HelperError.xpcUnreachable("\(err)"))
+            }) as? MactoydProtocol else {
+                cont.resume(throwing: HelperError.xpcUnreachable("proxy unavailable"))
+                return
+            }
+            proxy.cancelCurrentRun { accepted in cont.resume(returning: accepted) }
+        }
+    }
+
     /// Ask the daemon on `connection` for its version string.
     fileprivate static func ping(_ connection: NSXPCConnection) async throws -> String {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in

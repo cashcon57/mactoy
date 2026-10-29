@@ -15,10 +15,18 @@ public struct RawImageDriver: InstallDriver {
     /// runs as root, so it must never open a path the app sent. nil only where the caller is
     /// the user (tests, `scripts/e2e`): then the plan's path is opened here.
     private let image: FileHandle?
+    /// Lets the user stop the run at any point (#21). The app asks first once writing has begun.
+    private let control: RunControl
 
-    public init(image: FileHandle? = nil) {
+    public init(image: FileHandle? = nil, control: RunControl = RunControl()) {
         self.image = image
+        self.control = control
     }
+
+    static let stoppedBeforeWriting = "Cancelled. Nothing was written to the drive."
+    static let stoppedWhileWriting = "Stopped while writing. The drive is only partly written and won't start until you flash it or install Ventoy on it again."
+    static let stoppedWhileChecking = "Stopped while checking. The image was written in full, but Mactoy didn't finish reading it back."
+
 
     public func execute(plan: InstallPlan, progress: ProgressSink) async throws {
         try plan.validate()
@@ -51,7 +59,7 @@ public struct RawImageDriver: InstallDriver {
 
         // 1. The user's checksum, before anything is erased.
         if let expected = plan.expectedImageSHA256 {
-            let actual = try await Self.sha256(of: handle, name: name, progress: progress)
+            let actual = try await Self.sha256(of: handle, name: name, progress: progress, control: control)
             guard actual == expected else {
                 throw DriverError.validation(
                     "\(name) doesn't match the SHA-256 you entered, so nothing was written. " +
@@ -89,6 +97,7 @@ public struct RawImageDriver: InstallDriver {
         let compressedSize = Self.fileSize(of: handle)
 
         // 3. Unmount and write.
+        try control.check(Self.stoppedBeforeWriting)
         progress.report(.init(phase: .preparing, message: "Preparing \(plan.target.devicePath)..."))
         try plan.target.reverifyFingerprintNow()
         try DiskInfo.unmount(bsdName: plan.target.bsdName)
@@ -104,9 +113,10 @@ public struct RawImageDriver: InstallDriver {
         try writer.seek(to: 0)
         progress.report(.init(phase: .writing, message: "Writing \(name)...", bytesDone: 0, bytesTotal: knownSize ?? compressedSize))
 
+        try control.check(Self.stoppedBeforeWriting)
         var chunk: Data? = first
         while let data = chunk {
-            try Task.checkCancellation()
+            try control.check(Self.stoppedWhileWriting)
             let padded = Self.paddedToBlock(data, roomLeft: plan.target.sizeInBytes - written)
             guard written + UInt64(padded.count) <= plan.target.sizeInBytes else {
                 throw DriverError.validation(
@@ -136,7 +146,8 @@ public struct RawImageDriver: InstallDriver {
 
         // 4. Read it back.
         if plan.verifyAfterWriting {
-            try await Self.verify(writer: writer, length: written, deviceSize: plan.target.sizeInBytes, expected: hasher.finalize(), progress: progress)
+            try await Self.verify(writer: writer, length: written, deviceSize: plan.target.sizeInBytes, expected: hasher.finalize(),
+                                  progress: progress, control: control)
         }
 
         // Release the raw-disk fd so macOS can re-probe the newly written image. The kernel
@@ -166,14 +177,14 @@ public struct RawImageDriver: InstallDriver {
         }
     }
 
-    static func sha256(of handle: FileHandle, name: String, progress: ProgressSink) async throws -> String {
+    static func sha256(of handle: FileHandle, name: String, progress: ProgressSink, control: RunControl) async throws -> String {
         let total = (try? handle.seekToEnd()) ?? 0
         try handle.seek(toOffset: 0)
         var hasher = SHA256()
         var done: UInt64 = 0
         var lastReport = Date.distantPast
         while let piece = try handle.read(upToCount: 4 * 1024 * 1024), !piece.isEmpty {
-            try Task.checkCancellation()
+            try control.check(stoppedBeforeWriting)
             hasher.update(data: piece)
             done += UInt64(piece.count)
             if Date().timeIntervalSince(lastReport) > 0.25 {
@@ -186,13 +197,14 @@ public struct RawImageDriver: InstallDriver {
 
     /// Reads `length` bytes back from the start of the drive and compares their SHA-256 with
     /// what was written.
-    static func verify(writer: DiskWriter, length: UInt64, deviceSize: UInt64, expected: SHA256.Digest, progress: ProgressSink) async throws {
+    static func verify(writer: DiskWriter, length: UInt64, deviceSize: UInt64, expected: SHA256.Digest,
+                       progress: ProgressSink, control: RunControl = RunControl()) async throws {
         progress.report(.init(phase: .verifying, message: "Checking what was written...", bytesDone: 0, bytesTotal: length))
         var hasher = SHA256()
         var offset: UInt64 = 0
         var lastReport = Date.distantPast
         while offset < length {
-            try Task.checkCancellation()
+            try control.check(stoppedWhileChecking)
             let want = min(UInt64(ImageReader.chunkSize), length - offset)
             // Whole blocks, as written: 4 KB, or 512 bytes at the very end of a drive.
             let blocks = (want + blockSize - 1) / blockSize * blockSize

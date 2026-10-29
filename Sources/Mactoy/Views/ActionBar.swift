@@ -43,6 +43,16 @@ private struct StatusRow: View {
                 } else {
                     ProgressView().progressViewStyle(.linear)
                 }
+                if state.cancelRequested {
+                    Text("Stopping…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let note = state.cancelRefusedNote {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(12)
             .frame(maxWidth: .infinity)
@@ -74,6 +84,15 @@ private struct StatusRow: View {
 
 private struct PrimaryButton: View {
     @EnvironmentObject private var state: AppState
+    @State private var confirmingCancel = false
+
+    private func cancelAction() {
+        if state.cancelNeedsConfirmation {
+            confirmingCancel = true
+        } else {
+            Task { @MainActor in await state.cancelRunInProgress() }
+        }
+    }
 
     var body: some View {
         switch state.status {
@@ -91,14 +110,33 @@ private struct PrimaryButton: View {
             )
             .disabled(!state.canRun)
         case .preparing, .running:
-            Button(action: {}) {
-                Label("Working…", systemImage: "hourglass")
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
+            HStack(spacing: 8) {
+                if state.canCancelRun {
+                    Button(action: cancelAction) {
+                        Label("Cancel", systemImage: "xmark")
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.plain)
+                    .mactoyGlass(interactive: true)
+                }
+                Button(action: {}) {
+                    Label("Working…", systemImage: "hourglass")
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+                .mactoyGlass()
+                .disabled(true)
             }
-            .buttonStyle(.plain)
-            .mactoyGlass()
-            .disabled(true)
+            .confirmationDialog("Stop writing the drive?", isPresented: $confirmingCancel) {
+                Button("Stop Writing", role: .destructive) {
+                    Task { @MainActor in await state.cancelRunInProgress() }
+                }
+                Button("Keep Writing", role: .cancel) {}
+            } message: {
+                Text("The drive will be only partly written and won't start until you flash it or install Ventoy on it again.")
+            }
         case .failed:
             // On failure, offer both Retry (if we still have the
             // captured target from the failed run — v0.3.2, issue #5)

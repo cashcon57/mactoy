@@ -1001,6 +1001,14 @@ final class AppState: ObservableObject {
             status = .preparing("Removing the helper from the last run…")
             await removal.value
         }
+        cancelRequested = false
+        cancelRefusedNote = nil
+        runningMode = confirmedMode
+        defer {
+            cancelRequested = false
+            cancelRefusedNote = nil
+            runningMode = nil
+        }
         let target = confirmedTarget
         runRequestCount += 1
         lastRunRequest = RunRequest(
@@ -1410,6 +1418,45 @@ final class AppState: ObservableObject {
         await removal.value
         if helperRemoval == removal { helperRemoval = nil }
         helperStatus = HelperLifecycle.status
+    }
+
+    // MARK: - Cancel (#21)
+
+    /// The mode of the run in progress, set by `run()`. Internal so tests can set it.
+    var runningMode: AppMode?
+    /// Seam for tests: asks the helper to stop the run in progress.
+    var helperRunCanceller: @Sendable () async throws -> Bool = { try await HelperInvoker.cancelCurrentRun() }
+    /// The user pressed Cancel and the helper accepted; the run ends at its next safe point.
+    @Published private(set) var cancelRequested = false
+    /// The helper said it's too late to stop. Shown under the progress bar.
+    @Published private(set) var cancelRefusedNote: String?
+
+    /// Cancel is offered while the helper is running the plan and stopping is still safe: a
+    /// Ventoy install or update until it starts writing, a flash at any point.
+    var canCancelRun: Bool {
+        guard case .running(let update) = status, !cancelRequested else { return false }
+        if runningMode == .flashImage { return update.phase != .done && update.phase != .failed }
+        return [.preparing, .downloading, .extracting].contains(update.phase)
+    }
+
+    /// Stopping a flash partway through writing leaves the drive unusable, so the app asks first.
+    var cancelNeedsConfirmation: Bool {
+        guard case .running(let update) = status else { return false }
+        return runningMode == .flashImage && update.phase == .writing
+    }
+
+    func cancelRunInProgress() async {
+        guard canCancelRun else { return }
+        cancelRequested = true
+        cancelRefusedNote = nil
+        let accepted = (try? await helperRunCanceller()) ?? false
+        if !accepted {
+            cancelRequested = false
+            // Still running means the helper got past the point where stopping is safe.
+            if case .running = status {
+                cancelRefusedNote = "Too late to cancel: Mactoy has started writing the drive, and stopping now would leave it unusable."
+            }
+        }
     }
 
     // MARK: - Clear Ventoy downloads (issue #22)
