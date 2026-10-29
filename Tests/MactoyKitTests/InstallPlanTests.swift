@@ -53,6 +53,8 @@ struct InstallPlanValidateTests {
             "disk\u{FF12}",  // fullwidth two
             "disk\u{2167}",  // Roman numeral eight
             "disk\u{00BD}",  // one half
+            "disk2\u{301}",  // an ASCII digit with a combining accent
+            "disk0\u{338}",  // would also slip past the disk0 guard
         ]
         for name in bad {
             #expect(throws: PlanValidationError.self) {

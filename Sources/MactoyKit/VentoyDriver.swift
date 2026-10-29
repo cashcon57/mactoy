@@ -109,12 +109,14 @@ public struct VentoyDriver: InstallDriver {
 
         // Last fingerprint check before formatting (#21). The partition write and the wait for
         // macOS can take over a minute, and newfs_exfat writes to whatever /dev/<bsd>s1 is now.
-        try plan.target.reverifyFingerprintNow()
+        try Self.reverifyBeforeFormatting(plan.target)
 
         progress.report(.init(phase: .formatting, message: "Formatting \(part1) as exFAT..."))
 
         let fmt = try Subprocess.run("/sbin/newfs_exfat", ["-v", "Ventoy", part1])
         if fmt.status != 0 {
+            // A common reason newfs_exfat fails is the drive being pulled out, so check again.
+            try Self.reverifyBeforeFormatting(plan.target)
             progress.report(.init(phase: .formatting, message: "newfs_exfat failed, falling back to diskutil..."))
             _ = try Subprocess.runChecked(
                 "/usr/sbin/diskutil",
@@ -177,6 +179,26 @@ public struct VentoyDriver: InstallDriver {
     /// Read sector 0 back and compare it with the MBR sector that was
     /// written, ignoring the random UUID (384..<400) and disk signature
     /// (440..<444) patched in afterwards.
+    /// The fingerprint check before the exFAT format. By then the confirmed drive already has
+    /// its new partition table and boot files, so the message says so instead of implying that
+    /// nothing was written.
+    static func reverifyBeforeFormatting(
+        _ target: DiskTarget,
+        probe: (String) throws -> DiskTarget = DiskInfo.probe(bsdName:)
+    ) throws {
+        let after = "The drive you confirmed already has Ventoy's partitions and boot files, but its Ventoy partition isn't formatted yet. " +
+            "Plug it back in and install Ventoy on it again."
+        let live: DiskTarget
+        do {
+            live = try probe(target.bsdName)
+        } catch {
+            throw DriverError.validation("Stopped before formatting \(target.devicePath): macOS can't see the drive any more (\(error)). \(after)")
+        }
+        if let mismatch = target.fingerprintMismatch(against: live) {
+            throw DriverError.validation("Stopped before formatting \(target.devicePath): it's no longer the drive you confirmed (\(mismatch)). \(after)")
+        }
+    }
+
     static func verifyMBRSector(rawPath: String, written: Data) throws {
         let reader = try DiskWriter(rawPath: rawPath, writable: false)
         defer { reader.close() }

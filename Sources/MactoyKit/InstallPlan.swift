@@ -293,6 +293,7 @@ public extension InstallPlan {
 }
 
 extension Character {
-    /// `0` to `9` only. `isNumber` also accepts other scripts' digits, fractions and Roman numerals.
-    var isASCIIDigit: Bool { ("0"..."9").contains(self) }
+    /// `0` to `9` only. `isNumber` also accepts other scripts' digits, fractions and Roman
+    /// numerals, and a range check on Characters accepts a digit with a combining mark (`2\u{301}`).
+    var isASCIIDigit: Bool { asciiValue.map { (0x30...0x39).contains($0) } ?? false }
 }
