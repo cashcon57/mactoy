@@ -248,6 +248,8 @@ final class AppState: ObservableObject {
 
     // helper lifecycle
     /// Takes the helper off the Mac after a run (the "remove helper after this run" choice). Seam for tests.
+    /// The helper removal in progress, if any. `run()` waits for it.
+    private(set) var helperRemoval: Task<Void, Never>?
     var helperRemover: @MainActor () async -> Void = {
         await AppState.removeHelper(clearDownloads: { try await HelperInvoker.clearDownloads() },
                                     unregister: { try await HelperLifecycle.unregister() })
@@ -964,6 +966,9 @@ final class AppState: ObservableObject {
         confirmedTheme: ThemeChoice = .ventoyDefault,
         confirmedSaveThemeFrom: URL? = nil
     ) async {
+        // A Retry pressed while the last run is still removing the helper waits for that to
+        // finish. Otherwise the removal could stop the helper partway through this run.
+        if let removal = helperRemoval { await removal.value }
         let target = confirmedTarget
         runRequestCount += 1
         lastRunRequest = RunRequest(
@@ -1354,7 +1359,10 @@ final class AppState: ObservableObject {
     /// Internal so tests can check it.
     func removeHelperIfAsked() async {
         guard uninstallHelperAfterRun else { return }
-        await helperRemover()
+        let removal = Task { @MainActor in await helperRemover() }
+        helperRemoval = removal
+        await removal.value
+        helperRemoval = nil
         helperStatus = HelperLifecycle.status
     }
 
@@ -1370,8 +1378,11 @@ final class AppState: ObservableObject {
     /// What the last Clear Ventoy Downloads did. Drives an alert.
     @Published var clearDownloadsReport: String?
 
-    /// Not while a drive is being written: that run may be using the cache.
+    /// Not while a drive is being written (that run may be using the cache), while the helper is
+    /// being removed, or while a sheet is open: the result alert can't show over a sheet.
     var canClearDownloads: Bool {
+        guard helperRemoval == nil, !showHelperExplainer, !isAwaitingHelperApproval,
+              !showFullDiskAccessSheet, pendingEraseConfirmation == nil else { return false }
         switch status {
         case .preparing, .running: return false
         case .idle, .success, .failed: return true
@@ -1385,14 +1396,18 @@ final class AppState: ObservableObject {
         do {
             freed += try localDownloadClearer()
         } catch {
-            notes.append("Couldn't clear the downloads in your Caches folder: \(error.localizedDescription)")
+            // "\(error)": DriverError's description is readable; its localizedDescription isn't.
+            notes.append("Couldn't clear the downloads in your Caches folder: \(error)")
         }
-        refreshHelperStatus()
-        if helperStatus == .enabled {
+        // Read directly rather than through refreshHelperStatus(), which would also reset the
+        // "remove helper after this run" choice of a run waiting on approval.
+        if helperStatusSource() == .enabled {
             do {
                 freed += try await helperDownloadClearer()
             } catch HelperInvoker.HelperError.versionMismatch {
                 notes.append("Mactoy's helper is from another version of Mactoy, so the downloads it keeps weren't cleared. Mactoy updates the helper at the next install.")
+            } catch HelperInvoker.HelperError.xpcUnreachable {
+                notes.append("Mactoy couldn't reach its helper, so the downloads it keeps weren't cleared. They're cleared the next time Mactoy removes the helper after an install.")
             } catch {
                 notes.append("Couldn't clear the downloads Mactoy's helper keeps: \(error.localizedDescription)")
             }

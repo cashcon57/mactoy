@@ -125,6 +125,7 @@ struct LeftoverFilesTests {
         }
         let storages = library.appendingPathComponent("HTTPStorages/com.mactoy.Mactoy", isDirectory: true)
         try fm.createDirectory(at: storages, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: library.appendingPathComponent("HTTPStorages/com.mactoy.Mactoy.binarycookies"))
         let otherApp = library.appendingPathComponent("HTTPStorages/com.example.Other", isDirectory: true)
         try fm.createDirectory(at: otherApp, withIntermediateDirectories: true)
 
@@ -134,8 +135,56 @@ struct LeftoverFilesTests {
             #expect(!fm.fileExists(atPath: caches.appendingPathComponent(gone).path))
         }
         #expect(!fm.fileExists(atPath: storages.path))
+        #expect(!fm.fileExists(atPath: library.appendingPathComponent("HTTPStorages/com.mactoy.Mactoy.binarycookies").path))
         #expect(fm.fileExists(atPath: caches.appendingPathComponent("Themes").path))
         #expect(fm.fileExists(atPath: caches.appendingPathComponent("Ventoy").path))
         #expect(fm.fileExists(atPath: otherApp.path))
+    }
+
+    @Test("the helper's old cache under root's Library goes, and its emptied folder with it")
+    func helperStaleFilesRemoved() throws {
+        let library = fm.temporaryDirectory.appendingPathComponent("mactoy-root-library-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: library) }
+        let caches = library.appendingPathComponent("Caches/mactoyd", isDirectory: true)
+        try fm.createDirectory(at: caches.appendingPathComponent("fsCachedData"), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: caches.appendingPathComponent("Cache.db"))
+        let appCaches = library.appendingPathComponent("Caches/com.mactoy.Mactoy", isDirectory: true)
+        try fm.createDirectory(at: appCaches, withIntermediateDirectories: true)
+
+        MactoyHTTP.removeStaleSharedSessionFiles(library: library, removeEmptyCacheFolders: true)
+
+        #expect(!fm.fileExists(atPath: caches.path))
+        #expect(!fm.fileExists(atPath: appCaches.path))
+    }
+
+    @Test("without removeEmptyCacheFolders the app's cache folder stays, even when empty")
+    func appKeepsCacheFolder() throws {
+        let library = fm.temporaryDirectory.appendingPathComponent("mactoy-library-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: library) }
+        let appCaches = library.appendingPathComponent("Caches/com.mactoy.Mactoy", isDirectory: true)
+        try fm.createDirectory(at: appCaches, withIntermediateDirectories: true)
+
+        MactoyHTTP.removeStaleSharedSessionFiles(library: library)
+
+        #expect(fm.fileExists(atPath: appCaches.path))
+    }
+
+    @Test("a download whose file can't be moved reports its failure once, not twice")
+    func downloadFailureReportedOnce() {
+        final class Count: @unchecked Sendable { var n = 0; var lastFailed = false }
+        let count = Count()
+        let delegate = DownloadProgressDelegate(displayName: "x", progress: CallbackProgressSink { _ in }) { result in
+            count.n += 1
+            if case .failure = result { count.lastFailed = true }
+        }
+        let session = URLSession(configuration: MactoyHTTP.configuration())
+        let task = session.downloadTask(with: URL(string: "https://example.invalid/x")!)
+        let missing = fm.temporaryDirectory.appendingPathComponent("mactoy-missing-\(UUID().uuidString)")
+
+        delegate.urlSession(session, downloadTask: task, didFinishDownloadingTo: missing)
+        delegate.urlSession(session, task: task, didCompleteWithError: nil)
+
+        #expect(count.n == 1)
+        #expect(count.lastFailed)
     }
 }

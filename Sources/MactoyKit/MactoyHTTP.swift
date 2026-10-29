@@ -19,23 +19,40 @@ public enum MactoyHTTP {
         return config
     }
 
-    /// What the shared session left behind before v0.8.0, relative to the user's Library folder.
+    /// What the shared session left behind before v0.8.0, relative to a Library folder, for each
+    /// name macOS may have filed it under. The app is `com.mactoy.Mactoy`; the helper, which sits
+    /// inside the app and runs as root, used root's Library under the app's name or its own.
     /// Nothing in Mactoy uses these any more.
-    static let staleSharedSessionItems = [
-        "Caches/com.mactoy.Mactoy/Cache.db",
-        "Caches/com.mactoy.Mactoy/Cache.db-shm",
-        "Caches/com.mactoy.Mactoy/Cache.db-wal",
-        "Caches/com.mactoy.Mactoy/fsCachedData",
-        "HTTPStorages/com.mactoy.Mactoy",
-        "HTTPStorages/com.mactoy.Mactoy.binarycookies",
-    ]
+    static func staleSharedSessionItems(names: [String]) -> [String] {
+        names.flatMap { name in [
+            "Caches/\(name)/Cache.db",
+            "Caches/\(name)/Cache.db-shm",
+            "Caches/\(name)/Cache.db-wal",
+            "Caches/\(name)/fsCachedData",
+            "HTTPStorages/\(name)",
+            "HTTPStorages/\(name).binarycookies",
+        ] }
+    }
 
-    /// Deletes what the shared session left behind before v0.8.0. Safe to call on every launch.
-    public static func removeStaleSharedSessionFiles(library: URL? = nil) {
+    /// Deletes what the shared session left behind before v0.8.0 in the current user's Library
+    /// (root's, for the helper). Safe to call on every launch.
+    ///
+    /// `removeEmptyCacheFolders` then removes each `Caches/<name>` folder if it's empty. Only the
+    /// helper asks for that: the app keeps its own theme and Ventoy caches in that folder and may
+    /// be creating them at the same moment.
+    public static func removeStaleSharedSessionFiles(
+        library: URL? = nil,
+        names: [String] = ["com.mactoy.Mactoy", "com.mactoy.mactoyd", "mactoyd"],
+        removeEmptyCacheFolders: Bool = false
+    ) {
         let fm = FileManager.default
         guard let library = library ?? fm.urls(for: .libraryDirectory, in: .userDomainMask).first else { return }
-        for item in staleSharedSessionItems {
+        for item in staleSharedSessionItems(names: names) {
             try? fm.removeItem(at: library.appendingPathComponent(item))
+        }
+        guard removeEmptyCacheFolders else { return }
+        for name in names {
+            _ = rmdir(library.appendingPathComponent("Caches/\(name)").path)
         }
     }
 }

@@ -46,7 +46,9 @@ public let mactoydMachServiceName = "com.mactoy.mactoyd"
 
 /// The helper's protocol version, checked by the app before every run.
 /// Bumped when what the app sends `mactoyd` (or how it must interpret
-/// it) changes, which makes macOS ask the user to approve the helper again.
+/// it) changes. An app update brings its helper along, so the user isn't
+/// asked again; a mismatch means another copy of Mactoy owns the helper,
+/// and `AppState.run` re-registers this one.
 /// 0.8.0 adds `clearDownloads`. v0.5.1 to v0.7.1 left the protocol at 0.5.0.
 public let mactoydVersion = "0.8.0"
 

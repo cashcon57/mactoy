@@ -93,6 +93,85 @@ struct ClearDownloadsTests {
         #expect(s.canClearDownloads)
     }
 
+    @Test("not while a sheet is open, since the result alert can't show over it")
+    func notWhileSheetOpen() {
+        let s = state(helper: .enabled, calls: Calls())
+        #expect(s.canClearDownloads)
+        s.showHelperExplainer = true
+        #expect(!s.canClearDownloads)
+        s.showHelperExplainer = false
+        s.isAwaitingHelperApproval = true
+        #expect(!s.canClearDownloads)
+        s.isAwaitingHelperApproval = false
+        s.showFullDiskAccessSheet = true
+        #expect(!s.canClearDownloads)
+    }
+
+    @Test("a failure in the Caches folder is reported in readable words")
+    func localFailureReadable() async {
+        let calls = Calls()
+        let s = state(helper: .notRegistered, calls: calls, helperCacheThere: false)
+        s.localDownloadClearer = { throw DriverError.validation("cache: /x has unexpected ownership or permissions; not clearing it") }
+        await s.clearVentoyDownloads()
+        let report = s.clearDownloadsReport ?? ""
+        #expect(report.contains("unexpected ownership"))
+        #expect(!report.contains("error 0"))
+    }
+
+    @Test("an unreachable helper is explained in plain words")
+    func helperUnreachable() async {
+        let calls = Calls()
+        let s = state(helper: .enabled, calls: calls,
+                      helperError: HelperInvoker.HelperError.xpcUnreachable("Error Domain=NSCocoaErrorDomain Code=4099"))
+        await s.clearVentoyDownloads()
+        let report = s.clearDownloadsReport ?? ""
+        #expect(report.contains("couldn't reach its helper"))
+        #expect(!report.contains("4099"))
+    }
+
+    @Test("clearing doesn't reset the 'remove helper after this run' choice")
+    func keepsUninstallChoice() async {
+        let s = state(helper: .enabled, calls: Calls())
+        s.helperStatus = .requiresApproval      // a run waiting on approval
+        s.uninstallHelperAfterRun = true
+        await s.clearVentoyDownloads()
+        #expect(s.uninstallHelperAfterRun)
+        #expect(s.helperStatus == .requiresApproval)
+    }
+
+    @Test("while the helper is being removed, clearing waits and a new run waits for the removal")
+    func removalBlocksClearAndRun() async {
+        final class Gate: @unchecked Sendable { var open: CheckedContinuation<Void, Never>? }
+        let gate = Gate()
+        let calls = Calls()
+        let s = state(helper: .enabled, calls: calls)
+        s.uninstallHelperAfterRun = true
+        s.helperRemover = {
+            calls.events.append("unregister-start")
+            await withCheckedContinuation { gate.open = $0 }
+            calls.events.append("unregister-end")
+        }
+        let removal = Task { await s.removeHelperIfAsked() }
+        while gate.open == nil { await Task.yield() }
+        #expect(!s.canClearDownloads)
+
+        let disk = DiskTarget(bsdName: "disk9", sizeInBytes: 8_000_000_000, isExternal: true, isRemovable: true)
+        s.helperStatusSource = { .notRegistered }
+        let run = Task {
+            await s.run(confirmedTarget: disk, confirmedMode: .flashImage,
+                        confirmedSecureBoot: true, confirmedPartitionStyle: .mbr)
+            calls.events.append("run-returned")
+        }
+        for _ in 0..<50 { await Task.yield() }
+        #expect(!calls.events.contains("run-returned"))
+
+        gate.open?.resume()
+        await removal.value
+        await run.value
+        #expect(calls.events.firstIndex(of: "unregister-end")! < calls.events.firstIndex(of: "run-returned")!)
+        #expect(s.canClearDownloads)
+    }
+
     @Test("removing the helper clears its downloads first")
     func removalClearsFirst() async {
         let calls = Calls()

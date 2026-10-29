@@ -351,7 +351,7 @@ public struct VentoyDownloader: Sendable {
 /// Declared `@unchecked Sendable` because URLSession delegate callbacks
 /// happen on URLSession's delegate queue, which serializes access to
 /// stored state. We only mutate inside the callbacks.
-private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let displayName: String
     private let progress: ProgressSink
     private let completion: (Result<URL, Error>) -> Void
@@ -431,6 +431,7 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
     ) {
         defer { session.finishTasksAndInvalidate() }
         if let error {
+            if let finalLocation { try? FileManager.default.removeItem(at: finalLocation) }
             finish(.failure(error))
             return
         }

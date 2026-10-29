@@ -315,6 +315,10 @@ guard getuid() == 0 else {
 
 daemonLog.info("mactoyd starting (version \(mactoydVersion, privacy: .public)) — listening on \(mactoydMachServiceName, privacy: .public)")
 
+// Before v0.8.0 the helper's downloads went through the shared URLSession, which left a web
+// cache in root's Library. Nothing uses it now (issue #22).
+DispatchQueue.global(qos: .background).async { MactoyHTTP.removeStaleSharedSessionFiles(removeEmptyCacheFolders: true) }
+
 let listener = NSXPCListener(machServiceName: mactoydMachServiceName)
 let delegate = DaemonListenerDelegate()
 listener.delegate = delegate
