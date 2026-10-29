@@ -318,13 +318,15 @@ What's shipped is in the [changelog](CHANGELOG.md). Everything planned is a GitH
 
 1.0 is about trust: the code is tested on every change and on real drives, the known safety gaps are closed, and organisations can deploy it.
 
-**v0.8.0: Safer writes** ([milestone](https://github.com/cashcon57/mactoy/milestone/3), [scope](docs/specs/2026-10-29-v0.8.0-safer-writes.md))
+**v0.8.0: Safer writes**, done ([milestone](https://github.com/cashcon57/mactoy/milestone/3), [scope](docs/specs/2026-10-29-v0.8.0-safer-writes.md))
 
 - [#18](https://github.com/cashcon57/mactoy/issues/18) Run the test suite on every pull request
 - [#22](https://github.com/cashcon57/mactoy/issues/22) Leave fewer files behind
 - [#21](https://github.com/cashcon57/mactoy/issues/21) Close the code gaps found while writing SECURITY.md, including a Cancel button
 - [#20](https://github.com/cashcon57/mactoy/issues/20) Stream `.xz` and `.gz` images while flashing instead of loading them into memory
 - [#26](https://github.com/cashcon57/mactoy/issues/26) Verify flashed images: SHA-256 check before writing and read-back after
+- [#36](https://github.com/cashcon57/mactoy/issues/36) Read the image to flash with the user's permissions, not root's
+- [#39](https://github.com/cashcon57/mactoy/issues/39) Don't re-run a plan by itself when the helper connection breaks mid-run
 
 **v0.9.0: For IT admins** ([milestone](https://github.com/cashcon57/mactoy/milestone/4))
 
@@ -337,6 +339,7 @@ What's shipped is in the [changelog](CHANGELOG.md). Everything planned is a GitH
 **1.0** ([milestone](https://github.com/cashcon57/mactoy/milestone/1))
 
 - [#19](https://github.com/cashcon57/mactoy/issues/19) Test a full release on real hardware (Apple Silicon and Intel)
+- [#42](https://github.com/cashcon57/mactoy/issues/42) Weekly QEMU boot test in CI
 
 ### After 1.0 ([milestone](https://github.com/cashcon57/mactoy/milestone/2))
 
