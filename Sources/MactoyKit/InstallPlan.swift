@@ -35,7 +35,8 @@ public struct DiskTarget: Codable, Sendable, Equatable {
     public let volumes: [DiskVolumeInfo]
     /// The drive's own hardware serial number, when it reports one (#21).
     /// Unlike the BSD name, it stays with the physical drive. nil for drives
-    /// without one, disk images, and plans from before v0.8.0.
+    /// without one, raw disk images, and plans from before v0.8.0. (Images
+    /// attached as Apple disk images report a UUID here, which is fine.)
     public let serialNumber: String?
 
     public init(

@@ -105,10 +105,13 @@ final class AppState: ObservableObject {
         let bsdName: String
         let sizeInBytes: UInt64
         let mediaName: String?
+        /// So an unlock doesn't carry over to another backup drive of the same model (#21).
+        let serialNumber: String?
         init(_ disk: DiskTarget) {
             bsdName = disk.bsdName
             sizeInBytes = disk.sizeInBytes
             mediaName = disk.mediaName
+            serialNumber = disk.serialNumber
         }
     }
 
