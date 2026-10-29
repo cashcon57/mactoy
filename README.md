@@ -47,7 +47,7 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 
 ---
 
-## Status (v0.7.1)
+## Status (v0.8.0)
 
 - [x] GPT + boot-image math ported from the Python proof-of-concept (cross-validated: Swift and Python produce bit-identical layouts for the same disk).
 - [x] Ventoy install flow end-to-end (download → extract → partition → write → format).
@@ -56,6 +56,7 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 - [x] **MBR or GPT partition style** (v0.5.0, issue #11). Install Ventoy defaults to MBR, Ventoy2Disk's default, which boots on legacy BIOS and UEFI; GPT is one click away, and drives over 2 TiB always get GPT.
 - [x] **Time Machine drives are protected** (v0.6.0). A drive holding APFS Time Machine backups (the format macOS has used since Big Sur) is listed but locked: Mactoy won't install, update or flash it unless you unlock that drive for the session, after a warning that its backups will be lost.
 - [x] **Boot menu themes** (v0.7.0). Pick a theme for Ventoy's boot menu from 14 community themes with previews, when installing or on an existing drive. New drives get Catppuccin Mocha unless you choose otherwise. Add your own theme from a `.zip`, folder or `theme.txt` in any layout, and keep it in **My Themes**. A drive's existing theme is offered a save before it's replaced or erased, and a theme whose download has moved is flagged with a way to report it. See [below](#give-your-drive-a-boot-menu-theme).
+- [x] **Safer writes** (v0.8.0). Flash Image decompresses `.xz` and `.gz` while writing, can check the image's SHA-256 before erasing, and reads the drive back afterwards. **Cancel** works while stopping is safe. The drive's serial number is part of the check that it's still the drive you confirmed, and Mactoy leaves fewer files behind.
 - [x] **New app icon** (v0.7.0). Drawn as vector layers in Icon Composer: a Liquid Glass icon with default, dark, tinted and clear looks on macOS 26, and a matching standard icon on macOS 13 to 15.
 - [x] **Iron-clad targeting defense** (v0.3.1). Six-layer defense against wrong-disk wipes: fingerprint capture at confirmation, selection freeze while sheet is open, captured-target threading through run(), app-side + daemon-side re-verification (with re-verify immediately before write to bracket long-running download/decompress), and BSD-name guard.
 - [x] Raw image flashing with `.xz` and `.gz` decompression.
@@ -74,7 +75,7 @@ Grab `Mactoy-<version>.dmg` from the [Releases page](https://github.com/cashcon5
 
 ### Open it
 
-1. Open `Mactoy-0.7.1.dmg` (or whichever `Mactoy-*.dmg` is on the latest release page).
+1. Open `Mactoy-0.8.0.dmg` (or whichever `Mactoy-*.dmg` is on the latest release page).
 2. Drag `Mactoy.app` into `/Applications`.
 3. Launch from Launchpad or `/Applications`. Opens normally — no right-click dance needed. The DMG is Apple-notarized, so Gatekeeper sees it as a known-good Developer ID build.
 
@@ -136,9 +137,10 @@ Either one alone isn't enough. Once both are granted — and if you keep the hel
 ### Flash a raw image
 
 1. Switch to the **Flash Image** tab.
-2. Drag an ISO / IMG onto the drop zone (or click to browse). `.xz` and `.gz` compressed images are auto-decompressed.
-3. Select target disk in sidebar.
-4. Click **Flash Image**, confirm the erase prompt, wait. (Same [permissions](#permissions) flow as Install Ventoy — if you kept the helper after an earlier run, no prompts appear.)
+2. Drag an ISO / IMG onto the drop zone (or click to browse). `.xz` and `.gz` compressed images are decompressed while writing.
+3. Optional: paste the image's SHA-256 from its download page, or **Load from File…** its `.sha256` / `SHA256SUMS` file. Mactoy checks the image against it before erasing the drive.
+4. Select target disk in sidebar.
+5. Click **Flash Image**, confirm the erase prompt, wait. With **Check the drive after writing** on (the default), Mactoy reads the drive back and compares it with the image. (Same [permissions](#permissions) flow as Install Ventoy: if you kept the helper after an earlier run, no prompts appear.)
 
 ### Manage ISOs on an existing Ventoy drive
 
@@ -280,7 +282,7 @@ swift test
 
 # Build the signed release bundle + DMG (requires a Developer ID cert in Keychain)
 ./scripts/build-app.sh release devid
-./scripts/build-dmg.sh 0.7.1 devid
+./scripts/build-dmg.sh 0.8.0 devid
 
 # Build a universal (arm64 + x86_64) app bundle — ship this if you
 # want one binary that runs on both Apple Silicon and Intel Macs.
