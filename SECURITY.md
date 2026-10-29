@@ -35,18 +35,22 @@ model.
   Login Items.
 - **Crafted install plans targeting internal disks.** The helper
   refuses a plan unless its target is a whole disk (`disk` followed by
-  a number, never a slice like `disk2s1` or a path like `../disk2`),
+  ASCII digits, never a slice like `disk2s1` or a path like `../disk2`),
   isn't `disk0` or `disk1`, and is external or removable. Before
   writing, it re-probes the disk with `diskutil` itself and aborts if
-  the live disk's flags, size or name don't match the plan.
+  the live disk's flags, size or name don't match the plan. The
+  read-only Ventoy version probe applies the same disk-name rule before
+  it opens anything.
 - **Writing to the wrong disk.** The disk you confirm is captured with
   its fingerprint (BSD name, size, external and removable flags, media
   name), and the disk list can't change the target while the
   confirmation is open. The fingerprint is checked again before the
   first unmount and before the raw writes begin, including after a
   long download or decompression. A mismatch aborts before anything is
-  written. (See the limitations below for what the fingerprint can't
-  catch.)
+  written. A fresh install checks it once more before formatting the
+  Ventoy partition, after the wait for macOS to see the new
+  partitions. (See the limitations below for what the fingerprint
+  can't catch.)
 - **Erasing Time Machine backups.** Drives with an APFS Time Machine
   volume are listed but locked. Install, update and flash refuse them
   unless you unlock that drive for the session. The check runs again
@@ -112,17 +116,12 @@ any of them, take that into account before using Mactoy.
   confirming, Mactoy won't notice. The window is longest when flashing
   a compressed image, during decompression. **Planned fix:** pin an
   immutable identifier in the plan.
-- **The final format step isn't re-checked.** On a fresh install, after
-  the partition table and bootloader are written, Mactoy waits for macOS
-  to detect the new partitions (up to 90 seconds) and formats the first
-  one as exFAT without checking the fingerprint again. **Planned fix:**
-  re-check before formatting.
-- **Disk-name and version checks accept non-ASCII numerals.** They use
-  Swift's `isNumber`, which also accepts digits from other scripts, so
-  they don't strictly enforce `[0-9]`. The read-only Ventoy version
-  probe also opens the named disk without these checks. Only the
-  signed Mactoy app can send either request to the helper. **Planned
-  fix:** require ASCII digits and validate the probe's disk name.
+- **Flash image reads the image as root.** The app sends the image's
+  path, and the helper opens it with root's permissions. On a Mac with
+  more than one account, while the helper is registered, a user could
+  have Mactoy copy a file they can't read themselves onto a USB stick.
+  **Planned fix** ([#36](https://github.com/cashcon57/mactoy/issues/36)):
+  the app opens the file and hands the open file to the helper.
 - **Compressed images are decompressed in memory.** Plain `.iso` and
   `.img` files are memory-mapped where macOS allows it and written in
   4 MB chunks. `.img.xz` and `.img.gz` files are read and decompressed

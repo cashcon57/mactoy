@@ -176,9 +176,6 @@ public struct VentoyDriver: InstallDriver {
         progress.report(.init(phase: .done, message: "Ventoy \(version) installed to \(plan.target.devicePath)"))
     }
 
-    /// Read sector 0 back and compare it with the MBR sector that was
-    /// written, ignoring the random UUID (384..<400) and disk signature
-    /// (440..<444) patched in afterwards.
     /// The fingerprint check before the exFAT format. By then the confirmed drive already has
     /// its new partition table and boot files, so the message says so instead of implying that
     /// nothing was written.
@@ -199,6 +196,9 @@ public struct VentoyDriver: InstallDriver {
         }
     }
 
+    /// Read sector 0 back and compare it with the MBR sector that was
+    /// written, ignoring the random UUID (384..<400) and disk signature
+    /// (440..<444) patched in afterwards.
     static func verifyMBRSector(rawPath: String, written: Data) throws {
         let reader = try DiskWriter(rawPath: rawPath, writable: false)
         defer { reader.close() }
