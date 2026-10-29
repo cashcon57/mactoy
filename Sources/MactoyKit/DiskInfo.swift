@@ -1,4 +1,5 @@
 import Foundation
+import IOKit
 
 public enum DiskInfo {
     /// Query `diskutil info` and return a DiskTarget for the given BSD name.
@@ -24,8 +25,52 @@ public enum DiskInfo {
             isExternal: external,
             isRemovable: removable,
             mediaName: mediaName?.isEmpty == true ? nil : mediaName,
-            volumes: volumes
+            volumes: volumes,
+            serialNumber: serialNumber(bsdName: bsdName)
         )
+    }
+
+    /// The drive's own serial number from the IORegistry, or nil (#21).
+    ///
+    /// Walks up from the disk's IOMedia and takes the first of: a storage device's
+    /// `Device Characteristics` > `Serial Number`, or the USB device's `USB Serial Number`.
+    /// The walk stops at the first USB device, so a hub's serial is never mistaken for the
+    /// drive's: that would change when the same drive moves to another port.
+    static func serialNumber(bsdName: String) -> String? {
+        guard let matching = IOBSDNameMatching(kIOMainPortDefault, 0, bsdName) else { return nil }
+        // IOServiceGetMatchingService consumes `matching`.
+        var entry = IOServiceGetMatchingService(kIOMainPortDefault, matching)
+        guard entry != IO_OBJECT_NULL else { return nil }
+        defer { if entry != IO_OBJECT_NULL { IOObjectRelease(entry) } }
+
+        for _ in 0..<32 {
+            if IOObjectConformsTo(entry, "IOBlockStorageDevice") != 0,
+               let characteristics = property("Device Characteristics", of: entry) as? [String: Any],
+               let serial = cleanSerial(characteristics["Serial Number"]) {
+                return serial
+            }
+            if IOObjectConformsTo(entry, "IOUSBHostDevice") != 0 || IOObjectConformsTo(entry, "IOUSBDevice") != 0 {
+                return cleanSerial(property("USB Serial Number", of: entry))
+            }
+            var parent: io_registry_entry_t = IO_OBJECT_NULL
+            guard IORegistryEntryGetParentEntry(entry, kIOServicePlane, &parent) == KERN_SUCCESS else { return nil }
+            IOObjectRelease(entry)
+            entry = parent
+        }
+        return nil
+    }
+
+    private static func property(_ key: String, of entry: io_registry_entry_t) -> Any? {
+        IORegistryEntryCreateCFProperty(entry, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
+    }
+
+    /// Trims spaces and NULs; nil for an empty or placeholder serial. Some drives report all
+    /// zeros or all spaces, which says nothing about which drive it is.
+    static func cleanSerial(_ value: Any?) -> String? {
+        guard let raw = value as? String else { return nil }
+        let serial = raw.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\0")))
+        guard !serial.isEmpty, serial.contains(where: { $0 != "0" }) else { return nil }
+        return serial
     }
 
     /// Enumerate all external/physical whole disks on the system.

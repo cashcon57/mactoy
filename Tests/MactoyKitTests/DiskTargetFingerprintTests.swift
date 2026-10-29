@@ -11,7 +11,8 @@ struct DiskTargetFingerprintTests {
         external: Bool = true,
         removable: Bool = true,
         media: String? = "RTL9210B-CG",
-        volumes: [DiskVolumeInfo] = []
+        volumes: [DiskVolumeInfo] = [],
+        serial: String? = nil
     ) -> DiskTarget {
         DiskTarget(
             bsdName: bsd,
@@ -19,8 +20,48 @@ struct DiskTargetFingerprintTests {
             isExternal: external,
             isRemovable: removable,
             mediaName: media,
-            volumes: volumes
+            volumes: volumes,
+            serialNumber: serial
         )
+    }
+
+    @Test("a different drive of the same model is caught by its serial number (#21)")
+    func serialMismatch() {
+        let msg = target(serial: "AA0000000001").fingerprintMismatch(against: target(serial: "AA0000000002"))
+        #expect(msg?.contains("Serial number changed") == true)
+        #expect(msg?.contains("AA000") == false)
+    }
+
+    @Test("the same serial, or a serial on only one side, is not a mismatch")
+    func serialOnlyComparedWhenBothKnown() {
+        #expect(target(serial: "AA01").fingerprintMismatch(against: target(serial: "AA01")) == nil)
+        #expect(target(serial: "AA01").fingerprintMismatch(against: target(serial: nil)) == nil)
+        #expect(target(serial: nil).fingerprintMismatch(against: target(serial: "AA01")) == nil)
+    }
+
+    @Test("a plan from before v0.8.0, without a serial, still decodes")
+    func oldPlanDecodes() throws {
+        let old = #"{"bsdName":"disk5","sizeInBytes":1000,"isExternal":true,"isRemovable":true,"mediaName":"X","volumes":[]}"#
+        let decoded = try JSONDecoder().decode(DiskTarget.self, from: Data(old.utf8))
+        #expect(decoded.serialNumber == nil)
+        let roundTrip = try JSONDecoder().decode(DiskTarget.self, from: JSONEncoder().encode(target(serial: "AA01")))
+        #expect(roundTrip.serialNumber == "AA01")
+    }
+
+    @Test("placeholder serials count as none")
+    func cleanSerial() {
+        #expect(DiskInfo.cleanSerial("  1234ABCD \0") == "1234ABCD")
+        #expect(DiskInfo.cleanSerial("") == nil)
+        #expect(DiskInfo.cleanSerial("    ") == nil)
+        #expect(DiskInfo.cleanSerial("000000000000") == nil)
+        #expect(DiskInfo.cleanSerial(42) == nil)
+        #expect(DiskInfo.cleanSerial(nil) == nil)
+    }
+
+    @Test("the serial lookup finds nothing for names that aren't disks, without crashing")
+    func serialLookupForMissingDisk() {
+        #expect(DiskInfo.serialNumber(bsdName: "disk999") == nil)
+        #expect(DiskInfo.serialNumber(bsdName: "not-a-disk") == nil)
     }
 
     @Test("identical disks produce no mismatch")

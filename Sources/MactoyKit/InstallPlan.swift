@@ -33,6 +33,10 @@ public struct DiskTarget: Codable, Sendable, Equatable {
     /// Volumes currently on this disk (partition + friendly label). Empty
     /// for a completely unformatted disk.
     public let volumes: [DiskVolumeInfo]
+    /// The drive's own hardware serial number, when it reports one (#21).
+    /// Unlike the BSD name, it stays with the physical drive. nil for drives
+    /// without one, disk images, and plans from before v0.8.0.
+    public let serialNumber: String?
 
     public init(
         bsdName: String,
@@ -40,7 +44,8 @@ public struct DiskTarget: Codable, Sendable, Equatable {
         isExternal: Bool,
         isRemovable: Bool,
         mediaName: String? = nil,
-        volumes: [DiskVolumeInfo] = []
+        volumes: [DiskVolumeInfo] = [],
+        serialNumber: String? = nil
     ) {
         self.bsdName = bsdName
         self.sizeInBytes = sizeInBytes
@@ -48,6 +53,7 @@ public struct DiskTarget: Codable, Sendable, Equatable {
         self.isRemovable = isRemovable
         self.mediaName = mediaName
         self.volumes = volumes
+        self.serialNumber = serialNumber
     }
 
     public var devicePath: String { "/dev/\(bsdName)" }
@@ -115,6 +121,13 @@ public struct DiskTarget: Codable, Sendable, Equatable {
         }
         if self.mediaName != fresh.mediaName {
             return "Media name changed: confirmed \(self.mediaName ?? "nil"), live \(fresh.mediaName ?? "nil")"
+        }
+        // Compared only when both sides have one: a lookup that comes back empty once must not
+        // stop a write to the right drive. A different drive of the same model is the case this
+        // catches (#21). The numbers stay out of the message, which is logged publicly and often
+        // pasted into bug reports.
+        if let confirmed = self.serialNumber, let live = fresh.serialNumber, confirmed != live {
+            return "Serial number changed: it's a different drive of the same kind"
         }
         return nil
     }
