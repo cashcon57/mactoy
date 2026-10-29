@@ -1,0 +1,40 @@
+name: CI
+
+# Runs the test suite on every pull request and every push to main (issue #18).
+# themes.yml runs the same tests only when theme files change; this one covers
+# the rest of the code. Changes that only touch Markdown or docs/ are skipped.
+on:
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR replaces the run in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # macOS 26: the app's Liquid Glass code needs the macOS 26 SDK (Xcode 26).
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Show the toolchain
+        run: swift --version && xcodebuild -version
+      # One at a time: on a 3-core runner the 48-call Subprocess stress test holds every
+      # worker thread, and the tests that check timing would miss their windows.
+      - name: Test
+        run: swift test --no-parallel
+      - name: Build the end-to-end harness
+        run: swift build --package-path scripts/e2e
