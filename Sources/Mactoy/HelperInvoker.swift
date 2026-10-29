@@ -77,9 +77,10 @@ enum HelperInvoker {
         }
         connection.exportedObject = forwarder
 
-        var invalidationErr: String?
-        connection.invalidationHandler = { invalidationErr = "connection invalidated" }
-        connection.interruptionHandler = { invalidationErr = "connection interrupted" }
+        // Set by XPC's handlers, read in the reply, possibly on different queues.
+        let invalidation = LockedString()
+        connection.invalidationHandler = { invalidation.set("connection invalidated") }
+        connection.interruptionHandler = { invalidation.set("connection interrupted") }
         connection.resume()
         defer { connection.invalidate() }
 
@@ -125,10 +126,14 @@ enum HelperInvoker {
             proxy.executePlan(planData, image: image) { success, errMsg in
                 if success {
                     cont.resume()
-                } else if let invalidationErr {
-                    cont.resume(throwing: HelperError.connectionLost(invalidationErr))
+                } else if let errMsg {
+                    // The helper answered with its own reason (Full Disk Access, a stop, ...).
+                    // An interruption seen earlier doesn't change what it says.
+                    cont.resume(throwing: HelperError.executionFailed(errMsg))
+                } else if let lost = invalidation.value {
+                    cont.resume(throwing: HelperError.connectionLost(lost))
                 } else {
-                    cont.resume(throwing: HelperError.executionFailed(errMsg ?? "mactoyd reported failure with no detail"))
+                    cont.resume(throwing: HelperError.executionFailed("mactoyd reported failure with no detail"))
                 }
             }
         }
@@ -272,4 +277,12 @@ final class ProgressForwarder: NSObject, MactoyClientProtocol, @unchecked Sendab
         if let toFlushFirst { callback(toFlushFirst) }
         if !shouldDrop { callback(update) }
     }
+}
+
+/// A string written and read from different threads.
+final class LockedString: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: String?
+    func set(_ value: String) { lock.lock(); stored = value; lock.unlock() }
+    var value: String? { lock.lock(); defer { lock.unlock() }; return stored }
 }
