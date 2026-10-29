@@ -113,10 +113,17 @@ public struct RawImageDriver: InstallDriver {
         try writer.seek(to: 0)
         progress.report(.init(phase: .writing, message: "Writing \(name)...", bytesDone: 0, bytesTotal: knownSize ?? compressedSize))
 
-        try control.check(Self.stoppedBeforeWriting)
         var chunk: Data? = first
         while let data = chunk {
-            try control.check(Self.stoppedWhileWriting)
+            if control.isCancelled {
+                guard written > 0 else {
+                    // Unmounted but untouched: give it back to macOS as it was.
+                    writer.close()
+                    _ = try? Subprocess.run("/usr/sbin/diskutil", ["mountDisk", "/dev/\(plan.target.bsdName)"])
+                    throw DriverError.stopped(Self.stoppedBeforeWriting)
+                }
+                throw DriverError.stopped(Self.stoppedWhileWriting)
+            }
             let padded = Self.paddedToBlock(data, roomLeft: plan.target.sizeInBytes - written)
             guard written + UInt64(padded.count) <= plan.target.sizeInBytes else {
                 throw DriverError.validation(

@@ -15,15 +15,15 @@ struct ActionBar: View {
                 PrimaryButton(confirmingCancel: $confirmingCancel)
             }
         }
-        .confirmationDialog("Stop writing the drive?", isPresented: $confirmingCancel) {
-            Button("Stop Writing", role: .destructive) {
-                // Only if it's still writing: the dialog closes itself when writing ends.
+        .confirmationDialog("Stop flashing?", isPresented: $confirmingCancel) {
+            Button("Stop", role: .destructive) {
+                // Only if the flash is still running: the dialog closes itself when it ends.
                 guard state.cancelNeedsConfirmation else { return }
                 Task { @MainActor in await state.cancelRunInProgress() }
             }
-            Button("Keep Writing", role: .cancel) {}
+            Button("Keep Going", role: .cancel) {}
         } message: {
-            Text("The drive will be only partly written and won't start until you flash it or install Ventoy on it again.")
+            Text("If Mactoy has started writing, the drive will be left only partly written and won't start until you flash it or install Ventoy on it again.")
         }
         .onChange(of: state.cancelNeedsConfirmation) { stillWriting in
             if !stillWriting { confirmingCancel = false }

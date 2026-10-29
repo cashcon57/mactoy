@@ -1479,10 +1479,12 @@ final class AppState: ObservableObject {
         return [.preparing, .downloading, .extracting].contains(update.phase)
     }
 
-    /// Stopping a flash partway through writing leaves the drive unusable, so the app asks first.
+    /// Stopping a flash once writing has begun leaves the drive unusable, so the app asks first.
+    /// Always for a flash: the helper starts writing a moment after it says "Preparing", before
+    /// the app sees the writing phase.
     var cancelNeedsConfirmation: Bool {
-        guard case .running(let update) = status else { return false }
-        return runningMode == .flashImage && update.phase == .writing
+        guard case .running = status else { return false }
+        return runningMode == .flashImage
     }
 
     func cancelRunInProgress() async {

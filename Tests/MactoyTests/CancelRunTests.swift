@@ -32,14 +32,16 @@ struct CancelRunTests {
         }
     }
 
-    @Test("Flash: offered throughout, and asks first only while writing")
+    @Test("Flash: offered throughout, and always asks first")
     func flashPhases() {
         for phase: ProgressUpdate.Phase in [.preparing, .verifying, .writing] {
             #expect(state(mode: .flashImage, phase: phase).canCancelRun, "\(phase)")
         }
         #expect(!state(mode: .flashImage, phase: .formatting).canCancelRun, "nothing left to stop")
+        // Always for a flash: writing starts a moment after "Preparing", before the app sees it.
         #expect(state(mode: .flashImage, phase: .writing).cancelNeedsConfirmation)
-        #expect(!state(mode: .flashImage, phase: .verifying).cancelNeedsConfirmation)
+        #expect(state(mode: .flashImage, phase: .preparing).cancelNeedsConfirmation)
+        #expect(state(mode: .flashImage, phase: .verifying).cancelNeedsConfirmation)
         #expect(!state(mode: .installVentoy, phase: .downloading).cancelNeedsConfirmation)
     }
 
