@@ -256,8 +256,17 @@ final class AppState: ObservableObject {
     /// Read the drive back after flashing and compare (#26).
     @Published var flashVerifyAfterWriting: Bool = true
 
-    /// The checksum to check, or nil when the field is empty or invalid.
-    var flashChecksum: String? { ImageChecksum.normalized(flashChecksumInput) }
+    /// The checksum to check, or nil when the field is empty or invalid. A whole line pasted
+    /// from a checksum file (`<hash>  name`) counts too.
+    var flashChecksum: String? {
+        ImageChecksum.normalized(flashChecksumInput)
+            ?? ImageChecksum.sha256(for: selectedImagePath ?? "", in: flashChecksumInput)
+    }
+    /// For the plan: the checksum, the raw entry when it's invalid, or nil when empty.
+    var flashChecksumForPlan: String? {
+        let trimmed = flashChecksumInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : (flashChecksum ?? trimmed)
+    }
     /// Something is in the checksum field, but it isn't a SHA-256.
     var flashChecksumIsInvalid: Bool {
         !flashChecksumInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && flashChecksum == nil
@@ -1138,7 +1147,7 @@ final class AppState: ObservableObject {
                     }
                 }
             )
-            status = .success("Install complete")
+            status = .success(Self.successMessage(for: plan))
             await addThemeAfterInstall(confirmedTheme, mode: confirmedMode, to: target)
             Self.log.info("run() success")
         } catch let err as HelperInvoker.HelperError where isFullDiskAccessError(err) {
@@ -1215,7 +1224,7 @@ final class AppState: ObservableObject {
                                 }
                             }
                         )
-                        status = .success("Install complete")
+                        status = .success(Self.successMessage(for: plan))
                         await addThemeAfterInstall(confirmedTheme, mode: confirmedMode, to: target)
                     } catch let retryErr as HelperInvoker.HelperError where isFullDiskAccessError(retryErr) {
                         // Same handling as a first attempt.
@@ -1329,6 +1338,14 @@ final class AppState: ObservableObject {
     /// captured at confirmation. `nil` for modes that don't run (Manage
     /// Disk) or a Flash Image run with no image picked. Internal so
     /// tests can check what reaches the plan.
+    /// What a finished run says. A flash says whether the drive was read back (#26).
+    static func successMessage(for plan: InstallPlan) -> String {
+        guard plan.driver == .rawImage else { return "Install complete" }
+        return plan.verifyAfterWriting
+            ? "Flash complete. Mactoy read the drive back and it matches the image."
+            : "Flash complete."
+    }
+
     func makePlan(
         target: DiskTarget,
         mode: AppMode,
@@ -1374,7 +1391,9 @@ final class AppState: ObservableObject {
             ventoyOperation: ventoyOperation,
             secureBoot: secureBoot,
             partitionStyle: partitionStyle,
-            expectedImageSHA256: mode == .flashImage ? flashChecksum : nil,
+            // An invalid entry goes in as typed, so validate() stops the run. Dropping it would
+            // flash with no check after a Retry or an approval, which don't go through canRun.
+            expectedImageSHA256: mode == .flashImage ? flashChecksumForPlan : nil,
             verifyAfterWriting: mode == .flashImage && flashVerifyAfterWriting
         )
     }

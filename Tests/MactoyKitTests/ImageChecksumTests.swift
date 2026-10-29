@@ -38,4 +38,24 @@ struct ImageChecksumTests {
         #expect(ImageChecksum.sha256(for: "x.iso", in: "\(a)\n\(b)\n") == nil)
         #expect(ImageChecksum.sha256(for: "x.iso", in: "not a checksum file") == nil)
     }
+
+    @Test("real-world shapes: CRLF, PGP-armoured BSD lines, OpenSSL lines, sha256: prefix")
+    func realWorld() {
+        #expect(ImageChecksum.sha256(for: "x.iso", in: "\(a) *x.iso\r\n\(b) *y.iso\r\n") == a)
+        let fedora = """
+        -----BEGIN PGP SIGNED MESSAGE-----
+        Hash: SHA256
+
+        # Fedora-Workstation-Live-41-1.4.x86_64.iso: 2398523392 bytes
+        SHA256 (Fedora-Workstation-Live-41-1.4.x86_64.iso) = \(a)
+        -----BEGIN PGP SIGNATURE-----
+        iQIzBAEBCAAdFiEE
+        -----END PGP SIGNATURE-----
+        """
+        #expect(ImageChecksum.sha256(for: "Fedora-Workstation-Live-41-1.4.x86_64.iso", in: fedora) == a)
+        #expect(ImageChecksum.sha256(for: "x.iso", in: "SHA256(x.iso)= \(a)\nSHA256(y.iso)= \(b)") == a)
+        #expect(ImageChecksum.sha256(for: "y.iso", in: "SHA2-256(y.iso)= \(b)") == b)
+        #expect(ImageChecksum.sha256(for: "x.iso", in: "sha256:\(a)") == a)
+    }
 }
+

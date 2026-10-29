@@ -192,26 +192,43 @@ final class GzipStreamDecoder: StreamDecoder {
     private var betweenMembers = false
     private let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 1024 * 1024)
 
+    private var started = false
+    /// Non-gzip bytes after a member: the rest of the file is ignored, as `gzip -d` does.
+    private var ignoringTrailer = false
+
     init() throws {
-        // 15 + 16: a 32 KB window, gzip header and trailer only.
+        // 15 + 16: a 32 KB window, gzip header and trailer only. deinit frees the buffer even
+        // when this throws, so it isn't freed here.
         guard inflateInit2_(&stream, 15 + 16, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else {
-            buffer.deallocate()
             throw DriverError.corruptPayload("Couldn't start the .gz decoder.")
         }
+        started = true
     }
 
     deinit {
-        inflateEnd(&stream)
+        if started { inflateEnd(&stream) }
         buffer.deallocate()
     }
 
     func step(input: UnsafePointer<UInt8>?, count: Int, inputEnded: Bool, outputCapacity: Int,
               emit: (UnsafePointer<UInt8>, Int) -> Void) throws -> DecodeStep {
         var consumed = 0
+        if ignoringTrailer {
+            return DecodeStep(consumed: count, produced: 0, ended: inputEnded)
+        }
         if betweenMembers {
             while consumed < count, input![consumed] == 0 { consumed += 1 }
             if consumed == count {
                 return DecodeStep(consumed: consumed, produced: 0, ended: inputEnded)
+            }
+            // Another member starts with the gzip magic number. Anything else is trailing data
+            // that isn't part of the image.
+            if count - consumed == 1 && !inputEnded {
+                return DecodeStep(consumed: consumed, produced: 0, ended: false)
+            }
+            guard count - consumed >= 2, input![consumed] == 0x1F, input![consumed + 1] == 0x8B else {
+                ignoringTrailer = true
+                return DecodeStep(consumed: count, produced: 0, ended: inputEnded)
             }
             guard inflateReset(&stream) == Z_OK else {
                 throw DriverError.corruptPayload("Couldn't restart the .gz decoder.")
@@ -277,8 +294,14 @@ extension ImageReader {
         var total: UInt64 = 0
         var streams = 0
         while position > 0 {
-            // Stream padding: zero bytes in groups of four.
-            while position >= 4, let tail = try read(position - 4, 4), tail == [0, 0, 0, 0] { position -= 4 }
+            // Stream padding: zero bytes in groups of four. Real files have a few; a file with
+            // more than 1 MB of them isn't a normal .xz, and isn't worth scanning.
+            var padding: UInt64 = 0
+            while position >= 4, let tail = try read(position - 4, 4), tail == [0, 0, 0, 0] {
+                position -= 4
+                padding += 4
+                if padding > 1024 * 1024 { return nil }
+            }
             guard position >= 24, let footer = try read(position - 12, 12),
                   footer[10] == 0x59, footer[11] == 0x5A else { return nil }
             let backward = UInt64(footer[4]) | UInt64(footer[5]) << 8 | UInt64(footer[6]) << 16 | UInt64(footer[7]) << 24

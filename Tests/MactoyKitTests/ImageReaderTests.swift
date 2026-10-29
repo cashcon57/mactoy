@@ -241,4 +241,24 @@ struct ImageReaderTests {
         defer { try? handle.close() }
         #expect(ImageReader.imageSize(of: handle, format: .xz) == nil)
     }
+
+    @Test("bytes after a .gz image that aren't another member are ignored, as gzip -d does")
+    func gzipTrailingGarbage() throws {
+        let original = sample(3 * 1024 * 1024 + 11)
+        let url = try file(gzip(original) + Data("garbage\n".utf8), "trail.img.gz")
+        defer { try? fm.removeItem(at: url.deletingLastPathComponent()) }
+        #expect(try readAll(url).data == original)
+    }
+
+    @Test("an .xz file ending in megabytes of zeros gets no size, quickly")
+    func hugePaddingIsNotScanned() throws {
+        let url = try file(xz(sample(1024 * 1024)) + Data(count: 8 * 1024 * 1024), "padded.img.xz")
+        defer { try? fm.removeItem(at: url.deletingLastPathComponent()) }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let start = Date()
+        #expect(ImageReader.imageSize(of: handle, format: .xz) == nil)
+        #expect(Date().timeIntervalSince(start) < 5)
+    }
 }
+

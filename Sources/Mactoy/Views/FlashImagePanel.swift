@@ -160,7 +160,7 @@ private struct ImageCheckCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Toggle("Check the drive after writing", isOn: $state.flashVerifyAfterWriting)
-            Text("Reads the drive back and compares it with the image. It takes about as long as writing, and catches failing or fake drives.")
+            Text("Reads the drive back and compares it with the image. This adds some time, and can catch a failing drive or one that's smaller than it claims.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -179,7 +179,9 @@ private struct ImageCheckCard: View {
         panel.canChooseDirectories = false
         panel.message = "Choose the checksum file from the image's download page."
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard let data = try? Data(contentsOf: url), data.count < 1_000_000,
+        // Size first: the image itself is usually next to its checksum file, and is huge.
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? .max
+        guard size < 1_000_000, let data = try? Data(contentsOf: url),
               let text = String(data: data, encoding: .utf8) else {
             loadProblem = "Mactoy couldn't read \(url.lastPathComponent) as a checksum file."
             return

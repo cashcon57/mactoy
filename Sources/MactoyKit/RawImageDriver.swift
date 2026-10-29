@@ -47,13 +47,16 @@ public struct RawImageDriver: InstallDriver {
         let handle = try image ?? FileHandle(forReadingFrom: URL(fileURLWithPath: path))
         try Self.requireRegularFile(handle, name: name)
 
+        let format = ImageFormat(path: path)
+
         // 1. The user's checksum, before anything is erased.
         if let expected = plan.expectedImageSHA256 {
             let actual = try await Self.sha256(of: handle, name: name, progress: progress)
             guard actual == expected else {
                 throw DriverError.validation(
                     "\(name) doesn't match the SHA-256 you entered, so nothing was written. " +
-                    "Expected \(expected), got \(actual). The download may be incomplete or damaged; download it again."
+                    "Expected \(expected), got \(actual). The download may be incomplete or damaged; download it again." +
+                    (format == .raw ? "" : " If that SHA-256 is for the unpacked image, use the one for the file you downloaded.")
                 )
             }
             try handle.seek(toOffset: 0)
@@ -61,14 +64,6 @@ public struct RawImageDriver: InstallDriver {
 
         // 2. Can we read it, and does it fit? Decoding the first chunk now means a file Mactoy
         //    can't read never costs the user their drive.
-        let format = ImageFormat(path: path)
-        let knownSize = ImageReader.imageSize(of: handle, format: format)
-        if let knownSize, knownSize > plan.target.sizeInBytes {
-            throw DriverError.validation(
-                "\(name) is \(Self.size(knownSize)) once decompressed, larger than the drive (\(Self.size(plan.target.sizeInBytes))). Nothing was written."
-            )
-        }
-        let compressedSize = (try? handle.seekToEnd()) ?? 0
         try handle.seek(toOffset: 0)
         let reader = try ImageReader(handle: handle, format: format)
         if format != .raw {
@@ -83,6 +78,15 @@ public struct RawImageDriver: InstallDriver {
         guard let first = firstChunk else {
             throw DriverError.validation("\(name) is empty. Nothing was written.")
         }
+        // After the first chunk, so a file that isn't really .xz fails fast instead of having
+        // its end scanned. imageSize puts the handle back where the reader left it.
+        let knownSize = ImageReader.imageSize(of: handle, format: format)
+        if let knownSize, knownSize > plan.target.sizeInBytes {
+            throw DriverError.validation(
+                "\(name) is \(Self.size(knownSize)) once decompressed, larger than the drive (\(Self.size(plan.target.sizeInBytes))). Nothing was written."
+            )
+        }
+        let compressedSize = Self.fileSize(of: handle)
 
         // 3. Unmount and write.
         progress.report(.init(phase: .preparing, message: "Preparing \(plan.target.devicePath)..."))
@@ -103,7 +107,7 @@ public struct RawImageDriver: InstallDriver {
         var chunk: Data? = first
         while let data = chunk {
             try Task.checkCancellation()
-            let padded = Self.paddedToSector(data)
+            let padded = Self.paddedToBlock(data, roomLeft: plan.target.sizeInBytes - written)
             guard written + UInt64(padded.count) <= plan.target.sizeInBytes else {
                 throw DriverError.validation(
                     "\(name) is larger than the drive (\(Self.size(plan.target.sizeInBytes))). The drive was written up to its end and won't start; flash a smaller image or use a bigger drive."
@@ -132,7 +136,7 @@ public struct RawImageDriver: InstallDriver {
 
         // 4. Read it back.
         if plan.verifyAfterWriting {
-            try await Self.verify(writer: writer, length: written, expected: hasher.finalize(), progress: progress)
+            try await Self.verify(writer: writer, length: written, deviceSize: plan.target.sizeInBytes, expected: hasher.finalize(), progress: progress)
         }
 
         // Release the raw-disk fd so macOS can re-probe the newly written image. The kernel
@@ -182,7 +186,7 @@ public struct RawImageDriver: InstallDriver {
 
     /// Reads `length` bytes back from the start of the drive and compares their SHA-256 with
     /// what was written.
-    static func verify(writer: DiskWriter, length: UInt64, expected: SHA256.Digest, progress: ProgressSink) async throws {
+    static func verify(writer: DiskWriter, length: UInt64, deviceSize: UInt64, expected: SHA256.Digest, progress: ProgressSink) async throws {
         progress.report(.init(phase: .verifying, message: "Checking what was written...", bytesDone: 0, bytesTotal: length))
         var hasher = SHA256()
         var offset: UInt64 = 0
@@ -190,8 +194,10 @@ public struct RawImageDriver: InstallDriver {
         while offset < length {
             try Task.checkCancellation()
             let want = min(UInt64(ImageReader.chunkSize), length - offset)
-            let sectors = (want + SECTOR_SIZE - 1) / SECTOR_SIZE * SECTOR_SIZE
-            let data = try writer.readAligned(at: offset, count: Int(sectors))
+            // Whole blocks, as written: 4 KB, or 512 bytes at the very end of a drive.
+            let blocks = (want + blockSize - 1) / blockSize * blockSize
+            let count = offset + blocks <= deviceSize ? blocks : (want + SECTOR_SIZE - 1) / SECTOR_SIZE * SECTOR_SIZE
+            let data = try writer.readAligned(at: offset, count: Int(count))
             hasher.update(data: data.prefix(Int(want)))
             offset += want
             if Date().timeIntervalSince(lastReport) > 0.25 {
@@ -208,12 +214,23 @@ public struct RawImageDriver: InstallDriver {
         progress.report(.init(phase: .verifying, message: "What was written reads back correctly.", bytesDone: length, bytesTotal: length))
     }
 
-    /// Raw disk writes must be whole sectors. Only an image's last chunk can end mid-sector;
-    /// it's padded with zeros, which the read-back check leaves out.
-    static func paddedToSector(_ data: Data) -> Data {
-        let remainder = data.count % Int(SECTOR_SIZE)
-        guard remainder != 0 else { return data }
-        return data + Data(count: Int(SECTOR_SIZE) - remainder)
+    /// Raw disk writes must be whole blocks of the drive. Most USB drives use 512-byte sectors,
+    /// some (and every recent Mac SSD) 4 KB, so writes use 4 KB, which suits both. Only an
+    /// image's last chunk can end mid-block; it's padded with zeros, which the read-back check
+    /// leaves out. At the very end of a drive whose size isn't a multiple of 4 KB, it's padded
+    /// to 512 bytes instead.
+    static let blockSize: UInt64 = 4096
+
+    static func paddedToBlock(_ data: Data, roomLeft: UInt64) -> Data {
+        let count = UInt64(data.count)
+        let toBlock = (count + blockSize - 1) / blockSize * blockSize
+        let target = toBlock <= roomLeft ? toBlock : (count + SECTOR_SIZE - 1) / SECTOR_SIZE * SECTOR_SIZE
+        return target == count ? data : data + Data(count: Int(target - count))
+    }
+
+    static func fileSize(of handle: FileHandle) -> UInt64 {
+        var st = stat()
+        return fstat(handle.fileDescriptor, &st) == 0 ? UInt64(st.st_size) : 0
     }
 
     static func size(_ bytes: UInt64) -> String {

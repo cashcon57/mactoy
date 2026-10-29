@@ -65,4 +65,35 @@ struct FlashOptionsTests {
         s.selectedImagePath = "/tmp/other.iso"      // same image again: kept
         #expect(s.flashChecksumInput == hash)
     }
+
+    @Test("an invalid checksum reaching the plan (Retry, approval resume) stops the run instead of being dropped")
+    func invalidStopsRun() throws {
+        let s = state()
+        s.flashChecksumInput = "\(hash.dropLast())"
+        let plan = try #require(s.makePlan(target: disk, mode: .flashImage, secureBoot: true, partitionStyle: .mbr))
+        #expect(plan.expectedImageSHA256 != nil)
+        #expect(throws: PlanValidationError.self) { try plan.validate() }
+    }
+
+    @Test("a whole line pasted from a checksum file is understood")
+    func pastedLine() throws {
+        let s = state()
+        s.flashChecksumInput = "\(hash)  image.img.xz"
+        #expect(!s.flashChecksumIsInvalid)
+        let plan = try #require(s.makePlan(target: disk, mode: .flashImage, secureBoot: true, partitionStyle: .mbr))
+        #expect(plan.expectedImageSHA256 == hash)
+    }
+
+    @Test("a finished flash says whether the drive was read back")
+    func successMessage() throws {
+        let s = state()
+        let checked = try #require(s.makePlan(target: disk, mode: .flashImage, secureBoot: true, partitionStyle: .mbr))
+        #expect(AppState.successMessage(for: checked).contains("read the drive back"))
+        s.flashVerifyAfterWriting = false
+        let unchecked = try #require(s.makePlan(target: disk, mode: .flashImage, secureBoot: true, partitionStyle: .mbr))
+        #expect(AppState.successMessage(for: unchecked) == "Flash complete.")
+        let install = try #require(s.makePlan(target: disk, mode: .installVentoy, secureBoot: true, partitionStyle: .mbr))
+        #expect(AppState.successMessage(for: install) == "Install complete")
+    }
 }
+

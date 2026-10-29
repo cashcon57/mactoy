@@ -18,11 +18,15 @@ public enum ImageChecksum {
         for raw in text.split(whereSeparator: \.isNewline) {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.isEmpty || line.hasPrefix("#") { continue }
-            if line.hasPrefix("SHA256 ("), let close = line.range(of: ") = ") {
-                let name = String(line[line.index(line.startIndex, offsetBy: 8)..<close.lowerBound])
-                if let hash = normalized(String(line[close.upperBound...])) { entries.append((name, hash)) }
-                continue
+            // BSD `SHA256 (name) = hash` and OpenSSL `SHA256(name)= hash` / `SHA2-256(name)= hash`.
+            for prefix in ["SHA256 (", "SHA256(", "SHA2-256("] where line.hasPrefix(prefix) {
+                guard let close = line.range(of: ")", options: .backwards),
+                      let equals = line.range(of: "=", range: close.upperBound..<line.endIndex) else { break }
+                let name = String(line[line.index(line.startIndex, offsetBy: prefix.count)..<close.lowerBound])
+                if let hash = normalized(String(line[equals.upperBound...])) { entries.append((name, hash)) }
+                break
             }
+            if line.hasPrefix("SHA256") || line.hasPrefix("SHA2-256") { continue }
             let parts = line.split(maxSplits: 1, whereSeparator: \.isWhitespace)
             guard let hash = parts.first.flatMap({ normalized(String($0)) }) else { continue }
             var name = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : nil
