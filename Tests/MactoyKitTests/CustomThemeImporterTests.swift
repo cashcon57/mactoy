@@ -1247,7 +1247,7 @@ struct CustomThemeImporterTests {
     func packSettingsSaved() throws {
         let zip = try zipFile(catppuccinLike(top: "repo"), in: tempDir())
         let imported = try CustomThemeImporter.importTheme(from: zip, themeRoot: "repo/ventoy/src/mocha/catppuccin-mocha", cacheRoot: tempDir())
-        let library = ThemeLibrary(root: tempDir().appendingPathComponent("My Themes"))
+        let library = ThemeLibrary(root: tempDir().appendingPathComponent("My Themes"), discard: .delete)
         let saved = try library.save(folder: imported.directory, name: imported.name, settings: imported.settings, origin: "Added from a file")
         #expect(saved.settings == .init(file: "theme.txt", fonts: ["terminus-14.pf2"], ventoyColor: "#89b4fa"))
         #expect(library.list() == [saved])

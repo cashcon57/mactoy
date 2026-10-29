@@ -21,9 +21,11 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.7.0</string>
+    <string>0.7.1</string>
     <key>CFBundleVersion</key>
-    <string>15</string>
+    <string>16</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>Mactoy keeps the boot menu themes you save in Documents › Mactoy Themes.</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
     <key>LSMinimumSystemVersion</key>

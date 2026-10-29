@@ -325,6 +325,11 @@ struct DriveThemeSection: View {
             readOnly = snapshot.readOnly
             readError = snapshot.error
         }
+        // A theme from My Themes: list it so the drive's theme shows as kept. Only when My Themes
+        // is in use, since it is in Documents and macOS could ask about access.
+        if case .managed(let id, _) = snapshot.current, ThemeStore.isSavedID(id), themes.libraryInUse {
+            await themes.loadSavedThemesIfNeeded()
+        }
         return snapshot
     }
 
@@ -342,7 +347,7 @@ struct DriveThemeSection: View {
             return
         }
         switch ThemeReplacement.step(current: snapshot.current, driveTheme: snapshot.driveTheme,
-                                     isSavable: themes.isSavable(snapshot.driveTheme)) {
+                                     isSavable: await themes.isSavableNow(snapshot.driveTheme)) {
         case .applyNow:
             await replace(choice, answer: .replaceWithoutSaving)
         case .confirm(let file):

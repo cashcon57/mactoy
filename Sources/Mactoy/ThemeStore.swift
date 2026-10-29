@@ -114,6 +114,25 @@ final class ThemeStore: ObservableObject {
     let loader: ThemeCatalogLoader
     let fetcher: ThemeFetcher
     let library: ThemeLibrary
+    /// Where an older Mactoy kept My Themes; its themes move to `library` on `load`. Nil in tests.
+    private let legacyLibraryRoot: URL?
+    /// Remembers across launches that My Themes is in use. Nil remembers nothing (tests, previews).
+    private let defaults: UserDefaults?
+    static let libraryInUseKey = "themeLibraryInUse"
+
+    /// The library is in Documents, and macOS can ask the user before letting Mactoy in.
+    /// So it is only read once themes are in use: one was saved or moved here, or a list
+    /// of it had something in it. Otherwise it waits until the user opens the picker or
+    /// a drive names a saved theme (`loadSavedThemesIfNeeded`).
+    private(set) var libraryInUse: Bool
+    /// Whether a listing of the library has finished this session.
+    private(set) var hasListedLibrary = false
+    /// Themes an older Mactoy kept that couldn't be moved here, so they are still in
+    /// Application Support, where uninstalling Mactoy can delete them. The picker says so.
+    @Published private(set) var legacyThemesNotMoved: [String] = []
+    /// The library's folder is there but macOS won't let Mactoy read it, so the empty
+    /// list is not the truth. The picker says so.
+    @Published private(set) var libraryUnreadable = false
 
     /// The themes that can be chosen now. Changes when My Themes or the catalog does.
     var availability: ThemeAvailability {
@@ -133,10 +152,13 @@ final class ThemeStore: ObservableObject {
     private var busyVolumes = Set<String>()
 
     init(loader: ThemeCatalogLoader = ThemeCatalogLoader(), fetcher: ThemeFetcher = ThemeFetcher(),
-         library: ThemeLibrary = ThemeLibrary()) {
+         library: ThemeLibrary = ThemeLibrary(), legacyLibraryRoot: URL? = nil, defaults: UserDefaults? = nil) {
         self.loader = loader
         self.fetcher = fetcher
         self.library = library
+        self.legacyLibraryRoot = legacyLibraryRoot
+        self.defaults = defaults
+        self.libraryInUse = defaults?.bool(forKey: Self.libraryInUseKey) ?? false
     }
 
     /// Shows the copy already on this Mac at once, then swaps in the online
@@ -148,7 +170,6 @@ final class ThemeStore: ObservableObject {
         defer { isLoading = false }
 
         await loadVentoyDefaultPreview()
-        await loadSavedThemes()
         let loader = self.loader
         // Only before anything is shown: once an online list is in, falling
         // back to the cached copy of it would make the picker flicker.
@@ -157,7 +178,12 @@ final class ThemeStore: ObservableObject {
             setCatalog(local.catalog.usableThemes)
             catalogSource = local.source
         }
-        let remote = await loader.load()
+        // The online list is asked for now, and old themes moved after the local one shows:
+        // the move can wait on macOS asking about Documents, and neither should wait for it.
+        let online = Task { await loader.load() }
+        await moveLegacyThemes()
+        if libraryInUse { await loadSavedThemes() }
+        let remote = await online.value
         // Anything but `.remote` is the local copy again, which is already showing.
         let themes = remote.catalog.usableThemes
         guard remote.source == .remote, !themes.isEmpty else { return }
@@ -207,11 +233,50 @@ final class ThemeStore: ObservableObject {
         savedGeneration += 1
         let mine = savedGeneration
         let library = self.library
-        let saved = await Task.detached(priority: .userInitiated) { library.list() }.value
+        let (saved, unreadable) = await Task.detached(priority: .userInitiated) { () -> ([SavedTheme], Bool) in
+            let saved = library.list()
+            return (saved, saved.isEmpty && library.isUnreadable())
+        }.value
         guard mine == savedGeneration else { return }
         savedThemes = saved
+        libraryUnreadable = unreadable
+        hasListedLibrary = true
+        if !saved.isEmpty { markLibraryInUse() }
         await loadSavedPreviews(for: saved)
     }
+
+    /// Lists the library unless this session already has. For the places that show
+    /// My Themes but don't change it: the picker, and a drive that names a saved theme.
+    /// Two calls at once may both list; the later listing wins, which is harmless.
+    func loadSavedThemesIfNeeded() async {
+        guard !hasListedLibrary else { return }
+        await loadSavedThemes()
+    }
+
+    private func markLibraryInUse() {
+        guard !libraryInUse else { return }
+        libraryInUse = true
+        defaults?.set(true, forKey: Self.libraryInUseKey)
+    }
+
+    /// v0.7.0 kept My Themes in Application Support, which removing Mactoy can delete.
+    /// Moves those themes to the library, then removes Mactoy's emptied folders there.
+    /// Anything that isn't a whole theme stays put (`ThemeLibrary.moveThemes`).
+    private func moveLegacyThemes() async {
+        guard let legacy = legacyLibraryRoot else { return }
+        let library = self.library
+        let result = await Task.detached(priority: .userInitiated) {
+            library.moveThemes(from: legacy, thenRemoveIfEmpty: legacy.deletingLastPathComponent())
+        }.value
+        if !result.moved.isEmpty { markLibraryInUse() }
+        legacyThemesNotMoved = result.notMoved
+    }
+
+    /// The old library's folder, for the picker's warning when themes are stuck there.
+    var legacyLibraryFolder: URL? { legacyLibraryRoot }
+
+    /// The folder My Themes is in; made when the first theme is saved.
+    var libraryFolder: URL { library.root }
 
     /// Pictures are read off the main actor; only the (lazy) image is made here.
     private func loadSavedPreviews(for themes: [SavedTheme]) async {
@@ -235,6 +300,22 @@ final class ThemeStore: ObservableObject {
     }
 
     nonisolated static let maxPreviewBytes = 20 * 1024 * 1024
+
+    /// The My Themes entry a drive's theme came from, when the drive's copy is still the
+    /// same theme. Mactoy adds a screen size (`gfxmode`) when it applies a theme that has
+    /// none, so that setting is compared as it was applied. A copy changed on the drive
+    /// is a different theme, and nil sends it to be saved as one.
+    nonisolated static func unchangedEntry(for theme: DriveTheme, in library: ThemeLibrary) -> SavedTheme? {
+        guard let id = theme.managedID, isSavedID(id), let kept = library.savedTheme(id: id) else { return nil }
+        var settings = theme.settings
+        if settings.gfxmode == (kept.settings.gfxmode ?? ThemeEntry.Settings.defaultGfxmode) {
+            settings.gfxmode = kept.settings.gfxmode
+        }
+        return (try? ThemeLibrary.id(ifSaving: theme.folder, name: kept.name, settings: settings)) == id ? kept : nil
+    }
+
+    /// Whether a theme id on a drive is one My Themes gave it.
+    nonisolated static func isSavedID(_ id: String) -> Bool { id.hasPrefix(ThemeEntry.reservedIDPrefix) }
 
     /// Adds a ZIP file, folder or theme.txt to My Themes. Reading it runs `zipinfo` and
     /// `ditto` and can take a minute, so it stays off the main actor. A file with several
@@ -289,6 +370,7 @@ final class ThemeStore: ObservableObject {
         let origin = "Saved from the drive “\(volume.lastPathComponent)”"
         let saved = try await Task.detached(priority: .userInitiated) { () throws -> SavedTheme? in
             guard let theme = try ThemeInstaller.driveTheme(on: volume) else { return nil }
+            if let kept = ThemeStore.unchangedEntry(for: theme, in: library) { return kept }
             return try library.save(folder: theme.folder, name: theme.name, settings: theme.settings, origin: origin)
         }.value
         if saved != nil { await loadSavedThemes() }
@@ -310,7 +392,7 @@ final class ThemeStore: ObservableObject {
                   let theme = try? ThemeInstaller.driveTheme(on: volume) else { return nil }
             return (volume, theme)
         }.value
-        guard let (volume, theme) = found, isSavable(theme) else { return nil }
+        guard let (volume, theme) = found, await isSavableNow(theme) else { return nil }
         return (theme.name, volume)
     }
 
@@ -329,10 +411,28 @@ final class ThemeStore: ObservableObject {
     /// told apart from a catalog one, and then it is offered: a needless offer to
     /// keep a catalog theme costs a click, while no offer could let the only copy
     /// of an older Mactoy's custom theme be deleted when it is replaced.
+    ///
+    /// This reads the list in memory, so it is for what a view shows. A decision
+    /// that could lose the drive's copy uses `isSavableNow`.
     func isSavable(_ driveTheme: DriveTheme?) -> Bool {
         guard let driveTheme else { return false }
         guard let managed = driveTheme.managedID else { return true }
         return !catalog.contains { $0.id == managed } && !savedThemes.contains { $0.id == managed }
+    }
+
+    /// `isSavable`, for replacing a drive's theme or erasing the drive. A theme from
+    /// My Themes is looked up on disk now, and compared with the drive's copy, not in the list: the folder is in Documents,
+    /// and the user may have deleted it in Finder since the list was read. When My Themes
+    /// isn't in use on this Mac the theme is almost certainly not in it, so the answer
+    /// is yes and Documents isn't read (macOS could ask about access over the sheet).
+    /// A needless offer costs a click; saving a theme that is already kept returns the
+    /// entry it came from (`saveDriveTheme`).
+    func isSavableNow(_ driveTheme: DriveTheme?) async -> Bool {
+        guard let driveTheme, let managed = driveTheme.managedID, Self.isSavedID(managed) else { return isSavable(driveTheme) }
+        guard libraryInUse else { return true }
+        let library = self.library
+        // Kept means kept as it is on the drive: a copy changed there is offered too.
+        return await Task.detached(priority: .userInitiated) { ThemeStore.unchangedEntry(for: driveTheme, in: library) == nil }.value
     }
 
     /// Download early so a later apply doesn't wait (catalog themes only). The task is

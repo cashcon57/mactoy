@@ -47,7 +47,7 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 
 ---
 
-## Status (v0.7.0)
+## Status (v0.7.1)
 
 - [x] GPT + boot-image math ported from the Python proof-of-concept (cross-validated: Swift and Python produce bit-identical layouts for the same disk).
 - [x] Ventoy install flow end-to-end (download → extract → partition → write → format).
@@ -74,7 +74,7 @@ Grab `Mactoy-<version>.dmg` from the [Releases page](https://github.com/cashcon5
 
 ### Open it
 
-1. Open `Mactoy-0.7.0.dmg` (or whichever `Mactoy-*.dmg` is on the latest release page).
+1. Open `Mactoy-0.7.1.dmg` (or whichever `Mactoy-*.dmg` is on the latest release page).
 2. Drag `Mactoy.app` into `/Applications`.
 3. Launch from Launchpad or `/Applications`. Opens normally — no right-click dance needed. The DMG is Apple-notarized, so Gatekeeper sees it as a known-good Developer ID build.
 
@@ -156,7 +156,7 @@ Ventoy's boot menu can be themed. Mactoy has a picker with previews of community
 
 - **New drive:** new drives get **Catppuccin Mocha** by default, because Ventoy's built-in menu looks dated. Mactoy says so on the Install tab. To keep Ventoy's own look, click **Choose…** under *Boot menu theme* and pick **Ventoy default**; Mactoy remembers that. Mactoy adds the theme right after the install, and Catppuccin Mocha is built into the app, so no download is needed.
 - **Existing drive:** on **Manage Disk**, click **Change Theme…**. Your other Ventoy settings are kept.
-- **Your own theme:** in the picker, **Add Theme from File…** takes a theme's `.zip` file, its folder, or its `theme.txt`, whether the theme sits at the top or inside other folders. If a download holds several themes (a repository with a few flavours, say), Mactoy asks which one to add. Themes you add are kept in **My Themes** inside Mactoy, so you can use them again on other drives.
+- **Your own theme:** in the picker, **Add Theme from File…** takes a theme's `.zip` file, its folder, or its `theme.txt`, whether the theme sits at the top or inside other folders. If a download holds several themes (a repository with a few flavours, say), Mactoy asks which one to add. Themes you add are kept in **My Themes**, which is a **Mactoy Themes** folder in your Documents (**Show in Finder** in the picker opens it), so you can use them again on other drives. They stay there if you remove Mactoy.
 - **Keeping a drive's current theme:** if a drive already has a theme that isn't in Mactoy's list, Mactoy offers to save it to My Themes before replacing it, and before erasing the drive on a fresh install. **Manage Disk** also has a **Save to My Themes** button for when you only want a copy.
 - **If a theme's download has moved:** themes download from their authors' pages, which can change. When one is gone or no longer matches, Mactoy says so instead of showing a download error, marks it **Unavailable** in the picker, and offers **Report Problem**, **Open Theme's Page** and **Add Theme from File…** so you can still use it.
 
@@ -280,7 +280,7 @@ swift test
 
 # Build the signed release bundle + DMG (requires a Developer ID cert in Keychain)
 ./scripts/build-app.sh release devid
-./scripts/build-dmg.sh 0.7.0 devid
+./scripts/build-dmg.sh 0.7.1 devid
 
 # Build a universal (arm64 + x86_64) app bundle — ship this if you
 # want one binary that runs on both Apple Silicon and Intel Macs.

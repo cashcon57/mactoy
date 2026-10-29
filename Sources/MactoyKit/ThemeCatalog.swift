@@ -116,7 +116,7 @@ public struct ThemeEntry: Codable, Sendable, Equatable, Identifiable {
     /// Ids a catalog entry may not take. `custom-` begins every id in My Themes, which
     /// sit beside catalog ids in the same picker and on drives (`mactoy-<id>`), and
     /// `ventoy-default` names the picture of Ventoy's own menu in `previews/`.
-    static let reservedIDPrefix = "custom-"
+    public static let reservedIDPrefix = "custom-"
     static let reservedIDs: Set<String> = [ThemeCatalogLoader.ventoyDefaultPreviewID]
 
     public func problems() -> [String] {
