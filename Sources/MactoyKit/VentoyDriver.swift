@@ -4,7 +4,14 @@ public struct VentoyDriver: InstallDriver {
     public let id: DriverID = .ventoy
     public let displayName: String = "Install Ventoy"
 
-    public init() {}
+    /// Lets the user stop the run until the drive is unmounted (#21).
+    private let control: RunControl
+
+    public init(control: RunControl = RunControl()) {
+        self.control = control
+    }
+
+    static let stoppedBeforeWriting = RunControl.stoppedBeforeWriting
 
     public func execute(plan: InstallPlan, progress: ProgressSink) async throws {
         switch plan.ventoyOperation {
@@ -68,6 +75,9 @@ public struct VentoyDriver: InstallDriver {
         // started writing bytes to /dev/rdisk*.
         try plan.target.reverifyFingerprintNow()
 
+        // From here the drive is written step by step, and stopping partway would leave it
+        // unable to start or mount. Cancel is refused from now on (#21).
+        try control.commit(Self.stoppedBeforeWriting)
         progress.report(.init(phase: .unmounting, message: "Unmounting \(plan.target.devicePath)..."))
         try DiskInfo.unmount(bsdName: plan.target.bsdName)
         try await Task.sleep(nanoseconds: 1_500_000_000)
@@ -257,11 +267,13 @@ public struct VentoyDriver: InstallDriver {
         let downloader = VentoyDownloader()
         let tarball = try await downloader.downloadTarball(version: version, workDir: cacheDir, progress: progress)
         VentoyDownloader.pruneTarballs(in: cacheDir, keeping: tarball)
+        try control.check(Self.stoppedBeforeWriting)
 
         let extractDir = runDir.appendingPathComponent("extract", isDirectory: true)
         try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: false)
         let ventoyDir = try downloader.extractTarball(tarball, workDir: extractDir, progress: progress)
 
+        try control.check(Self.stoppedBeforeWriting)
         progress.report(.init(phase: .extracting, message: "Decompressing boot images..."))
         let boot = try VentoyBootImages.load(fromVentoyDir: ventoyDir)
         guard !secureBoot else { return boot }
@@ -400,6 +412,9 @@ public struct VentoyDriver: InstallDriver {
         // download window can't cause us to write to the wrong disk.
         try plan.target.reverifyFingerprintNow()
 
+        // From here the drive is written step by step, and stopping partway would leave it
+        // unable to start or mount. Cancel is refused from now on (#21).
+        try control.commit(Self.stoppedBeforeWriting)
         progress.report(.init(phase: .unmounting, message: "Unmounting \(plan.target.devicePath)..."))
         try DiskInfo.unmount(bsdName: plan.target.bsdName)
         try await Task.sleep(nanoseconds: 1_500_000_000)

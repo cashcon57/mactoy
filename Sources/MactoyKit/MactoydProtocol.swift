@@ -30,6 +30,10 @@ import Foundation
     /// Replies with the bytes freed, or a human-readable `errorMessage`.
     func clearDownloads(reply: @escaping (_ freedBytes: UInt64, _ errorMessage: String?) -> Void)
 
+    /// Ask the running plan to stop (#21). Replies false when nothing is running or the run has
+    /// passed the point where stopping is safe (a Ventoy install that has started writing).
+    func cancelCurrentRun(reply: @escaping (_ accepted: Bool) -> Void)
+
     /// Health-check. Returns the daemon's version string. Cheap way to
     /// confirm the daemon is reachable and the XPC contract matches.
     func ping(reply: @escaping (_ version: String) -> Void)
@@ -53,7 +57,7 @@ public let mactoydMachServiceName = "com.mactoy.mactoyd"
 /// it) changes. An app update brings its helper along, so the user isn't
 /// asked again; a mismatch means another copy of Mactoy owns the helper,
 /// and `AppState.run` re-registers this one.
-/// 0.8.0 adds `clearDownloads`, the image file handle on `executePlan`, and the plan's
-/// checksum and read-back fields. v0.5.1 to v0.7.1 left the protocol at 0.5.0.
+/// 0.8.0 adds `clearDownloads`, `cancelCurrentRun`, the image file handle on `executePlan`,
+/// and the plan's checksum and read-back fields. v0.5.1 to v0.7.1 left the protocol at 0.5.0.
 public let mactoydVersion = "0.8.0"
 

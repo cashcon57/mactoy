@@ -3,6 +3,7 @@ import MactoyKit
 
 // usage: e2e <diskN> <install|update> <secure:on|off> [mbr|gpt] [version]
 //        e2e <diskN> flash <image> [sha256|-] [noverify]
+//        MACTOY_E2E_CANCEL_AFTER=<seconds> presses Cancel that long into the run.
 //        e2e scan <mounted Ventoy volume>
 // Runs the REAL VentoyDriver against an hdiutil-attached disk image.
 struct Sink: ProgressSink {
@@ -11,6 +12,15 @@ struct Sink: ProgressSink {
     }
 }
 let a = CommandLine.arguments
+
+// MACTOY_E2E_CANCEL_AFTER=<seconds>: press Cancel that long into the run (#21).
+let control = RunControl()
+if let after = ProcessInfo.processInfo.environment["MACTOY_E2E_CANCEL_AFTER"].flatMap(Double.init) {
+    Task.detached {
+        try? await Task.sleep(nanoseconds: UInt64(after * 1_000_000_000))
+        print("  [e2e] cancel requested: accepted=\(control.requestCancel())")
+    }
+}
 
 // e2e scan <mounted Ventoy volume> — print what Manage Disk will list.
 if a.count == 3, a[1] == "scan" {
@@ -29,7 +39,7 @@ if a.count >= 4, a[2] == "flash" {
                            partitionStyle: .mbr, expectedImageSHA256: checksum,
                            verifyAfterWriting: !(a.count > 5 && a[5] == "noverify"))
     do {
-        try await RawImageDriver().execute(plan: plan, progress: Sink())
+        try await RawImageDriver(control: control).execute(plan: plan, progress: Sink())
         print("RESULT ok")
     } catch {
         print("RESULT FAILED: \(error)"); exit(1)
@@ -49,7 +59,7 @@ let plan = InstallPlan(driver: .ventoy, target: target, source: .ventoyVersion(v
                        workDir: "/unused", ventoyOperation: op == "update" ? .updateInPlace : .freshInstall,
                        secureBoot: secure, partitionStyle: style)
 do {
-    try await VentoyDriver().execute(plan: plan, progress: Sink())
+    try await VentoyDriver(control: control).execute(plan: plan, progress: Sink())
     let p = VentoyVersionProbe.probe(bsdName: bsd)
     print("RESULT ok: isVentoy=\(p.isVentoyDisk) version=\(p.detectedVersion ?? "-") style=\(p.partitionStyle) secureBoot=\(p.secureBootEnabled)")
 } catch {

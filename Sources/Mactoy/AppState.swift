@@ -34,6 +34,10 @@ enum InstallStatus {
     case running(ProgressUpdate)
     case success(String)
     case failed(String)
+    /// The user cancelled; the message says what state the drive is in. Unlike `.failed`,
+    /// there's no Retry: a retry skips the confirmation sheet, and someone who cancelled may
+    /// well have picked the wrong drive.
+    case cancelled(String)
 }
 
 /// Payload for the "you're about to wipe this drive" confirmation
@@ -1001,6 +1005,21 @@ final class AppState: ObservableObject {
             status = .preparing("Removing the helper from the last run…")
             await removal.value
         }
+        runToken += 1
+        let token = runToken
+        cancelRequested = false
+        cancelRefusedNote = nil
+        cancelClosed = false
+        runningMode = confirmedMode
+        defer {
+            // Only if no newer run (a Retry while this one was finishing) has taken over.
+            if runToken == token {
+                cancelRequested = false
+                cancelRefusedNote = nil
+                cancelClosed = false
+                runningMode = nil
+            }
+        }
         let target = confirmedTarget
         runRequestCount += 1
         lastRunRequest = RunRequest(
@@ -1143,7 +1162,7 @@ final class AppState: ObservableObject {
                     // "Working…" button all showed at once.
                     switch update.phase {
                     case .failed, .done: return
-                    default: self.status = .running(update)
+                    default: self.noteRunUpdate(update)
                     }
                 }
             )
@@ -1220,7 +1239,7 @@ final class AppState: ObservableObject {
                                 self.appendBoundedLog(update)
                                 switch update.phase {
                                 case .failed, .done: return
-                                default: self.status = .running(update)
+                                default: self.noteRunUpdate(update)
                                 }
                             }
                         )
@@ -1251,6 +1270,8 @@ final class AppState: ObservableObject {
             Self.log.error("run() failed: \(error.localizedDescription, privacy: .private)")
         }
 
+        settleCancelledRun()
+
         // Honour the "remove helper after this run" checkbox. We do this
         // whether the install succeeded or failed so the system is left
         // in a clean state. Silent failure on unregister is fine — the
@@ -1273,6 +1294,8 @@ final class AppState: ObservableObject {
         // the clear.
         if case .failed = status {
             // keep pendingRunTarget/pendingRunMode for retry
+        } else if case .cancelled = status {
+            // settleCancelledRun cleared the captured run.
         } else if case .success = status {
             pendingRunTarget = nil
             pendingRunMode = nil
@@ -1412,6 +1435,82 @@ final class AppState: ObservableObject {
         helperStatus = HelperLifecycle.status
     }
 
+    // MARK: - Cancel (#21)
+
+    /// The mode of the run in progress, set by `run()`. Internal so tests can set it.
+    var runningMode: AppMode?
+    /// Counts `run()` calls, so a finishing run doesn't reset a newer one's state.
+    private var runToken = 0
+    /// Cancel is over for this run: a Ventoy run has started writing (it may still report
+    /// `.preparing` afterwards), or the helper refused. Internal so tests can set it.
+    var cancelClosed = false
+
+    /// A run the user cancelled ends as cancelled, not failed, and without Retry: a retry skips
+    /// the confirmation sheet, and starting again should go through it (#21). Internal for tests.
+    func settleCancelledRun() {
+        // Only a stop the helper made: a real failure can land while a cancel is in flight.
+        guard cancelRequested, case .failed(let message) = status,
+              RunControl.stopMessages.contains(where: { message.contains($0) }) else { return }
+        status = .cancelled(message)
+        pendingRunTarget = nil
+        pendingRunMode = nil
+        pendingRunSaveThemeVolume = nil
+        didReregisterForVersionMismatch = false
+    }
+
+    /// A progress update from the helper.
+    func noteRunUpdate(_ update: ProgressUpdate) {
+        status = .running(update)
+        if runningMode != .flashImage, [.unmounting, .writing, .formatting, .verifying].contains(update.phase) {
+            cancelClosed = true
+        }
+    }
+    /// Seam for tests: asks the helper to stop the run in progress.
+    var helperRunCanceller: @Sendable () async throws -> Bool = { try await HelperInvoker.cancelCurrentRun() }
+    /// The user pressed Cancel and the helper accepted; the run ends at its next safe point.
+    @Published private(set) var cancelRequested = false
+    /// The helper said it's too late to stop. Shown under the progress bar.
+    @Published private(set) var cancelRefusedNote: String?
+
+    /// Cancel is offered while the helper is running the plan and stopping is still safe: a
+    /// Ventoy install or update until it starts writing, a flash at any point.
+    var canCancelRun: Bool {
+        guard case .running(let update) = status, !cancelRequested, !cancelClosed else { return false }
+        // A flash's last step (re-reading the partition table) has nothing left to stop.
+        if runningMode == .flashImage { return ![.done, .failed, .formatting].contains(update.phase) }
+        return [.preparing, .downloading, .extracting].contains(update.phase)
+    }
+
+    /// Stopping a flash once writing has begun leaves the drive unusable, so the app asks first.
+    /// Always for a flash: the helper starts writing a moment after it says "Preparing", before
+    /// the app sees the writing phase.
+    var cancelNeedsConfirmation: Bool {
+        guard case .running = status else { return false }
+        return runningMode == .flashImage
+    }
+
+    func cancelRunInProgress() async {
+        guard canCancelRun else { return }
+        cancelRequested = true
+        cancelRefusedNote = nil
+        let accepted: Bool
+        do {
+            accepted = try await helperRunCanceller()
+        } catch {
+            cancelRequested = false
+            cancelRefusedNote = "Mactoy couldn't reach its helper to cancel, so it carries on."
+            return
+        }
+        if !accepted {
+            cancelRequested = false
+            // Still running means the helper got past the point where stopping is safe.
+            if case .running = status {
+                cancelClosed = true
+                cancelRefusedNote = "Too late to cancel: Mactoy has started writing the drive, and stopping now would leave it unusable."
+            }
+        }
+    }
+
     // MARK: - Clear Ventoy downloads (issue #22)
 
     /// Seams for tests: the helper's cache (root's, so only the helper can delete it), this
@@ -1431,7 +1530,7 @@ final class AppState: ObservableObject {
               !showFullDiskAccessSheet, pendingEraseConfirmation == nil else { return false }
         switch status {
         case .preparing, .running: return false
-        case .idle, .success, .failed: return true
+        case .idle, .success, .failed, .cancelled: return true
         }
     }
 

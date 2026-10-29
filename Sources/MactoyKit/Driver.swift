@@ -6,6 +6,8 @@ public enum DriverError: Error, CustomStringConvertible {
     case subprocess(String, Int32, String)
     case network(String)
     case cancelled
+    /// The user cancelled. The message says what state the drive is in.
+    case stopped(String)
     case unsupportedSource(String)
     case corruptPayload(String)
 
@@ -17,6 +19,7 @@ public enum DriverError: Error, CustomStringConvertible {
             return "Subprocess \(cmd) failed (exit \(code)): \(err)"
         case .network(let m):    return "Network error: \(m)"
         case .cancelled:         return "Operation cancelled"
+        case .stopped(let m):    return m
         case .unsupportedSource(let m): return "Unsupported source: \(m)"
         case .corruptPayload(let m):    return "Corrupt payload: \(m)"
         }
