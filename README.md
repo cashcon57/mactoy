@@ -312,26 +312,29 @@ Mactoy/
 
 What's shipped is in the [changelog](CHANGELOG.md). Everything planned is a GitHub issue, grouped into two milestones.
 
-### Path to 1.0 ([milestone](https://github.com/cashcon57/mactoy/milestone/1))
+### Path to 1.0
 
 1.0 is about trust: the code is tested on every change and on real drives, the known safety gaps are closed, and organisations can deploy it.
 
-**Stability and safety**
+**v0.8.0: Safer writes** ([milestone](https://github.com/cashcon57/mactoy/milestone/3), [scope](docs/specs/2026-10-29-v0.8.0-safer-writes.md))
 
 - [#18](https://github.com/cashcon57/mactoy/issues/18) Run the test suite on every pull request
-- [#19](https://github.com/cashcon57/mactoy/issues/19) Test a full release on real hardware (Apple Silicon and Intel)
-- [#21](https://github.com/cashcon57/mactoy/issues/21) Close the code gaps found while writing SECURITY.md
-- [#26](https://github.com/cashcon57/mactoy/issues/26) Verify flashed images: SHA-256 check before writing and read-back after
-- [#20](https://github.com/cashcon57/mactoy/issues/20) Stream `.xz` and `.gz` images while flashing instead of loading them into memory
 - [#22](https://github.com/cashcon57/mactoy/issues/22) Leave fewer files behind
+- [#21](https://github.com/cashcon57/mactoy/issues/21) Close the code gaps found while writing SECURITY.md, including a Cancel button
+- [#20](https://github.com/cashcon57/mactoy/issues/20) Stream `.xz` and `.gz` images while flashing instead of loading them into memory
+- [#26](https://github.com/cashcon57/mactoy/issues/26) Verify flashed images: SHA-256 check before writing and read-back after
 
-**For IT admins**
+**v0.9.0: For IT admins** ([milestone](https://github.com/cashcon57/mactoy/milestone/4))
 
 - [#23](https://github.com/cashcon57/mactoy/issues/23) Guide and profiles for deploying Mactoy with an MDM, plus a `.pkg`
 - [#24](https://github.com/cashcon57/mactoy/issues/24) Command-line tool
 - [#25](https://github.com/cashcon57/mactoy/issues/25) Work without internet: local Ventoy file, internal mirror, no online themes
 - [#27](https://github.com/cashcon57/mactoy/issues/27) Settings admins can lock with a configuration profile
 - [#28](https://github.com/cashcon57/mactoy/issues/28) Activity log of what was written to which drive
+
+**1.0** ([milestone](https://github.com/cashcon57/mactoy/milestone/1))
+
+- [#19](https://github.com/cashcon57/mactoy/issues/19) Test a full release on real hardware (Apple Silicon and Intel)
 
 ### After 1.0 ([milestone](https://github.com/cashcon57/mactoy/milestone/2))
 
