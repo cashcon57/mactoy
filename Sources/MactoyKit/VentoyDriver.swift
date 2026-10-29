@@ -107,6 +107,10 @@ public struct VentoyDriver: InstallDriver {
         let part1 = "/dev/\(plan.target.bsdName)s1"
         try await waitForPartition(bsd: plan.target.bsdName, partition: 1, timeoutSeconds: 90, progress: progress)
 
+        // Last fingerprint check before formatting (#21). The partition write and the wait for
+        // macOS can take over a minute, and newfs_exfat writes to whatever /dev/<bsd>s1 is now.
+        try plan.target.reverifyFingerprintNow()
+
         progress.report(.init(phase: .formatting, message: "Formatting \(part1) as exFAT..."))
 
         let fmt = try Subprocess.run("/sbin/newfs_exfat", ["-v", "Ventoy", part1])

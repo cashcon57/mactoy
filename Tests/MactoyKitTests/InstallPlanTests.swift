@@ -48,7 +48,11 @@ struct InstallPlanValidateTests {
             "disk10s3",      // two-digit slice
             "disk2 ",        // trailing space
             "../disk2",      // path traversal
-            "disk2/../disk0" // path traversal
+            "disk2/../disk0", // path traversal
+            "disk\u{0663}",  // Arabic-Indic three: a number, not an ASCII digit (#21)
+            "disk\u{FF12}",  // fullwidth two
+            "disk\u{2167}",  // Roman numeral eight
+            "disk\u{00BD}",  // one half
         ]
         for name in bad {
             #expect(throws: PlanValidationError.self) {

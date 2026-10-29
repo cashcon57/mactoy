@@ -27,6 +27,9 @@ struct VentoyDownloaderTests {
             "1a.2.3",                        // non-numeric
             "1.2.3.4.5",                     // too many components
             String(repeating: "1.", count: 20),
+            "1.1.\u{0661}\u{0660}",          // Arabic-Indic digits (#21)
+            "\u{FF11}.\u{FF12}",             // fullwidth digits
+            "1.\u{2167}",                     // Roman numeral
         ]
         for v in bad {
             #expect(!VentoyDownloader.isValidVersion(v), "should reject \(v)")

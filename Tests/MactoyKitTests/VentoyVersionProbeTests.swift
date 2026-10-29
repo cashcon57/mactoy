@@ -92,6 +92,15 @@ struct VentoyProbeResultCodableTests {
         #expect(decoded == original)
     }
 
+    @Test("names that aren't a whole disk are refused before any device is opened (#21)")
+    func probeRefusesBadNames() {
+        for name in ["disk2s1", "../disk2", "disk", "disk\u{0663}", "rdisk2", "disk2/../disk0"] {
+            let r = VentoyVersionProbe.probe(bsdName: name)
+            #expect(!r.isVentoyDisk)
+            #expect(r.layoutIssues.first?.hasPrefix("Not a whole-disk name") == true, "\(name)")
+        }
+    }
+
     @Test("unknownDisk factory builds a clean not-Ventoy result")
     func unknownDiskFactory() {
         let r = VentoyProbeResult.unknownDisk(bsdName: "disk7", reason: "open failed: EPERM")
