@@ -183,6 +183,21 @@ final class MactoydService: NSObject, MactoydProtocol {
         }
     }
 
+    func clearDownloads(reply: @escaping (UInt64, String?) -> Void) {
+        do {
+            guard let freed = try runGate.whenIdle({ try VentoyDownloader.clearCache() }) else {
+                daemonLog.info("clearDownloads: refused, an install is running")
+                reply(0, "Mactoy is writing a drive. Try again when it's finished.")
+                return
+            }
+            daemonLog.info("clearDownloads: freed \(freed, privacy: .public) bytes")
+            reply(freed, nil)
+        } catch {
+            daemonLog.error("clearDownloads failed: \(error.localizedDescription, privacy: .private)")
+            reply(0, "\(error)")
+        }
+    }
+
     func executePlan(_ planData: Data, reply: @escaping (Bool, String?) -> Void) {
         // Proxy + reply callbacks are not Sendable. Wrap both in unchecked
         // shims so they can be captured into the detached task. Safe in
@@ -199,6 +214,7 @@ final class MactoydService: NSObject, MactoydProtocol {
             deliver.send(data)
         }
 
+        runGate.planStarted()
         Task.detached {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
@@ -217,6 +233,8 @@ final class MactoydService: NSObject, MactoydProtocol {
                 try await driver.execute(plan: plan, progress: sink)
                 daemonLog.info("executePlan: complete")
                 sink.report(.init(phase: .done, message: "Install complete"))
+                // Before replying: the app may clear downloads as soon as it hears back.
+                runGate.planEnded()
                 replyBox.call(true, nil)
             } catch {
                 // .private — error descriptions can include filesystem
@@ -224,11 +242,32 @@ final class MactoydService: NSObject, MactoydProtocol {
                 // the local user; redacted in shared `log show` output.
                 daemonLog.error("executePlan failed: \(error.localizedDescription, privacy: .private)")
                 sink.report(.init(phase: .failed, message: "\(error)"))
+                runGate.planEnded()
                 replyBox.call(false, "\(error)")
             }
         }
     }
 }
+
+/// Counts running plans, so the download cache is never cleared while an install uses it.
+/// `whenIdle` holds the lock while it runs, so no plan can start until the clearing is done.
+final class RunGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var running = 0
+
+    func planStarted() { lock.lock(); running += 1; lock.unlock() }
+    func planEnded() { lock.lock(); running = max(0, running - 1); lock.unlock() }
+
+    /// Runs `body` only when no plan is running; nil when one is.
+    func whenIdle<T>(_ body: () throws -> T) rethrows -> T? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard running == 0 else { return nil }
+        return try body()
+    }
+}
+
+let runGate = RunGate()
 
 /// Wraps an Objective-C XPC reply block so it can cross actor boundaries.
 /// XPC guarantees the reply will be invoked at most once, so the

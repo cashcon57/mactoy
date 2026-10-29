@@ -37,7 +37,7 @@ public struct VentoyDownloader: Sendable {
         let url = URL(string: "https://api.github.com/repos/ventoy/Ventoy/releases/latest")!
         var req = URLRequest(url: url)
         req.setValue("Mactoy", forHTTPHeaderField: "User-Agent")
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await MactoyHTTP.session.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             throw DriverError.network("GitHub releases API returned non-200")
         }
@@ -52,7 +52,7 @@ public struct VentoyDownloader: Sendable {
         comps.queryItems = [URLQueryItem(name: "per_page", value: "\(max(1, limit))")]
         var req = URLRequest(url: comps.url!)
         req.setValue("Mactoy", forHTTPHeaderField: "User-Agent")
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await MactoyHTTP.session.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             throw DriverError.network("GitHub releases API returned non-200")
         }
@@ -75,12 +75,15 @@ public struct VentoyDownloader: Sendable {
     /// caches directory.
     public static func cacheRoot() -> URL {
         if geteuid() == 0 {
-            return URL(fileURLWithPath: "/Library/Application Support/Mactoy/Cache", isDirectory: true)
+            return helperCacheRoot
         }
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return base.appendingPathComponent("com.mactoy.Mactoy/Ventoy", isDirectory: true)
     }
+
+    /// Where the helper (root) keeps Ventoy downloads.
+    public static let helperCacheRoot = URL(fileURLWithPath: "/Library/Application Support/Mactoy/Cache", isDirectory: true)
 
     /// Create (if needed) and return the tarball cache directory.
     /// Refuses a pre-existing path that is a symlink, isn't ours, or is
@@ -120,6 +123,51 @@ public struct VentoyDownloader: Sendable {
     }
 
     private static let runDirectoryPrefix = "mactoy-run-"
+
+    /// Delete the Ventoy download cache at `root` and, if it's then empty, the Mactoy folder
+    /// that holds it (issue #22). Returns the bytes freed.
+    ///
+    /// Refuses a cache folder it wouldn't write into (a link, owned by someone else, writable by
+    /// others), the same rule as `prepareCacheDirectory`: deleting through such a folder could
+    /// reach files that aren't Mactoy's. The caller makes sure no install is using the cache.
+    @discardableResult
+    public static func clearCache(at root: URL = cacheRoot()) throws -> UInt64 {
+        let fm = FileManager.default
+        var st = stat()
+        guard lstat(root.path, &st) == 0 else {
+            guard errno == ENOENT else {
+                throw DriverError.diskIO("cache: lstat(\(root.path)) failed: \(String(cString: strerror(errno)))")
+            }
+            removeParentIfEmpty(of: root)
+            return 0
+        }
+        guard (st.st_mode & S_IFMT) == S_IFDIR, st.st_uid == geteuid(), (st.st_mode & 0o022) == 0 else {
+            throw DriverError.validation("cache: \(root.path) has unexpected ownership or permissions; not clearing it")
+        }
+        let freed = allocatedSize(of: root)
+        try fm.removeItem(at: root)
+        removeParentIfEmpty(of: root)
+        return freed
+    }
+
+    /// The cache's parent is Mactoy's own folder (`/Library/Application Support/Mactoy`, or
+    /// `~/Library/Caches/com.mactoy.Mactoy` when not root). `rmdir` only removes an empty folder.
+    private static func removeParentIfEmpty(of root: URL) {
+        let parent = root.deletingLastPathComponent()
+        guard ["Mactoy", "com.mactoy.Mactoy"].contains(parent.lastPathComponent) else { return }
+        _ = rmdir(parent.path)
+    }
+
+    /// Disk space used by everything under `folder`. Links are counted, not followed.
+    static func allocatedSize(of folder: URL) -> UInt64 {
+        let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .isSymbolicLinkKey]
+        guard let items = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: keys) else { return 0 }
+        var total: UInt64 = 0
+        for case let url as URL in items {
+            total += UInt64((try? url.resourceValues(forKeys: Set(keys)).totalFileAllocatedSize) ?? 0)
+        }
+        return total
+    }
 
     /// Delete every cached Ventoy tarball in `directory` except `keep`.
     /// One version is all an install needs; without this the cache
@@ -208,7 +256,7 @@ public struct VentoyDownloader: Sendable {
         }
         var req = URLRequest(url: url)
         req.setValue("Mactoy", forHTTPHeaderField: "User-Agent")
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await MactoyHTTP.session.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             throw DriverError.network("Checksum fetch failed: HTTP \((resp as? HTTPURLResponse)?.statusCode ?? -1)")
         }
@@ -246,7 +294,7 @@ public struct VentoyDownloader: Sendable {
                 completion: { cont.resume(with: $0) }
             )
             let session = URLSession(
-                configuration: .default,
+                configuration: MactoyHTTP.configuration(),
                 delegate: delegate,
                 delegateQueue: nil
             )
@@ -309,6 +357,10 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
     private let completion: (Result<URL, Error>) -> Void
     private var lastReported: Date = .distantPast
     private var finalLocation: URL?
+    /// Set once `completion` has run. A failed move in `didFinishDownloadingTo` reports the
+    /// failure, and `didCompleteWithError` follows it; resuming the caller's continuation a
+    /// second time would crash.
+    private var finished = false
 
     init(
         displayName: String,
@@ -368,7 +420,7 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
             try FileManager.default.moveItem(at: location, to: tmp)
             finalLocation = tmp
         } catch {
-            completion(.failure(error))
+            finish(.failure(error))
         }
     }
 
@@ -379,17 +431,26 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
     ) {
         defer { session.finishTasksAndInvalidate() }
         if let error {
-            completion(.failure(error))
+            finish(.failure(error))
             return
         }
         if let resp = task.response as? HTTPURLResponse, resp.statusCode != 200 {
-            completion(.failure(DriverError.network("Download failed: HTTP \(resp.statusCode)")))
+            if let finalLocation { try? FileManager.default.removeItem(at: finalLocation) }
+            finish(.failure(DriverError.network("Download failed: HTTP \(resp.statusCode)")))
             return
         }
         if let url = finalLocation {
-            completion(.success(url))
+            finish(.success(url))
         } else {
-            completion(.failure(DriverError.network("Download finished but no file was produced")))
+            finish(.failure(DriverError.network("Download finished but no file was produced")))
         }
+    }
+
+    /// Calls `completion` the first time only. Delegate callbacks arrive on the session's
+    /// serial delegate queue, so this needs no lock.
+    private func finish(_ result: Result<URL, Error>) {
+        guard !finished else { return }
+        finished = true
+        completion(result)
     }
 }

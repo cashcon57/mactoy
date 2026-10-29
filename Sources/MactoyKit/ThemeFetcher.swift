@@ -23,7 +23,7 @@ public struct URLSessionThemeTransport: ThemeTransport {
         request.setValue("Mactoy", forHTTPHeaderField: "User-Agent")
         // Streamed, so an oversized or endless body is cut off at the limit
         // instead of being held in memory first.
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        let (bytes, response) = try await MactoyHTTP.session.bytes(for: request)
         let host = Self.hostName(of: url)
         guard let http = response as? HTTPURLResponse else { throw ThemeError.serverUnreachable(host: host) }
         if let failure = Self.themeError(forStatus: http.statusCode, host: host) { throw failure }

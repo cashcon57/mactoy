@@ -23,7 +23,17 @@ struct MactoyApp: App {
                 .frame(minWidth: 880, minHeight: 600)
                 // A theme removed from My Themes, or gone from the catalog, must not stay the pick for the next install.
                 .onChange(of: themeStore.availability) { appState.resetInstallThemeIfUnavailable($0) }
+                .alert("Clear Ventoy Downloads", isPresented: Binding(
+                    get: { appState.clearDownloadsReport != nil },
+                    set: { if !$0 { appState.clearDownloadsReport = nil } }
+                )) {
+                    Button("OK") {}
+                } message: {
+                    Text(appState.clearDownloadsReport ?? "")
+                }
                 .task {
+                    // Before v0.8.0 macOS kept a web cache and HTTPStorages for Mactoy; nothing uses them now (issue #22).
+                    Task.detached(priority: .background) { MactoyHTTP.removeStaleSharedSessionFiles() }
                     appLog.info("first-window task: starting disk enumeration")
                     wireThemes()
                     appState.startDiskEnumeration()
@@ -32,6 +42,14 @@ struct MactoyApp: App {
                 }
         }
         .windowResizability(.contentMinSize)
+        .commands {
+            CommandGroup(after: .appSettings) {
+                Button("Clear Ventoy Downloads") {
+                    Task { await appState.clearVentoyDownloads() }
+                }
+                .disabled(!appState.canClearDownloads)
+            }
+        }
     }
 
     /// Hands AppState the theme store's work for installs. AppState only knows
