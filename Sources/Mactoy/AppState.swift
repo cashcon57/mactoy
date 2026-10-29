@@ -1260,7 +1260,7 @@ final class AppState: ObservableObject {
     /// Layer 4 (app-side re-verification): probe the live disk and
     /// assert its identity matches what the user confirmed.
     /// Anything mismatched (size, mediaName, external/removable
-    /// flags, BSD name) means the disk that's at /dev/<bsd> right
+    /// flags, BSD name, serial number) means the disk that's at /dev/<bsd> right
     /// now is NOT the disk the user confirmed. Abort hard — better
     /// a clear error than a silent wrong-disk write.
     /// Sets `.failed` and returns false when it refuses.

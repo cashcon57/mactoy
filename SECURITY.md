@@ -43,7 +43,8 @@ model.
   it opens anything.
 - **Writing to the wrong disk.** The disk you confirm is captured with
   its fingerprint (BSD name, size, external and removable flags, media
-  name), and the disk list can't change the target while the
+  name, and the drive's serial number when it reports one), and the
+  disk list can't change the target while the
   confirmation is open. The fingerprint is checked again before the
   first unmount and before the raw writes begin, including after a
   long download or decompression. A mismatch aborts before anything is
@@ -108,14 +109,15 @@ any of them, take that into account before using Mactoy.
   `ventoy/Ventoy` release. **Planned fix:** a hash table for known
   Ventoy versions built into the app, with a clear warning for any
   version not in it.
-- **The disk fingerprint isn't a hardware identity.** The fingerprint
-  is taken when you confirm, and compares the BSD name, size, flags and
-  media name, not an immutable identifier such as the IOKit registry
-  entry ID. If you swap in an identical drive (same model and size)
-  that macOS gives the same `/dev/disk<N>` name at any point after
-  confirming, Mactoy won't notice. The window is longest when flashing
-  a compressed image, during decompression. **Planned fix:** pin an
-  immutable identifier in the plan.
+- **The fingerprint can't tell every pair of drives apart.** Serial
+  numbers are compared only when both the confirmed drive and the live
+  one report one. A swap to an identical drive (same model and size)
+  that macOS gives the same `/dev/disk<N>` name is still missed when
+  either has no serial, when cheap USB bridges report the same
+  placeholder serial for every drive, or when cards are swapped in one
+  USB card reader (the serial is the reader's, not the card's). The
+  IOKit registry entry ID isn't pinned. The window is longest when
+  flashing a compressed image.
 - **Flash image reads the image as root.** The app sends the image's
   path, and the helper opens it with root's permissions. On a Mac with
   more than one account, while the helper is registered, a user could
