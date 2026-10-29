@@ -248,8 +248,8 @@ final class AppState: ObservableObject {
 
     // helper lifecycle
     /// Takes the helper off the Mac after a run (the "remove helper after this run" choice). Seam for tests.
-    /// The helper removal in progress, if any. `run()` waits for it.
-    private(set) var helperRemoval: Task<Void, Never>?
+    /// The helper removal in progress, if any. `run()` and a helper approval wait for it.
+    @Published private(set) var helperRemoval: Task<Void, Never>?
     var helperRemover: @MainActor () async -> Void = {
         await AppState.removeHelper(clearDownloads: { try await HelperInvoker.clearDownloads() },
                                     unregister: { try await HelperLifecycle.unregister() })
@@ -465,6 +465,8 @@ final class AppState: ObservableObject {
 
         approvalTask = Task { @MainActor [weak self] in
             await previous?.value
+            // Approval re-registers the helper; a removal finishing afterwards would undo it.
+            if let removal = self?.helperRemoval { await removal.value }
             guard self?.isCurrent(approval) == true else { return }
             // SMAppService can refuse register() with "Operation not
             // permitted" when BTM already holds an entry for the same
@@ -575,7 +577,7 @@ final class AppState: ObservableObject {
     var canSetUpHelperForProbe: Bool {
         switch status {
         case .preparing, .running: return false
-        default: return probeNeedsHelper && !isAwaitingHelperApproval && !showHelperExplainer
+        default: return probeNeedsHelper && !isAwaitingHelperApproval && !showHelperExplainer && helperRemoval == nil
         }
     }
 
@@ -968,7 +970,11 @@ final class AppState: ObservableObject {
     ) async {
         // A Retry pressed while the last run is still removing the helper waits for that to
         // finish. Otherwise the removal could stop the helper partway through this run.
-        if let removal = helperRemoval { await removal.value }
+        if let removal = helperRemoval {
+            // Busy while waiting, so Retry and Done go away instead of looking dead.
+            status = .preparing("Removing the helper from the last run…")
+            await removal.value
+        }
         let target = confirmedTarget
         runRequestCount += 1
         lastRunRequest = RunRequest(
@@ -1362,7 +1368,7 @@ final class AppState: ObservableObject {
         let removal = Task { @MainActor in await helperRemover() }
         helperRemoval = removal
         await removal.value
-        helperRemoval = nil
+        if helperRemoval == removal { helperRemoval = nil }
         helperStatus = HelperLifecycle.status
     }
 

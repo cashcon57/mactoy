@@ -164,6 +164,9 @@ struct ClearDownloadsTests {
         }
         for _ in 0..<50 { await Task.yield() }
         #expect(!calls.events.contains("run-returned"))
+        // Busy while it waits, so Retry and Done aren't offered.
+        if case .preparing = s.status {} else { Issue.record("expected .preparing while waiting, got \(s.status)") }
+        #expect(!s.canRetryRun)
 
         gate.open?.resume()
         await removal.value
