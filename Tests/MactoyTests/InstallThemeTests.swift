@@ -946,8 +946,8 @@ struct InstallThemeRunSourceTests {
     @Test("both success sites add the confirmed theme")
     func successSites() throws {
         let body = try runBody()
-        let successes = body.components(separatedBy: "status = .success(\"Install complete\")").count - 1
-        let withTheme = body.components(separatedBy: "status = .success(\"Install complete\")\n").dropFirst().filter {
+        let successes = body.components(separatedBy: "status = .success(Self.successMessage(for: plan))").count - 1
+        let withTheme = body.components(separatedBy: "status = .success(Self.successMessage(for: plan))\n").dropFirst().filter {
             $0.drop(while: { $0 == " " }).hasPrefix("await addThemeAfterInstall(confirmedTheme, mode: confirmedMode, to: target)")
         }.count
         #expect(successes == 2)

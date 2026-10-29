@@ -37,6 +37,11 @@ python3 qemu-drive.py stick.img bios shot wait:45 shot:menu
 `<prefix>-serial.log`. QEMU runs with `-snapshot`, so booting never modifies
 the image.
 
+`e2e <diskN> flash <image> [sha256|-] [noverify]` runs the real
+`RawImageDriver`: it flashes an `.img`, `.img.xz` or `.img.gz` onto the disk
+image, checking the SHA-256 if given and reading the drive back unless
+`noverify`. `cmp -n <image size> image.img /dev/rdiskN` then confirms the bytes.
+
 `e2e scan /Volumes/Ventoy` prints what Manage Disk will list for a mounted
 Ventoy volume, to compare with the boot menu.
 

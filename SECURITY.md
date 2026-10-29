@@ -57,6 +57,17 @@ model.
   unless you unlock that drive for the session. The check runs again
   when a run starts, so a backup volume that appeared since the last
   refresh is still caught.
+- **Flashing a bad image, or a drive that doesn't keep what's written.**
+  Flash image can check the image against a SHA-256 you paste or load
+  from the download page's checksum file, before the drive is erased.
+  It decompresses `.xz` and `.gz` images while writing, so a file it
+  can't read is caught before anything is written, and a file that's
+  damaged later stops the write. Afterwards it reads the drive back
+  and compares it with what it wrote (on by default), which catches
+  failing and counterfeit drives.
+- **Reading files the user can't.** The app opens the image to flash
+  with your own permissions and hands the open file to the helper,
+  which only accepts a regular file and never opens a path itself.
 - **MITM and corrupted downloads of the Ventoy tarball.** Every Ventoy
   archive is SHA-256-verified against the `sha256.txt` published with
   the release before anything is extracted or written to your drive. A
@@ -116,20 +127,7 @@ any of them, take that into account before using Mactoy.
   either has no serial, when cheap USB bridges report the same
   placeholder serial for every drive, or when cards are swapped in one
   USB card reader (the serial is the reader's, not the card's). The
-  IOKit registry entry ID isn't pinned. The window is longest when
-  flashing a compressed image.
-- **Flash image reads the image as root.** The app sends the image's
-  path, and the helper opens it with root's permissions. On a Mac with
-  more than one account, while the helper is registered, a user could
-  have Mactoy copy a file they can't read themselves onto a USB stick.
-  **Planned fix** ([#36](https://github.com/cashcon57/mactoy/issues/36)):
-  the app opens the file and hands the open file to the helper.
-- **Compressed images are decompressed in memory.** Plain `.iso` and
-  `.img` files are memory-mapped where macOS allows it and written in
-  4 MB chunks. `.img.xz` and `.img.gz` files are read and decompressed
-  fully into RAM before writing, so a large compressed image can
-  exhaust memory on a Mac with little RAM. **Planned fix:** decompress
-  while writing.
+  IOKit registry entry ID isn't pinned.
 - **No cancel button.** Once you confirm an install, update or flash,
   there's no way to cancel it in the app, including during the download
   or decompression. Quitting Mactoy stops the helper about half a

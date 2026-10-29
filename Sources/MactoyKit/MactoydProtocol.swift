@@ -11,7 +11,11 @@ import Foundation
     /// `exportedInterface` on the connection (see `MactoyClientProtocol`).
     /// `reply` is called once at completion: `success=true` on success,
     /// `false` with a human-readable `errorMessage` on failure.
-    func executePlan(_ planData: Data, reply: @escaping (_ success: Bool, _ errorMessage: String?) -> Void)
+    ///
+    /// `image` is the image file for a Flash image plan, opened by the app with the user's own
+    /// permissions (#36). The helper reads only from it, never from the plan's path, which is
+    /// there for display. nil for other plans.
+    func executePlan(_ planData: Data, image: FileHandle?, reply: @escaping (_ success: Bool, _ errorMessage: String?) -> Void)
 
     /// Probe `bsdName` (e.g. `disk6`) to see whether it has a Ventoy
     /// install. Returns a JSON-encoded `VentoyProbeResult`. Cheap and
@@ -49,6 +53,7 @@ public let mactoydMachServiceName = "com.mactoy.mactoyd"
 /// it) changes. An app update brings its helper along, so the user isn't
 /// asked again; a mismatch means another copy of Mactoy owns the helper,
 /// and `AppState.run` re-registers this one.
-/// 0.8.0 adds `clearDownloads`. v0.5.1 to v0.7.1 left the protocol at 0.5.0.
+/// 0.8.0 adds `clearDownloads`, the image file handle on `executePlan`, and the plan's
+/// checksum and read-back fields. v0.5.1 to v0.7.1 left the protocol at 0.5.0.
 public let mactoydVersion = "0.8.0"
 

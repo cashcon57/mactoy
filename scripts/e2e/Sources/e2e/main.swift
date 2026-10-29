@@ -2,6 +2,7 @@ import Foundation
 import MactoyKit
 
 // usage: e2e <diskN> <install|update> <secure:on|off> [mbr|gpt] [version]
+//        e2e <diskN> flash <image> [sha256|-] [noverify]
 //        e2e scan <mounted Ventoy volume>
 // Runs the REAL VentoyDriver against an hdiutil-attached disk image.
 struct Sink: ProgressSink {
@@ -18,6 +19,24 @@ if a.count == 3, a[1] == "scan" {
     for url in result.images { print("image: \(url.path)") }
     exit(0)
 }
+// e2e <diskN> flash <image> [sha256|-] [noverify] — the REAL RawImageDriver (#20, #26).
+if a.count >= 4, a[2] == "flash" {
+    let bsd = a[1]
+    let target = try DiskInfo.probe(bsdName: bsd)
+    guard target.mediaName == "Disk Image" else { fatalError("refusing: \(bsd) is not a disk image (\(target.mediaName ?? "nil"))") }
+    let checksum = a.count > 4 && a[4] != "-" ? a[4] : nil
+    let plan = InstallPlan(driver: .rawImage, target: target, source: .localImage(path: a[3]), workDir: "/unused",
+                           partitionStyle: .mbr, expectedImageSHA256: checksum,
+                           verifyAfterWriting: !(a.count > 5 && a[5] == "noverify"))
+    do {
+        try await RawImageDriver().execute(plan: plan, progress: Sink())
+        print("RESULT ok")
+    } catch {
+        print("RESULT FAILED: \(error)"); exit(1)
+    }
+    exit(0)
+}
+
 let bsd = a[1], op = a[2], secure = a[3] == "on"
 // Default matches the app's: MBR.
 guard let style = VentoyPartitionStyle(rawValue: a.count > 4 ? a[4] : "mbr") else {

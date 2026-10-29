@@ -95,6 +95,18 @@ enum HelperInvoker {
         encoder.dateEncodingStrategy = .iso8601
         let planData = try encoder.encode(plan)
 
+        // Flash image: open the file here, as the user, and hand the helper the open file (#36).
+        // The helper runs as root and never opens the path itself.
+        var image: FileHandle?
+        if plan.driver == .rawImage, case .localImage(let path) = plan.source {
+            do {
+                image = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+            } catch {
+                throw HelperError.executionFailed("Mactoy can't open \((path as NSString).lastPathComponent): \(error.localizedDescription) Nothing was written.")
+            }
+        }
+        defer { try? image?.close() }
+
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             guard let proxy = connection.remoteObjectProxyWithErrorHandler({ err in
                 cont.resume(throwing: HelperError.xpcUnreachable("\(err)"))
@@ -103,7 +115,7 @@ enum HelperInvoker {
                 return
             }
 
-            proxy.executePlan(planData) { success, errMsg in
+            proxy.executePlan(planData, image: image) { success, errMsg in
                 if success {
                     cont.resume()
                 } else if let invalidationErr {

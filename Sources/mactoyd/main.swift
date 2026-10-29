@@ -198,7 +198,8 @@ final class MactoydService: NSObject, MactoydProtocol {
         }
     }
 
-    func executePlan(_ planData: Data, reply: @escaping (Bool, String?) -> Void) {
+    func executePlan(_ planData: Data, image: FileHandle?, reply: @escaping (Bool, String?) -> Void) {
+        let imageBox = FileHandleBox(image)
         // Proxy + reply callbacks are not Sendable. Wrap both in unchecked
         // shims so they can be captured into the detached task. Safe in
         // practice: NSXPCConnection serializes proxy access, and `reply`
@@ -226,7 +227,12 @@ final class MactoydService: NSObject, MactoydProtocol {
                 let driver: any InstallDriver
                 switch plan.driver {
                 case .ventoy:   driver = VentoyDriver()
-                case .rawImage: driver = RawImageDriver()
+                case .rawImage:
+                    // Never open the plan's path as root: it could name a file the user can't read (#36).
+                    guard let image = imageBox.handle else {
+                        throw DriverError.validation("Mactoy didn't hand over the image file, so nothing was written. Update Mactoy and try again.")
+                    }
+                    driver = RawImageDriver(image: image)
                 }
 
                 sink.report(.init(phase: .preparing, message: "mactoyd started, plan received"))
@@ -268,6 +274,12 @@ final class RunGate: @unchecked Sendable {
 }
 
 let runGate = RunGate()
+
+/// Carries the image's file handle into the detached task. The task is its only user.
+final class FileHandleBox: @unchecked Sendable {
+    let handle: FileHandle?
+    init(_ handle: FileHandle?) { self.handle = handle }
+}
 
 /// Wraps an Objective-C XPC reply block so it can cross actor boundaries.
 /// XPC guarantees the reply will be invoked at most once, so the
