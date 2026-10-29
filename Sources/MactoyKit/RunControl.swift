@@ -11,6 +11,14 @@ import Foundation
 /// A flag rather than Swift task cancellation: `Task.sleep` and other awaits inside the
 /// drivers would throw at unsafe points if the task itself were cancelled.
 public final class RunControl: @unchecked Sendable {
+    /// What a stopped run says, by where it stopped. The app tells a cancelled run from a failed
+    /// one by these, not by whether Cancel was pressed: a real failure can arrive while a
+    /// cancel is still on its way to the helper.
+    public static let stoppedBeforeWriting = "Cancelled. Nothing was written to the drive."
+    public static let stoppedWhileWriting = "Stopped while writing. The drive is only partly written and won't start until you flash it or install Ventoy on it again."
+    public static let stoppedWhileChecking = "Stopped while checking. The image was written in full, but Mactoy didn't finish reading it back."
+    public static let stopMessages = [stoppedBeforeWriting, stoppedWhileWriting, stoppedWhileChecking]
+
     private let lock = NSLock()
     private var cancelled = false
     private var committed = false

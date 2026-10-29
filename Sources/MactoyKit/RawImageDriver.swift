@@ -23,9 +23,9 @@ public struct RawImageDriver: InstallDriver {
         self.control = control
     }
 
-    static let stoppedBeforeWriting = "Cancelled. Nothing was written to the drive."
-    static let stoppedWhileWriting = "Stopped while writing. The drive is only partly written and won't start until you flash it or install Ventoy on it again."
-    static let stoppedWhileChecking = "Stopped while checking. The image was written in full, but Mactoy didn't finish reading it back."
+    static let stoppedBeforeWriting = RunControl.stoppedBeforeWriting
+    static let stoppedWhileWriting = RunControl.stoppedWhileWriting
+    static let stoppedWhileChecking = RunControl.stoppedWhileChecking
 
 
     public func execute(plan: InstallPlan, progress: ProgressSink) async throws {
@@ -153,8 +153,16 @@ public struct RawImageDriver: InstallDriver {
 
         // 4. Read it back.
         if plan.verifyAfterWriting {
-            try await Self.verify(writer: writer, length: written, deviceSize: plan.target.sizeInBytes, expected: hasher.finalize(),
-                                  progress: progress, control: control)
+            do {
+                try await Self.verify(writer: writer, length: written, deviceSize: plan.target.sizeInBytes, expected: hasher.finalize(),
+                                      progress: progress, control: control)
+            } catch DriverError.stopped(let message) {
+                // Written in full: let macOS see the new partitions before stopping.
+                writer.close()
+                _ = try? Subprocess.run("/usr/sbin/diskutil", ["reloadDisk", "/dev/\(plan.target.bsdName)"])
+                _ = try? Subprocess.run("/usr/sbin/diskutil", ["mountDisk", "/dev/\(plan.target.bsdName)"])
+                throw DriverError.stopped(message)
+            }
         }
 
         // Release the raw-disk fd so macOS can re-probe the newly written image. The kernel

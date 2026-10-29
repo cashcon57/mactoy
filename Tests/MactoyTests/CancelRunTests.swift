@@ -122,11 +122,18 @@ struct CancelRunTests {
     }
 
     @Test("a real failure without a cancel stays a failure")
-    func failureStaysFailure() {
+    func failureStaysFailure() async {
         let s = state(mode: .installVentoy, phase: .downloading)
         s.status = .failed("Disk I/O error")
         s.settleCancelledRun()
         if case .failed = s.status {} else { Issue.record("expected .failed") }
+
+        // Even with a cancel in flight: only the helper's stop messages count as cancelled.
+        let racing = state(mode: .installVentoy, phase: .extracting)
+        await racing.cancelRunInProgress()
+        racing.status = .failed("Disk I/O error: unmount failed: Resource busy")
+        racing.settleCancelledRun()
+        if case .failed = racing.status {} else { Issue.record("a real failure must stay a failure") }
     }
 
     @Test("run() clears the cancel state when it ends")

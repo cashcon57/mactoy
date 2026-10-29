@@ -11,7 +11,7 @@ public struct VentoyDriver: InstallDriver {
         self.control = control
     }
 
-    static let stoppedBeforeWriting = "Cancelled. Nothing was written to the drive."
+    static let stoppedBeforeWriting = RunControl.stoppedBeforeWriting
 
     public func execute(plan: InstallPlan, progress: ProgressSink) async throws {
         switch plan.ventoyOperation {

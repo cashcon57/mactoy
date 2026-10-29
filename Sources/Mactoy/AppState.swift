@@ -1448,7 +1448,9 @@ final class AppState: ObservableObject {
     /// A run the user cancelled ends as cancelled, not failed, and without Retry: a retry skips
     /// the confirmation sheet, and starting again should go through it (#21). Internal for tests.
     func settleCancelledRun() {
-        guard cancelRequested, case .failed(let message) = status else { return }
+        // Only a stop the helper made: a real failure can land while a cancel is in flight.
+        guard cancelRequested, case .failed(let message) = status,
+              RunControl.stopMessages.contains(where: { message.contains($0) }) else { return }
         status = .cancelled(message)
         pendingRunTarget = nil
         pendingRunMode = nil
