@@ -40,6 +40,19 @@ struct TimeMachineGuardTests {
         #expect(s.pendingEraseConfirmation == nil)
     }
 
+    @Test("an unlock doesn't carry over to another backup drive of the same model (#21)")
+    func unlockIsPerDriveSerial() {
+        let s = state()
+        let first = DiskTarget(bsdName: "disk4", sizeInBytes: 2_000_000_000_000, isExternal: true, isRemovable: true,
+                               mediaName: "Backup Drive", serialNumber: "SN-ONE")
+        let second = DiskTarget(bsdName: "disk4", sizeInBytes: 2_000_000_000_000, isExternal: true, isRemovable: true,
+                                mediaName: "Backup Drive", serialNumber: "SN-TWO")
+        s.applyDiskList([first], timeMachine: ["disk4"])
+        s.unlockBackupDisk(first)
+        #expect(!s.isLockedBackup(first))
+        #expect(s.isLockedBackup(second))
+    }
+
     @Test("unlocking allows an install and the sheet says backups will be erased; locking again blocks it")
     func unlockAndRelock() {
         let s = state()
