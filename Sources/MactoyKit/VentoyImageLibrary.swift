@@ -233,7 +233,3 @@ public enum VentoyImageLibrary {
         (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 }
-
-private extension Character {
-    var isASCIIDigit: Bool { ("0"..."9").contains(self) }
-}

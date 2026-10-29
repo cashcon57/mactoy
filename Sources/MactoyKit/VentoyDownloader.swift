@@ -22,7 +22,7 @@ public struct VentoyDownloader: Sendable {
     /// shell metacharacters, whitespace, query strings).
     public static func isValidVersion(_ v: String) -> Bool {
         guard !v.isEmpty, v.count <= 32,
-              v.allSatisfy({ $0.isNumber || $0 == "." }) else { return false }
+              v.allSatisfy({ $0.isASCIIDigit || $0 == "." }) else { return false }
         let parts = v.split(separator: ".", omittingEmptySubsequences: false)
         return parts.count >= 2 && parts.count <= 4 && parts.allSatisfy { !$0.isEmpty }
     }

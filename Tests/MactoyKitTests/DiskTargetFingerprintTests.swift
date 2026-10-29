@@ -94,3 +94,40 @@ struct DiskTargetFingerprintTests {
         #expect(captured.fingerprintMismatch(against: live)?.contains("Removable") == true)
     }
 }
+
+@Suite("Fingerprint check before formatting (#21)")
+struct FormatFingerprintTests {
+    private let confirmed = DiskTarget(bsdName: "disk5", sizeInBytes: 64_000_000_000,
+                                       isExternal: true, isRemovable: true, mediaName: "SanDisk Ultra")
+
+    @Test("the same drive passes")
+    func sameDrive() throws {
+        try VentoyDriver.reverifyBeforeFormatting(confirmed) { _ in confirmed }
+    }
+
+    @Test("a different drive stops it, and the message says what state the confirmed drive is in")
+    func differentDrive() {
+        let other = DiskTarget(bsdName: "disk5", sizeInBytes: 32_000_000_000,
+                               isExternal: true, isRemovable: true, mediaName: "Kingston")
+        do {
+            try VentoyDriver.reverifyBeforeFormatting(confirmed) { _ in other }
+            Issue.record("expected a refusal")
+        } catch {
+            let text = "\(error)"
+            #expect(text.contains("Stopped before formatting /dev/disk5"))
+            #expect(text.contains("no longer the drive you confirmed"))
+            #expect(text.contains("isn't formatted yet"))
+            #expect(!text.contains("Re-select"))
+        }
+    }
+
+    @Test("a drive that's gone stops it too")
+    func driveGone() {
+        do {
+            try VentoyDriver.reverifyBeforeFormatting(confirmed) { _ in throw DriverError.diskIO("not found") }
+            Issue.record("expected a refusal")
+        } catch {
+            #expect("\(error)".contains("can't see the drive any more"))
+        }
+    }
+}

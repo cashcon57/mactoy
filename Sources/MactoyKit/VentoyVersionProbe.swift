@@ -100,6 +100,11 @@ public enum VentoyVersionProbe {
     /// purposes — the user's ISOs are on partition 1, but we only ever
     /// read partition 2 here, plus a handful of bytes of sector 0).
     public static func probe(bsdName: String) -> VentoyProbeResult {
+        // The helper runs this as root for whatever name the app sends, so the name is
+        // checked before it becomes a path (#21): a whole disk, ASCII digits, nothing else.
+        guard InstallPlan.isWholeDiskBSDName(bsdName) else {
+            return .unknownDisk(bsdName: bsdName, reason: "Not a whole-disk name: \(bsdName)")
+        }
         let rawPath = "/dev/r\(bsdName)"
 
         let reader: DiskWriter

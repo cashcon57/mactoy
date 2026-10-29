@@ -263,11 +263,12 @@ public extension InstallPlan {
 
     /// Whole-disk node names only (`disk2`, `disk3`, ...). Slice names
     /// (`disk2s1`) and nonsense (`disk`, `diskfoo`) are rejected before
-    /// they ever reach `/dev/rdisk*` as root.
+    /// they ever reach `/dev/rdisk*` as root. ASCII digits only:
+    /// `Character.isNumber` also accepts numerals like `٣` or `Ⅷ` (#21).
     static func isWholeDiskBSDName(_ s: String) -> Bool {
         guard s.hasPrefix("disk") else { return false }
         let rest = s.dropFirst(4)
-        return !rest.isEmpty && rest.allSatisfy { $0.isNumber }
+        return !rest.isEmpty && rest.allSatisfy(\.isASCIIDigit)
     }
 
     func validate() throws {
@@ -289,4 +290,10 @@ public extension InstallPlan {
             throw PlanValidationError.tooLargeForMBR(target.sizeInBytes)
         }
     }
+}
+
+extension Character {
+    /// `0` to `9` only. `isNumber` also accepts other scripts' digits, fractions and Roman
+    /// numerals, and a range check on Characters accepts a digit with a combining mark (`2\u{301}`).
+    var isASCIIDigit: Bool { asciiValue.map { (0x30...0x39).contains($0) } ?? false }
 }
