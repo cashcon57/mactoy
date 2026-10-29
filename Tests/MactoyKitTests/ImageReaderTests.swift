@@ -260,5 +260,19 @@ struct ImageReaderTests {
         #expect(ImageReader.imageSize(of: handle, format: .xz) == nil)
         #expect(Date().timeIntervalSince(start) < 5)
     }
+
+    @Test("a .gz member boundary split across reads, with one byte of the next header visible, doesn't stall")
+    func gzipBoundaryAtRead() throws {
+        // Pad the first member so it ends one byte before a 1 MB read boundary.
+        let a = sample(512 * 1024, seed: 3)
+        var first = gzip(a)
+        let b = sample(300 * 1024, seed: 4)
+        let pad = ImageReader.inputSize - 1 - first.count
+        #expect(pad > 0)
+        first += Data(count: pad)                 // zero padding between members is allowed
+        let url = try file(first + gzip(b), "split.img.gz")
+        defer { try? fm.removeItem(at: url.deletingLastPathComponent()) }
+        #expect(try readAll(url).data == a + b)
+    }
 }
 

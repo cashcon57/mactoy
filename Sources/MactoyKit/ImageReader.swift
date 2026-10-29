@@ -73,8 +73,13 @@ public final class ImageReader {
                 finished = true
                 break
             }
-            if step.consumed == 0 && step.produced == 0 && inputOffset == input.count && inputEnded {
-                throw DriverError.corruptPayload("The image ends early: the file is cut off or damaged.")
+            if step.consumed == 0 && step.produced == 0 {
+                if inputEnded {
+                    throw DriverError.corruptPayload("The image ends early: the file is cut off or damaged.")
+                }
+                // The decoder needs more bytes than are left in this piece (a .gz member header
+                // split across reads): read more, keeping what's left.
+                if inputOffset < input.count { try refill(keepingRest: true) }
             }
         }
         return out.isEmpty ? nil : out
@@ -92,9 +97,9 @@ public final class ImageReader {
         return out.isEmpty ? nil : out
     }
 
-    private func refill() throws {
+    private func refill(keepingRest: Bool = false) throws {
         let piece = try source.read(upToCount: Self.inputSize) ?? Data()
-        input = piece
+        input = keepingRest ? input.subdata(in: inputOffset..<input.count) + piece : piece
         inputOffset = 0
         bytesRead += UInt64(piece.count)
         if piece.isEmpty { inputEnded = true }
