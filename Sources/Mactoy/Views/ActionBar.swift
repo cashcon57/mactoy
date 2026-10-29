@@ -3,6 +3,8 @@ import MactoyKit
 
 struct ActionBar: View {
     @EnvironmentObject private var state: AppState
+    /// Here rather than on the button, whose view changes with every status.
+    @State private var confirmingCancel = false
 
     var body: some View {
         VStack(spacing: 10) {
@@ -10,8 +12,21 @@ struct ActionBar: View {
             HStack {
                 KofiButton()
                 Spacer()
-                PrimaryButton()
+                PrimaryButton(confirmingCancel: $confirmingCancel)
             }
+        }
+        .confirmationDialog("Stop writing the drive?", isPresented: $confirmingCancel) {
+            Button("Stop Writing", role: .destructive) {
+                // Only if it's still writing: the dialog closes itself when writing ends.
+                guard state.cancelNeedsConfirmation else { return }
+                Task { @MainActor in await state.cancelRunInProgress() }
+            }
+            Button("Keep Writing", role: .cancel) {}
+        } message: {
+            Text("The drive will be only partly written and won't start until you flash it or install Ventoy on it again.")
+        }
+        .onChange(of: state.cancelNeedsConfirmation) { stillWriting in
+            if !stillWriting { confirmingCancel = false }
         }
     }
 }
@@ -66,6 +81,18 @@ private struct StatusRow: View {
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .mactoyGlass(cornerRadius: 16, tint: .green.opacity(0.25))
+        case .cancelled(let m):
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                Text(m)
+                    .font(.callout)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .mactoyGlass(cornerRadius: 16)
         case .failed(let m):
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
@@ -84,7 +111,7 @@ private struct StatusRow: View {
 
 private struct PrimaryButton: View {
     @EnvironmentObject private var state: AppState
-    @State private var confirmingCancel = false
+    @Binding var confirmingCancel: Bool
 
     private func cancelAction() {
         if state.cancelNeedsConfirmation {
@@ -129,14 +156,6 @@ private struct PrimaryButton: View {
                 .mactoyGlass()
                 .disabled(true)
             }
-            .confirmationDialog("Stop writing the drive?", isPresented: $confirmingCancel) {
-                Button("Stop Writing", role: .destructive) {
-                    Task { @MainActor in await state.cancelRunInProgress() }
-                }
-                Button("Keep Writing", role: .cancel) {}
-            } message: {
-                Text("The drive will be only partly written and won't start until you flash it or install Ventoy on it again.")
-            }
         case .failed:
             // On failure, offer both Retry (if we still have the
             // captured target from the failed run — v0.3.2, issue #5)
@@ -161,7 +180,7 @@ private struct PrimaryButton: View {
                 .buttonStyle(.plain)
                 .mactoyGlass(interactive: true)
             }
-        case .success:
+        case .success, .cancelled:
             Button(action: { Task { @MainActor in state.reset() } }) {
                 Label("Done", systemImage: "checkmark")
                     .padding(.horizontal, 16)

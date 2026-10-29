@@ -19,6 +19,8 @@ struct CancelRunTests {
         return s
     }
 
+    private let disk = DiskTarget(bsdName: "disk7", sizeInBytes: 32_000_000_000, isExternal: true, isRemovable: true, mediaName: "Stick")
+
     @Test("Ventoy: offered while downloading and extracting, not once writing has started")
     func ventoyPhases() {
         for phase: ProgressUpdate.Phase in [.preparing, .downloading, .extracting] {
@@ -32,9 +34,10 @@ struct CancelRunTests {
 
     @Test("Flash: offered throughout, and asks first only while writing")
     func flashPhases() {
-        for phase: ProgressUpdate.Phase in [.preparing, .verifying, .writing, .formatting] {
+        for phase: ProgressUpdate.Phase in [.preparing, .verifying, .writing] {
             #expect(state(mode: .flashImage, phase: phase).canCancelRun, "\(phase)")
         }
+        #expect(!state(mode: .flashImage, phase: .formatting).canCancelRun, "nothing left to stop")
         #expect(state(mode: .flashImage, phase: .writing).cancelNeedsConfirmation)
         #expect(!state(mode: .flashImage, phase: .verifying).cancelNeedsConfirmation)
         #expect(!state(mode: .installVentoy, phase: .downloading).cancelNeedsConfirmation)
@@ -69,4 +72,71 @@ struct CancelRunTests {
         #expect(s.cancelRefusedNote?.contains("Too late to cancel") == true)
         if case .running = s.status {} else { Issue.record("status should stay running") }
     }
+
+    @Test("a refused cancel isn't offered again, even if the run reports .preparing later")
+    func refusedNotReoffered() async {
+        let s = state(mode: .updateVentoy, phase: .extracting, accepted: false)
+        await s.cancelRunInProgress()
+        s.noteRunUpdate(.init(phase: .preparing, message: "Preserving disk UUID…"))
+        #expect(!s.canCancelRun)
+    }
+
+    @Test("once an Update starts writing, a later .preparing update doesn't bring Cancel back")
+    func updateWritingClosesCancel() {
+        let s = state(mode: .updateVentoy, phase: .extracting)
+        #expect(s.canCancelRun)
+        s.noteRunUpdate(.init(phase: .writing, message: "Opening /dev/rdisk7..."))
+        s.noteRunUpdate(.init(phase: .preparing, message: "Preserving disk UUID…"))
+        #expect(!s.canCancelRun)
+    }
+
+    @Test("a flash keeps Cancel through writing and checking")
+    func flashKeepsCancel() {
+        let s = state(mode: .flashImage, phase: .preparing)
+        s.noteRunUpdate(.init(phase: .writing, message: "Writing..."))
+        s.noteRunUpdate(.init(phase: .verifying, message: "Checking..."))
+        #expect(s.canCancelRun)
+    }
+
+    @Test("an unreachable helper is reported as that, not as too late")
+    func cancellerThrows() async {
+        let s = state(mode: .installVentoy, phase: .downloading)
+        s.helperRunCanceller = { throw HelperInvoker.HelperError.xpcUnreachable("gone") }
+        await s.cancelRunInProgress()
+        #expect(!s.cancelRequested)
+        #expect(s.cancelRefusedNote?.contains("couldn't reach its helper") == true)
+        #expect(s.cancelRefusedNote?.contains("Too late") == false)
+    }
+
+    @Test("a cancelled run ends as cancelled, with no Retry")
+    func cancelledHasNoRetry() async {
+        let s = state(mode: .installVentoy, phase: .downloading)
+        await s.cancelRunInProgress()
+        s.status = .failed("Cancelled. Nothing was written to the drive.")
+        s.settleCancelledRun()
+        if case .cancelled(let m) = s.status { #expect(m.hasPrefix("Cancelled")) } else { Issue.record("expected .cancelled") }
+        #expect(!s.canRetryRun)
+        #expect(s.canClearDownloads)
+    }
+
+    @Test("a real failure without a cancel stays a failure")
+    func failureStaysFailure() {
+        let s = state(mode: .installVentoy, phase: .downloading)
+        s.status = .failed("Disk I/O error")
+        s.settleCancelledRun()
+        if case .failed = s.status {} else { Issue.record("expected .failed") }
+    }
+
+    @Test("run() clears the cancel state when it ends")
+    func runResetsState() async {
+        let s = state(mode: .flashImage, phase: .writing)
+        s.cancelClosed = true
+        s.status = .idle
+        s.helperStatusSource = { .notRegistered }
+        await s.run(confirmedTarget: disk, confirmedMode: .flashImage, confirmedSecureBoot: true, confirmedPartitionStyle: .mbr)
+        #expect(s.runningMode == nil)
+        #expect(!s.cancelClosed)
+        #expect(!s.cancelRequested)
+    }
 }
+
