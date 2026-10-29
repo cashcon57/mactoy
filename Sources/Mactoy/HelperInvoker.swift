@@ -9,6 +9,9 @@ enum HelperInvoker {
 
     enum HelperError: LocalizedError {
         case xpcUnreachable(String)
+        /// The connection broke after the plan was sent (#39): the helper may have written part
+        /// of the drive. Never retried by itself, unlike `xpcUnreachable` before sending.
+        case connectionLost(String)
         case executionFailed(String)
         /// The registered helper is a different version from this app.
         /// Thrown before any plan is sent, so nothing has been written.
@@ -18,6 +21,8 @@ enum HelperInvoker {
             switch self {
             case .xpcUnreachable(let s):
                 return "Could not reach the Mactoy helper daemon: \(s)"
+            case .connectionLost:
+                return "Mactoy lost contact with its helper while it was working on the drive, so the drive may be partly written. Press Retry to start again, or Done to stop."
             case .executionFailed(let s):
                 return s
             case .versionMismatch(let helper):
@@ -107,9 +112,11 @@ enum HelperInvoker {
         }
         defer { try? image?.close() }
 
+        // From here the plan is on its way: a broken connection means the helper may have
+        // started writing, so it's reported as connectionLost, never retried by itself (#39).
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             guard let proxy = connection.remoteObjectProxyWithErrorHandler({ err in
-                cont.resume(throwing: HelperError.xpcUnreachable("\(err)"))
+                cont.resume(throwing: HelperError.connectionLost("\(err)"))
             }) as? MactoydProtocol else {
                 cont.resume(throwing: HelperError.xpcUnreachable("proxy unavailable"))
                 return
@@ -119,7 +126,7 @@ enum HelperInvoker {
                 if success {
                     cont.resume()
                 } else if let invalidationErr {
-                    cont.resume(throwing: HelperError.xpcUnreachable(invalidationErr))
+                    cont.resume(throwing: HelperError.connectionLost(invalidationErr))
                 } else {
                     cont.resume(throwing: HelperError.executionFailed(errMsg ?? "mactoyd reported failure with no detail"))
                 }

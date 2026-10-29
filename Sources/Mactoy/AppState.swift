@@ -413,7 +413,7 @@ final class AppState: ObservableObject {
     /// Heuristic: did the XPC layer fail because launchd has no live
     /// registration for our mach service? Usually means the daemon was
     /// booted out or BTM + launchd fell out of sync.
-    private func isLookupFailure(_ err: HelperInvoker.HelperError) -> Bool {
+    func isLookupFailure(_ err: HelperInvoker.HelperError) -> Bool {
         guard case .xpcUnreachable(let m) = err else { return false }
         return m.contains("No such process")
             || m.contains("4099")
@@ -838,9 +838,9 @@ final class AppState: ObservableObject {
                 return "Mactoy's helper isn't set up or can't be reached, so it can't read this disk. That's normal if you haven't used Mactoy to write a drive yet, or if the helper was removed after the last one. Set it up to check this disk for Ventoy — macOS will ask you to approve it. Nothing is written to the disk."
             case .executionFailed(let m):
                 return "Probe failed: \(m)"
-            case .versionMismatch:
-                // Not thrown by the probe today (it doesn't ping), but
-                // keep the message useful if that changes.
+            case .versionMismatch, .connectionLost:
+                // Not thrown by the probe today (it doesn't ping or run a plan),
+                // but keep the message useful if that changes.
                 return "Probe failed: \(helperErr.localizedDescription)"
             }
         }
