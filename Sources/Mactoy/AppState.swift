@@ -248,7 +248,21 @@ final class AppState: ObservableObject {
 
     // helper lifecycle
     /// Takes the helper off the Mac after a run (the "remove helper after this run" choice). Seam for tests.
-    var helperRemover: @MainActor () async -> Void = { try? await HelperLifecycle.unregister() }
+    /// The helper removal in progress, if any. `run()` and a helper approval wait for it.
+    @Published private(set) var helperRemoval: Task<Void, Never>?
+    var helperRemover: @MainActor () async -> Void = {
+        await AppState.removeHelper(clearDownloads: { try await HelperInvoker.clearDownloads() },
+                                    unregister: { try await HelperLifecycle.unregister() })
+    }
+
+    /// The helper's Ventoy downloads belong to root, so only the helper can delete them, and once
+    /// it's removed nothing would (issue #22). So it clears them first. Neither step's failure
+    /// stops the other: the daemon may already be gone (e.g. the user toggled it off manually).
+    static func removeHelper(clearDownloads: () async throws -> UInt64,
+                             unregister: () async throws -> Void) async {
+        _ = try? await clearDownloads()
+        try? await unregister()
+    }
     @Published var helperStatus: HelperStatus = .notRegistered
     @Published var uninstallHelperAfterRun: Bool = true  // default: leave system clean
     @Published var showHelperExplainer: Bool = false     // drives the pre-register sheet
@@ -451,6 +465,8 @@ final class AppState: ObservableObject {
 
         approvalTask = Task { @MainActor [weak self] in
             await previous?.value
+            // Approval re-registers the helper; a removal finishing afterwards would undo it.
+            if let removal = self?.helperRemoval { await removal.value }
             guard self?.isCurrent(approval) == true else { return }
             // SMAppService can refuse register() with "Operation not
             // permitted" when BTM already holds an entry for the same
@@ -561,7 +577,7 @@ final class AppState: ObservableObject {
     var canSetUpHelperForProbe: Bool {
         switch status {
         case .preparing, .running: return false
-        default: return probeNeedsHelper && !isAwaitingHelperApproval && !showHelperExplainer
+        default: return probeNeedsHelper && !isAwaitingHelperApproval && !showHelperExplainer && helperRemoval == nil
         }
     }
 
@@ -952,6 +968,13 @@ final class AppState: ObservableObject {
         confirmedTheme: ThemeChoice = .ventoyDefault,
         confirmedSaveThemeFrom: URL? = nil
     ) async {
+        // A Retry pressed while the last run is still removing the helper waits for that to
+        // finish. Otherwise the removal could stop the helper partway through this run.
+        if let removal = helperRemoval {
+            // Busy while waiting, so Retry and Done go away instead of looking dead.
+            status = .preparing("Removing the helper from the last run…")
+            await removal.value
+        }
         let target = confirmedTarget
         runRequestCount += 1
         lastRunRequest = RunRequest(
@@ -1342,8 +1365,65 @@ final class AppState: ObservableObject {
     /// Internal so tests can check it.
     func removeHelperIfAsked() async {
         guard uninstallHelperAfterRun else { return }
-        await helperRemover()
+        let removal = Task { @MainActor in await helperRemover() }
+        helperRemoval = removal
+        await removal.value
+        if helperRemoval == removal { helperRemoval = nil }
         helperStatus = HelperLifecycle.status
+    }
+
+    // MARK: - Clear Ventoy downloads (issue #22)
+
+    /// Seams for tests: the helper's cache (root's, so only the helper can delete it), this
+    /// account's cache, and whether the helper's cache is there at all.
+    var helperDownloadClearer: @Sendable () async throws -> UInt64 = { try await HelperInvoker.clearDownloads() }
+    var localDownloadClearer: @Sendable () throws -> UInt64 = { try VentoyDownloader.clearCache() }
+    var helperDownloadsExist: @Sendable () -> Bool = {
+        FileManager.default.fileExists(atPath: VentoyDownloader.helperCacheRoot.path)
+    }
+    /// What the last Clear Ventoy Downloads did. Drives an alert.
+    @Published var clearDownloadsReport: String?
+
+    /// Not while a drive is being written (that run may be using the cache), while the helper is
+    /// being removed, or while a sheet is open: the result alert can't show over a sheet.
+    var canClearDownloads: Bool {
+        guard helperRemoval == nil, !showHelperExplainer, !isAwaitingHelperApproval,
+              !showFullDiskAccessSheet, pendingEraseConfirmation == nil else { return false }
+        switch status {
+        case .preparing, .running: return false
+        case .idle, .success, .failed: return true
+        }
+    }
+
+    func clearVentoyDownloads() async {
+        guard canClearDownloads else { return }
+        var freed: UInt64 = 0
+        var notes: [String] = []
+        do {
+            freed += try localDownloadClearer()
+        } catch {
+            // "\(error)": DriverError's description is readable; its localizedDescription isn't.
+            notes.append("Couldn't clear the downloads in your Caches folder: \(error)")
+        }
+        // Read directly rather than through refreshHelperStatus(), which would also reset the
+        // "remove helper after this run" choice of a run waiting on approval.
+        if helperStatusSource() == .enabled {
+            do {
+                freed += try await helperDownloadClearer()
+            } catch HelperInvoker.HelperError.versionMismatch {
+                notes.append("Mactoy's helper is from another version of Mactoy, so the downloads it keeps weren't cleared. Mactoy updates the helper at the next install.")
+            } catch HelperInvoker.HelperError.xpcUnreachable {
+                notes.append("Mactoy couldn't reach its helper, so the downloads it keeps weren't cleared. They're cleared the next time Mactoy removes the helper after an install.")
+            } catch {
+                notes.append("Couldn't clear the downloads Mactoy's helper keeps: \(error.localizedDescription)")
+            }
+        } else if helperDownloadsExist() {
+            notes.append("Mactoy's helper isn't set up right now, so the downloads it keeps in /Library/Application Support/Mactoy weren't cleared. Mactoy clears them when it removes the helper after an install.")
+        }
+        let summary = freed > 0
+            ? "Cleared \(ByteCountFormatter.string(fromByteCount: Int64(clamping: freed), countStyle: .file)) of Ventoy downloads."
+            : (notes.isEmpty ? "There were no Ventoy downloads to clear." : "")
+        clearDownloadsReport = ([summary] + notes).filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
     func reset() {

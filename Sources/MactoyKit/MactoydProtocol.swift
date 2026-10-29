@@ -22,6 +22,10 @@ import Foundation
     /// is reserved for daemon-side encoding failures only.
     func probeVentoy(_ bsdName: String, reply: @escaping (_ resultData: Data?, _ errorMessage: String?) -> Void)
 
+    /// Delete the helper's Ventoy download cache (issue #22). Refused while a plan is running.
+    /// Replies with the bytes freed, or a human-readable `errorMessage`.
+    func clearDownloads(reply: @escaping (_ freedBytes: UInt64, _ errorMessage: String?) -> Void)
+
     /// Health-check. Returns the daemon's version string. Cheap way to
     /// confirm the daemon is reachable and the XPC contract matches.
     func ping(reply: @escaping (_ version: String) -> Void)
@@ -42,10 +46,9 @@ public let mactoydMachServiceName = "com.mactoy.mactoyd"
 
 /// The helper's protocol version, checked by the app before every run.
 /// Bumped when what the app sends `mactoyd` (or how it must interpret
-/// it) changes. v0.5.1, v0.6.0, v0.7.0 and v0.7.1 left the protocol alone, so it
-/// stays "0.5.0" and updating doesn't re-register the helper. (The
-/// Subprocess fixes in v0.6.0 and v0.7.0 are in the helper's code, but an
-/// older helper running with this app still does exactly what the plan
-/// says. Boot themes are written by the app, not the helper.)
-public let mactoydVersion = "0.5.0"
+/// it) changes. An app update brings its helper along, so the user isn't
+/// asked again; a mismatch means another copy of Mactoy owns the helper,
+/// and `AppState.run` re-registers this one.
+/// 0.8.0 adds `clearDownloads`. v0.5.1 to v0.7.1 left the protocol at 0.5.0.
+public let mactoydVersion = "0.8.0"
 

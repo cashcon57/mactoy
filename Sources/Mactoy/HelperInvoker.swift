@@ -117,6 +117,35 @@ enum HelperInvoker {
 }
 
 extension HelperInvoker {
+    /// Ask the helper to delete its Ventoy download cache (issue #22). Returns the bytes freed.
+    /// Checks the helper's version first: an older helper doesn't know this call.
+    static func clearDownloads() async throws -> UInt64 {
+        let connection = NSXPCConnection(machServiceName: mactoydMachServiceName, options: .privileged)
+        connection.remoteObjectInterface = NSXPCInterface(with: MactoydProtocol.self)
+        connection.resume()
+        defer { connection.invalidate() }
+
+        let daemonVersion = try await ping(connection)
+        guard daemonVersion == mactoydVersion else {
+            throw HelperError.versionMismatch(helper: daemonVersion)
+        }
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UInt64, Error>) in
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ err in
+                cont.resume(throwing: HelperError.xpcUnreachable("\(err)"))
+            }) as? MactoydProtocol else {
+                cont.resume(throwing: HelperError.xpcUnreachable("proxy unavailable"))
+                return
+            }
+            proxy.clearDownloads { freed, errMsg in
+                if let errMsg {
+                    cont.resume(throwing: HelperError.executionFailed(errMsg))
+                } else {
+                    cont.resume(returning: freed)
+                }
+            }
+        }
+    }
+
     /// Ask the daemon on `connection` for its version string.
     fileprivate static func ping(_ connection: NSXPCConnection) async throws -> String {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
