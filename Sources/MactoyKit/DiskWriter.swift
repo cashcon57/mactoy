@@ -104,6 +104,28 @@ public final class DiskWriter {
         try write(data)
     }
 
+    /// Reads `count` bytes at `offset` in one go. Raw disk devices need both to be whole
+    /// 512-byte sectors. Used to read back what was just written (#26).
+    public func readAligned(at offset: UInt64, count: Int) throws -> Data {
+        precondition(offset % SECTOR_SIZE == 0 && count % Int(SECTOR_SIZE) == 0, "readAligned needs whole sectors")
+        var out = Data(count: count)
+        try out.withUnsafeMutableBytes { (buf: UnsafeMutableRawBufferPointer) in
+            guard let base = buf.baseAddress else { return }
+            var done = 0
+            while done < count {
+                let n = pread(fd, base.advanced(by: done), count - done, off_t(offset) + off_t(done))
+                if n < 0 {
+                    throw DriverError.diskIO("read back at \(offset + UInt64(done)): \(String(cString: strerror(errno)))")
+                }
+                if n == 0 {
+                    throw DriverError.diskIO("read back at \(offset + UInt64(done)): the drive ended early")
+                }
+                done += n
+            }
+        }
+        return out
+    }
+
     public func fsync() throws {
         if Darwin.fsync(fd) != 0 {
             throw DriverError.diskIO("fsync: \(String(cString: strerror(errno)))")

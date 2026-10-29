@@ -247,7 +247,21 @@ final class AppState: ObservableObject {
     }
 
     // flash mode
-    @Published var selectedImagePath: String?
+    @Published var selectedImagePath: String? {
+        // A checksum belongs to one image.
+        didSet { if selectedImagePath != oldValue { flashChecksumInput = "" } }
+    }
+    /// The SHA-256 the user pasted or loaded for the image (#26). Empty: no check.
+    @Published var flashChecksumInput: String = ""
+    /// Read the drive back after flashing and compare (#26).
+    @Published var flashVerifyAfterWriting: Bool = true
+
+    /// The checksum to check, or nil when the field is empty or invalid.
+    var flashChecksum: String? { ImageChecksum.normalized(flashChecksumInput) }
+    /// Something is in the checksum field, but it isn't a SHA-256.
+    var flashChecksumIsInvalid: Bool {
+        !flashChecksumInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && flashChecksum == nil
+    }
 
     // helper lifecycle
     /// Takes the helper off the Mac after a run (the "remove helper after this run" choice). Seam for tests.
@@ -375,7 +389,7 @@ final class AppState: ObservableObject {
         switch mode {
         case .installVentoy: return true
         case .updateVentoy:  return detectedVentoy?.isVentoyDisk == true
-        case .flashImage:    return selectedImagePath != nil
+        case .flashImage:    return selectedImagePath != nil && !flashChecksumIsInvalid
         case .manageDisk:    return false
         }
     }
@@ -1058,7 +1072,9 @@ final class AppState: ObservableObject {
                     workDir: plan.workDir,
                     ventoyOperation: plan.ventoyOperation,
                     secureBoot: plan.secureBoot,
-                    partitionStyle: plan.partitionStyle
+                    partitionStyle: plan.partitionStyle,
+                    expectedImageSHA256: plan.expectedImageSHA256,
+                    verifyAfterWriting: plan.verifyAfterWriting
                 )
             } catch {
                 status = .failed("Failed to resolve latest Ventoy version: \(error)")
@@ -1357,7 +1373,9 @@ final class AppState: ObservableObject {
             workDir: workDir.path,
             ventoyOperation: ventoyOperation,
             secureBoot: secureBoot,
-            partitionStyle: partitionStyle
+            partitionStyle: partitionStyle,
+            expectedImageSHA256: mode == .flashImage ? flashChecksum : nil,
+            verifyAfterWriting: mode == .flashImage && flashVerifyAfterWriting
         )
     }
 

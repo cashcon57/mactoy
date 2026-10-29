@@ -101,7 +101,7 @@ struct InstallPlanValidateTests {
     func ventoyOperationDefault() {
         let p = plan(target())
         #expect(p.ventoyOperation == .freshInstall)
-        #expect(p.planVersion == 4)
+        #expect(p.planVersion == 5)
     }
 
     @Test("secureBoot defaults to true and round-trips when false")
@@ -132,6 +132,24 @@ struct InstallPlanValidateTests {
         let data = try JSONEncoder().encode(p)
         let decoded = try JSONDecoder().decode(InstallPlan.self, from: data)
         #expect(decoded.ventoyOperation == .updateInPlace)
+    }
+
+    @Test("plans from before v0.8.0 decode with no checksum and no read-back; a bad checksum fails validation")
+    func checksumFields() throws {
+        let old = try JSONEncoder().encode(plan(target()))
+        var dict = try JSONSerialization.jsonObject(with: old) as! [String: Any]
+        dict.removeValue(forKey: "expectedImageSHA256")
+        dict.removeValue(forKey: "verifyAfterWriting")
+        let decoded = try JSONDecoder().decode(InstallPlan.self, from: JSONSerialization.data(withJSONObject: dict))
+        #expect(decoded.expectedImageSHA256 == nil)
+        #expect(decoded.verifyAfterWriting == false)
+
+        let bad = InstallPlan(driver: .rawImage, target: target(), source: .localImage(path: "/x.img"), workDir: "/tmp",
+                              partitionStyle: .mbr, expectedImageSHA256: "ABC")
+        #expect(throws: PlanValidationError.self) { try bad.validate() }
+        let upper = InstallPlan(driver: .rawImage, target: target(), source: .localImage(path: "/x.img"), workDir: "/tmp",
+                                partitionStyle: .mbr, expectedImageSHA256: String(repeating: "AB", count: 32))
+        #expect(throws: PlanValidationError.self) { try upper.validate() }
     }
 
     @Test("v0.2.x plan (planVersion=1, no ventoyOperation field) decodes as .freshInstall")

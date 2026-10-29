@@ -44,6 +44,10 @@ struct FlashImagePanel: View {
                 isTargeted: $isTargeted
             )
 
+            if state.selectedImagePath != nil {
+                ImageCheckCard()
+            }
+
             if let disk = state.selectedDisk {
                 if state.isTimeMachineBackup(disk) {
                     TimeMachineBanner(disk: disk)
@@ -123,3 +127,69 @@ private struct DropZone: View {
         }
     }
 }
+
+/// The image's SHA-256, checked before the drive is erased, and the check after writing (#26).
+private struct ImageCheckCard: View {
+    @EnvironmentObject private var state: AppState
+    @State private var loadProblem: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Check the image")
+                .font(.headline)
+            HStack(spacing: 8) {
+                TextField("SHA-256 from the download page (optional)", text: $state.flashChecksumInput)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                Button("Load from File…") { loadChecksumFile() }
+            }
+            if state.flashChecksumIsInvalid {
+                Label("That isn't a SHA-256 checksum. It should be 64 characters, 0 to 9 and a to f.", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if let loadProblem {
+                Label(loadProblem, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else {
+                Text(state.flashChecksum == nil
+                     ? "If the download page lists a SHA-256, paste it here. Mactoy checks the image against it before erasing the drive."
+                     : "Mactoy checks the image against this before erasing the drive.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Toggle("Check the drive after writing", isOn: $state.flashVerifyAfterWriting)
+            Text("Reads the drive back and compares it with the image. It takes about as long as writing, and catches failing or fake drives.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .mactoyGlass(cornerRadius: 16)
+        .onChange(of: state.selectedImagePath) { _ in loadProblem = nil }
+    }
+
+    /// A `.sha256`, `SHA256SUMS` or similar file from the same download page.
+    private func loadChecksumFile() {
+        loadProblem = nil
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.message = "Choose the checksum file from the image's download page."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let data = try? Data(contentsOf: url), data.count < 1_000_000,
+              let text = String(data: data, encoding: .utf8) else {
+            loadProblem = "Mactoy couldn't read \(url.lastPathComponent) as a checksum file."
+            return
+        }
+        let image = state.selectedImagePath ?? ""
+        if let hash = ImageChecksum.sha256(for: image, in: text) {
+            state.flashChecksumInput = hash
+        } else {
+            loadProblem = "\(url.lastPathComponent) has no SHA-256 for \((image as NSString).lastPathComponent)."
+        }
+    }
+}
+

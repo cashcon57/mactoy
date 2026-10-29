@@ -203,6 +203,12 @@ public struct InstallPlan: Codable, Sendable {
     /// The initializer deliberately has no default, so no caller can
     /// silently get one style while the user chose the other.
     public let partitionStyle: VentoyPartitionStyle
+    /// Flash image only: the SHA-256 the user expects for the image file, as 64 lowercase hex
+    /// digits. The file is checked against it before the drive is erased (#26).
+    public let expectedImageSHA256: String?
+    /// Flash image only: read the drive back after writing and compare it with the image (#26).
+    /// On unless the user turns it off; plans from before v0.8.0 decode as off.
+    public let verifyAfterWriting: Bool
 
     public init(
         driver: DriverID,
@@ -212,17 +218,21 @@ public struct InstallPlan: Codable, Sendable {
         workDir: String,
         ventoyOperation: VentoyOperation = .freshInstall,
         secureBoot: Bool = true,
-        partitionStyle: VentoyPartitionStyle
+        partitionStyle: VentoyPartitionStyle,
+        expectedImageSHA256: String? = nil,
+        verifyAfterWriting: Bool = true
     ) {
         self.driver = driver
         self.target = target
         self.source = source
         self.filesystem = filesystem
         self.workDir = workDir
-        self.planVersion = 4
+        self.planVersion = 5
         self.ventoyOperation = ventoyOperation
         self.secureBoot = secureBoot
         self.partitionStyle = partitionStyle
+        self.expectedImageSHA256 = expectedImageSHA256
+        self.verifyAfterWriting = verifyAfterWriting
     }
 
     // Backwards-compat decoder: v0.2.x plans (planVersion == 1) didn't
@@ -233,6 +243,7 @@ public struct InstallPlan: Codable, Sendable {
     // a rolling upgrade.
     enum CodingKeys: String, CodingKey {
         case driver, target, source, filesystem, workDir, planVersion, ventoyOperation, secureBoot, partitionStyle
+        case expectedImageSHA256, verifyAfterWriting
     }
 
     public init(from decoder: Decoder) throws {
@@ -246,6 +257,8 @@ public struct InstallPlan: Codable, Sendable {
         self.ventoyOperation = try c.decodeIfPresent(VentoyOperation.self, forKey: .ventoyOperation) ?? .freshInstall
         self.secureBoot = try c.decodeIfPresent(Bool.self, forKey: .secureBoot) ?? true
         self.partitionStyle = try c.decodeIfPresent(VentoyPartitionStyle.self, forKey: .partitionStyle) ?? .gpt
+        self.expectedImageSHA256 = try c.decodeIfPresent(String.self, forKey: .expectedImageSHA256)
+        self.verifyAfterWriting = try c.decodeIfPresent(Bool.self, forKey: .verifyAfterWriting) ?? false
     }
 }
 
@@ -255,6 +268,7 @@ public enum PlanValidationError: Error, CustomStringConvertible {
     case nonexternalDisk
     case tooSmall(UInt64, minimum: UInt64)
     case tooLargeForMBR(UInt64)
+    case badChecksum(String)
 
     public var description: String {
         switch self {
@@ -266,6 +280,8 @@ public enum PlanValidationError: Error, CustomStringConvertible {
             return "Target disk is not external/removable"
         case .tooSmall(let got, let min):
             return "Target disk (\(got) bytes) is smaller than minimum (\(min) bytes)"
+        case .badChecksum(let got):
+            return "\"\(got)\" isn't a SHA-256 checksum (64 hexadecimal digits)."
         case .tooLargeForMBR(let got):
             return "Target disk (\(got) bytes) is larger than MBR can address (2 TiB, about 2.2 TB). Use the GPT partition style."
         }
@@ -274,6 +290,11 @@ public enum PlanValidationError: Error, CustomStringConvertible {
 
 public extension InstallPlan {
     static let minimumDiskBytes: UInt64 = 512 * 1024 * 1024
+
+    /// 64 lowercase hex digits.
+    static func isSHA256Hex(_ s: String) -> Bool {
+        s.utf8.count == 64 && s.utf8.allSatisfy { (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }
+    }
 
     /// Whole-disk node names only (`disk2`, `disk3`, ...). Slice names
     /// (`disk2s1`) and nonsense (`disk`, `diskfoo`) are rejected before
@@ -298,6 +319,9 @@ public extension InstallPlan {
         }
         guard target.sizeInBytes >= Self.minimumDiskBytes else {
             throw PlanValidationError.tooSmall(target.sizeInBytes, minimum: Self.minimumDiskBytes)
+        }
+        if let hash = expectedImageSHA256, !Self.isSHA256Hex(hash) {
+            throw PlanValidationError.badChecksum(hash)
         }
         if driver == .ventoy, ventoyOperation == .freshInstall, partitionStyle == .mbr,
            !VentoyPartitionStyle.mbrCanAddress(diskBytes: target.sizeInBytes) {
