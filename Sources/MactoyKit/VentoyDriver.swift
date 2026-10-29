@@ -265,7 +265,9 @@ public struct VentoyDriver: InstallDriver {
         do {
             return try await prepareBootImages(version: version, secureBoot: secureBoot, progress: progress)
         } catch DriverError.corruptPayload(let problem) {
-            throw DriverError.corruptPayload("\(problem) Nothing was written to the drive.")
+            // On its own line after a message that ends in a list of paths.
+            let gap = problem.contains("\n") ? "\n" : " "
+            throw DriverError.corruptPayload("\(problem)\(gap)Nothing was written to the drive.")
         }
     }
 
