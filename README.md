@@ -310,16 +310,37 @@ Mactoy/
 
 ## Roadmap
 
-| Version | Feature                                                                                            |
-| ------- | -------------------------------------------------------------------------------------------------- |
-| v0.1    | Ventoy install + raw flash + ISO library, signed + notarized, version picker, SMAppService helper  |
-| v0.2    | Universal binary (arm64 + x86_64), macOS 13.5+ support, Liquid Glass fallback                      |
-| v0.3    | Ventoy update-in-place (preserve ISOs), os.Logger diagnostics (**this release**)                   |
-| v0.4    | Homebrew cask, first-party hardware CI, SHA256 verification UI                                     |
-| v0.5    | NTFS option, per-disk exFAT label override, Sparkle auto-update                                    |
-| v0.6    | Plugin (JSON) editor, persistence `.dat` creator                                                   |
-| v1.0    | Stability pass, real-hardware Intel CI, plugin schema validation                                   |
-| v1.1+   | Windows ISO driver, macOS installer USB driver                                                     |
+What's shipped is in the [changelog](CHANGELOG.md). Everything planned is a GitHub issue, grouped into two milestones.
+
+### Path to 1.0 ([milestone](https://github.com/cashcon57/mactoy/milestone/1))
+
+1.0 is about trust: the code is tested on every change and on real drives, the known safety gaps are closed, and organisations can deploy it.
+
+**Stability and safety**
+
+- [#18](https://github.com/cashcon57/mactoy/issues/18) Run the test suite on every pull request
+- [#19](https://github.com/cashcon57/mactoy/issues/19) Test a full release on real hardware (Apple Silicon and Intel)
+- [#21](https://github.com/cashcon57/mactoy/issues/21) Close the code gaps found while writing SECURITY.md
+- [#26](https://github.com/cashcon57/mactoy/issues/26) Verify flashed images: SHA-256 check before writing and read-back after
+- [#20](https://github.com/cashcon57/mactoy/issues/20) Stream `.xz` and `.gz` images while flashing instead of loading them into memory
+- [#22](https://github.com/cashcon57/mactoy/issues/22) Leave fewer files behind
+
+**For IT admins**
+
+- [#23](https://github.com/cashcon57/mactoy/issues/23) Guide and profiles for deploying Mactoy with an MDM, plus a `.pkg`
+- [#24](https://github.com/cashcon57/mactoy/issues/24) Command-line tool
+- [#25](https://github.com/cashcon57/mactoy/issues/25) Work without internet: local Ventoy file, internal mirror, no online themes
+- [#27](https://github.com/cashcon57/mactoy/issues/27) Settings admins can lock with a configuration profile
+- [#28](https://github.com/cashcon57/mactoy/issues/28) Activity log of what was written to which drive
+
+### After 1.0 ([milestone](https://github.com/cashcon57/mactoy/milestone/2))
+
+- [#29](https://github.com/cashcon57/mactoy/issues/29) Edit more of `ventoy.json`: unattended installs, boot menu password, persistence
+- [#30](https://github.com/cashcon57/mactoy/issues/30) Scope network boot (iVentoy-style PXE)
+- [#31](https://github.com/cashcon57/mactoy/issues/31) Tell users when a new version is out (can be turned off)
+- [#3](https://github.com/cashcon57/mactoy/issues/3) macOS 12 Monterey support (help wanted)
+
+Ideas from the earlier roadmap that don't have an issue yet: NTFS for the data partition, a custom label for it, and drivers for Windows and macOS installer USBs.
 
 ## License
 
