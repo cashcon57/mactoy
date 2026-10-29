@@ -21,6 +21,7 @@ struct HelperXPCLoopbackTests {
         let dependencies: MactoydDependencies
         private let lock = NSLock()
         private var accepted: [NSXPCConnection] = []
+        private let previousFactory = HelperInvoker.makeConnection
 
         init(_ dependencies: MactoydDependencies) {
             self.dependencies = dependencies
@@ -48,9 +49,7 @@ struct HelperXPCLoopbackTests {
 
         func stop() {
             listener.invalidate()
-            HelperInvoker.makeConnection = {
-                NSXPCConnection(machServiceName: mactoydMachServiceName, options: .privileged)
-            }
+            HelperInvoker.makeConnection = previousFactory
         }
     }
 
@@ -60,6 +59,9 @@ struct HelperXPCLoopbackTests {
         private var _imageSHA: String?
         private var _imageIsRegularFile = false
         private var _started = false
+        private var _committed = false
+        var committed: Bool { lock.lock(); defer { lock.unlock() }; return _committed }
+        func commit() { lock.lock(); _committed = true; lock.unlock() }
         var imageSHA: String? { lock.lock(); defer { lock.unlock() }; return _imageSHA }
         var imageIsRegularFile: Bool { lock.lock(); defer { lock.unlock() }; return _imageIsRegularFile }
         var started: Bool { lock.lock(); defer { lock.unlock() }; return _started }
@@ -102,8 +104,10 @@ struct HelperXPCLoopbackTests {
             while Date().timeIntervalSince(start) < 10 {
                 if let commitAfter, Date().timeIntervalSince(start) > commitAfter {
                     try control.commit(RunControl.stoppedBeforeWriting)
+                    seen.commit()
                     progress.report(.init(phase: .writing, message: "Writing..."))
-                    try await Task.sleep(nanoseconds: 300_000_000)
+                    // Long enough for the test to try cancelling after the commit.
+                    try await Task.sleep(nanoseconds: 1_000_000_000)
                     return
                 }
                 try control.check(RunControl.stoppedBeforeWriting)
@@ -163,6 +167,18 @@ struct HelperXPCLoopbackTests {
                 return
             }
             proxy.executePlan(planData, image: nil) { cont.resume(returning: ($0, $1)) }
+        }
+    }
+
+    /// Polls `condition` for up to five seconds; fails the test instead of hanging.
+    private func waitFor(_ what: String, _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while !condition() {
+            guard Date() < deadline else {
+                Issue.record("timed out waiting for \(what)")
+                throw CancellationError()
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
         }
     }
 
@@ -228,7 +244,7 @@ struct HelperXPCLoopbackTests {
         let loop = Loopback(dependencies { _, _, control in WaitingDriver(control: control, seen: seen) })
         defer { loop.stop() }
         let run = Task { try await HelperInvoker.run(plan: ventoyPlan()) { _ in } }
-        while !seen.started { try await Task.sleep(nanoseconds: 10_000_000) }
+        try await waitFor("the driver to start") { seen.started }
 
         #expect(try await HelperInvoker.cancelCurrentRun())
         do {
@@ -246,8 +262,7 @@ struct HelperXPCLoopbackTests {
         let loop = Loopback(dependencies { _, _, control in WaitingDriver(control: control, seen: seen, commitAfter: 0.1) })
         defer { loop.stop() }
         let run = Task { try await HelperInvoker.run(plan: ventoyPlan()) { _ in } }
-        while !seen.started { try await Task.sleep(nanoseconds: 10_000_000) }
-        try await Task.sleep(nanoseconds: 250_000_000)
+        try await waitFor("the driver to commit") { seen.committed }
 
         #expect(try await HelperInvoker.cancelCurrentRun() == false)
         try await run.value
@@ -262,7 +277,7 @@ struct HelperXPCLoopbackTests {
         #expect(try await HelperInvoker.clearDownloads() == 20_971_520)
 
         let run = Task { try await HelperInvoker.run(plan: ventoyPlan()) { _ in } }
-        while !seen.started { try await Task.sleep(nanoseconds: 10_000_000) }
+        try await waitFor("the driver to start") { seen.started }
         do {
             _ = try await HelperInvoker.clearDownloads()
             Issue.record("expected a refusal while writing")
@@ -279,7 +294,7 @@ struct HelperXPCLoopbackTests {
         let loop = Loopback(dependencies { _, _, control in WaitingDriver(control: control, seen: seen) })
         defer { loop.stop() }
         let run = Task { try await HelperInvoker.run(plan: ventoyPlan()) { _ in } }
-        while !seen.started { try await Task.sleep(nanoseconds: 10_000_000) }
+        try await waitFor("the driver to start") { seen.started }
         loop.dropConnections()
         do {
             try await run.value

@@ -45,7 +45,7 @@ public struct VentoyDriver: InstallDriver {
             )
         }
         guard probed.isExternal || probed.isRemovable else {
-            throw DriverError.validation("Target disk \(plan.target.devicePath) is not external/removable")
+            throw DriverError.validation("\(plan.target.devicePath) isn't an external or removable drive, so Mactoy won't write to it.")
         }
         let diskSectors = probed.sectorCount
 
@@ -255,7 +255,21 @@ public struct VentoyDriver: InstallDriver {
     /// there every run, which both defeated the downloader's cache check
     /// and left the tarball plus ~23 MB of extracted files behind each
     /// time. The daemon now owns both locations.
+    /// Everything here happens before the drive is touched, so a problem with Ventoy's files
+    /// says nothing was written.
     private func loadBootImages(
+        version: String,
+        secureBoot: Bool,
+        progress: ProgressSink
+    ) async throws -> VentoyBootImages {
+        do {
+            return try await prepareBootImages(version: version, secureBoot: secureBoot, progress: progress)
+        } catch DriverError.corruptPayload(let problem) {
+            throw DriverError.corruptPayload("\(problem) Nothing was written to the drive.")
+        }
+    }
+
+    private func prepareBootImages(
         version: String,
         secureBoot: Bool,
         progress: ProgressSink
