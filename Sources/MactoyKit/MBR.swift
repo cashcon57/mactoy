@@ -19,12 +19,12 @@ public enum MBR {
     /// entries, two empty entries, and the 0x55AA signature.
     public static func build(bootImg: Data, layout: VentoyLayout) throws -> Data {
         guard bootImg.count >= 446 else {
-            throw DriverError.corruptPayload("boot.img is \(bootImg.count) bytes, expected at least 446")
+            throw DriverError.corruptPayload("Ventoy's boot.img is \(bootImg.count) bytes, smaller than the 446 Mactoy expects.")
         }
         // Same rule as `InstallPlan.validate()`, so the two can't disagree.
         guard layout.diskSectors <= VentoyPartitionStyle.mbrMaxSectors else {
             throw DriverError.validation(
-                "Disk is too large for an MBR partition table (\(layout.diskSectors) sectors). Use GPT."
+                "The drive is too large for an MBR partition table (\(layout.diskSectors) sectors). Use GPT."
             )
         }
 

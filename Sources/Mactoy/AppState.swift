@@ -1523,6 +1523,14 @@ final class AppState: ObservableObject {
     /// What the last Clear Ventoy Downloads did. Drives an alert.
     @Published var clearDownloadsReport: String?
 
+    /// A run is under way: inputs that feed a run are locked meanwhile.
+    var isRunInProgress: Bool {
+        switch status {
+        case .preparing, .running: return true
+        case .idle, .success, .failed, .cancelled: return false
+        }
+    }
+
     /// Not while a drive is being written (that run may be using the cache), while the helper is
     /// being removed, or while a sheet is open: the result alert can't show over a sheet.
     var canClearDownloads: Bool {

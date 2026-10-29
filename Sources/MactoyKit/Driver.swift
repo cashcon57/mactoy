@@ -13,7 +13,10 @@ public enum DriverError: Error, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case .validation(let m): return "Validation error: \(m)"
+        // Validation and damaged-file messages are written as sentences for the user, so they
+        // go out as they are. The others often carry a raw system message, where the prefix
+        // says what failed.
+        case .validation(let m): return m
         case .diskIO(let m):     return "Disk I/O error: \(m)"
         case .subprocess(let cmd, let code, let err):
             return "Subprocess \(cmd) failed (exit \(code)): \(err)"
@@ -21,7 +24,7 @@ public enum DriverError: Error, CustomStringConvertible {
         case .cancelled:         return "Operation cancelled"
         case .stopped(let m):    return m
         case .unsupportedSource(let m): return "Unsupported source: \(m)"
-        case .corruptPayload(let m):    return "Corrupt payload: \(m)"
+        case .corruptPayload(let m):    return m
         }
     }
 }

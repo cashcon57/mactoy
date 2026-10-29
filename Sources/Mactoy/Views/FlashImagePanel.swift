@@ -39,13 +39,16 @@ struct FlashImagePanel: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .mactoyGlass(cornerRadius: 14, tint: .red.opacity(0.22))
 
+            // Locked during a run: a Retry reads the image and these options as they are then.
             DropZone(
                 path: $state.selectedImagePath,
                 isTargeted: $isTargeted
             )
+            .disabled(state.isRunInProgress)
 
             if state.selectedImagePath != nil {
                 ImageCheckCard()
+                    .disabled(state.isRunInProgress)
             }
 
             if let disk = state.selectedDisk {
