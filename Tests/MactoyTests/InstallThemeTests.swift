@@ -25,12 +25,18 @@ fileprivate struct SaveFailure: LocalizedError {
     let errorDescription: String?
 }
 
+/// A preferences domain of its own for one test, kept in the temporary folder: a suite
+/// name that is a path puts the plist there, not in ~/Library/Preferences, where
+/// cfprefsd can write it again after the test has removed it.
 @MainActor
-fileprivate final class TempDefaults {
-    let name = "mactoy-test-\(UUID().uuidString)"
+final class TempDefaults {
+    let name = FileManager.default.temporaryDirectory.appendingPathComponent("mactoy-test-\(UUID().uuidString)").path
     let defaults: UserDefaults
     init() { defaults = UserDefaults(suiteName: name)! }
-    func remove() { defaults.removePersistentDomain(forName: name) }
+    func remove() {
+        defaults.removePersistentDomain(forName: name)
+        try? FileManager.default.removeItem(atPath: name + ".plist")
+    }
 }
 
 @MainActor
@@ -962,7 +968,7 @@ struct InstallThemeDriveProbeTests {
     }
 
     private func store() throws -> ThemeStore {
-        ThemeStore(library: ThemeLibrary(root: try tempDir().appendingPathComponent("My Themes")))
+        ThemeStore(library: ThemeLibrary(root: try tempDir().appendingPathComponent("My Themes"), discard: .delete))
     }
 
     /// `/Volumes` with a Ventoy volume in it whose ventoy.json is `json`.
@@ -1006,6 +1012,62 @@ struct InstallThemeDriveProbeTests {
         }
         // Nothing mounted at all.
         #expect(await s.savableDriveTheme(onDisk: "disk97", volumesDirectory: try tempDir(), deviceIdentifier: { _ in "disk97s2" }) == nil)
+    }
+
+    @Test("a drive using a theme that is in My Themes offers nothing, checked on disk without listing My Themes")
+    func savedThemeOnDrive() async throws {
+        let libraryRoot = try tempDir().appendingPathComponent("My Themes")
+        let root = try volumes(config: handTheme)
+        let volume = root.appendingPathComponent("Ventoy")
+        let prefs = TempDefaults()
+        defer { prefs.remove() }
+        let first = ThemeStore(library: ThemeLibrary(root: libraryRoot, discard: .delete), defaults: prefs.defaults)
+        let saved = try #require(try await first.saveDriveTheme(on: volume))
+        _ = try await first.apply(.custom(id: saved.id), to: volume)
+        let probe = { (store: ThemeStore) in
+            await store.savableDriveTheme(onDisk: "disk97", volumesDirectory: root, deviceIdentifier: { _ in "disk97s2" })
+        }
+
+        // The app starts again and nothing has listed My Themes yet.
+        let later = ThemeStore(library: ThemeLibrary(root: libraryRoot, discard: .delete), defaults: prefs.defaults)
+        #expect(await probe(later) == nil)
+        #expect(!later.hasListedLibrary)
+
+        // Deleted in Finder after it was listed: the list is out of date, the offer isn't.
+        await later.loadSavedThemes()
+        #expect(later.savedThemes.map(\.id) == [saved.id])
+        try FileManager.default.removeItem(at: libraryRoot.appendingPathComponent(saved.id))
+        #expect(await probe(later)?.name == saved.name)
+    }
+
+    @Test("on a Mac that hasn't used My Themes, a drive's saved theme is offered and My Themes isn't read")
+    func savedThemeOnDriveLibraryNotInUse() async throws {
+        let libraryRoot = try tempDir().appendingPathComponent("My Themes")
+        let root = try volumes(config: handTheme)
+        let volume = root.appendingPathComponent("Ventoy")
+        let first = ThemeStore(library: ThemeLibrary(root: libraryRoot, discard: .delete))
+        let saved = try #require(try await first.saveDriveTheme(on: volume))
+        _ = try await first.apply(.custom(id: saved.id), to: volume)
+        // No record that My Themes is in use (another Mac's drive, or preferences removed).
+        let later = ThemeStore(library: ThemeLibrary(root: libraryRoot, discard: .delete))
+        #expect(await later.savableDriveTheme(onDisk: "disk97", volumesDirectory: root, deviceIdentifier: { _ in "disk97s2" })?.name == saved.name)
+        #expect(!later.hasListedLibrary)
+        // Saving it again is harmless: the entry it came from, no second copy.
+        #expect(try await later.saveDriveTheme(on: volume) == saved)
+        #expect(later.savedThemes == [saved])
+
+        // Changed on the drive, it's a different theme: offered, and saving keeps the drive's version.
+        let onDrive = volume.appendingPathComponent("ventoy/themes/mactoy-\(saved.id)/bg.png")
+        try Data([9, 9]).write(to: onDrive)
+        let prefs = TempDefaults()
+        defer { prefs.remove() }
+        prefs.defaults.set(true, forKey: ThemeStore.libraryInUseKey)
+        let inUse = ThemeStore(library: ThemeLibrary(root: libraryRoot, discard: .delete), defaults: prefs.defaults)
+        #expect(await inUse.savableDriveTheme(onDisk: "disk97", volumesDirectory: root, deviceIdentifier: { _ in "disk97s2" })?.name == saved.name)
+        let edited = try #require(try await later.saveDriveTheme(on: volume))
+        #expect(edited.id != saved.id)
+        #expect(try Data(contentsOf: libraryRoot.appendingPathComponent(edited.id).appendingPathComponent("bg.png")) == Data([9, 9]))
+        #expect(Set(later.savedThemes.map(\.id)) == [saved.id, edited.id])
     }
 
     @Test("it reads the drive and changes nothing on it")
@@ -1236,7 +1298,7 @@ struct InstallThemeGoneTests {
         let store = ThemeStore(loader: ThemeCatalogLoader(transport: Offline(), cacheDirectory: dir.appendingPathComponent("cache"),
                                                           bundledCatalog: bundled, bundledPreviews: nil),
                                fetcher: ThemeFetcher(transport: Offline(), cacheRoot: dir.appendingPathComponent("themes"), bundledRoot: nil),
-                               library: ThemeLibrary(root: dir.appendingPathComponent("My Themes")))
+                               library: ThemeLibrary(root: dir.appendingPathComponent("My Themes"), discard: .delete))
         #expect(store.availability == available(source: .none))
 
         let choice = try await store.importCustom(from: theme)

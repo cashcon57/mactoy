@@ -57,21 +57,26 @@ struct ThemeStoreTests {
     /// and `fetcherTransport` standing in for the network.
     /// `libraryRoot` is where My Themes lives; tests never touch the real one.
     private func makeStore(bundledIDs: [String], loaderTransport: any ThemeTransport,
-                           fetcherTransport: any ThemeTransport, libraryRoot: URL? = nil) throws -> ThemeStore {
+                           fetcherTransport: any ThemeTransport, libraryRoot: URL? = nil,
+                           legacyRoot: URL? = nil, defaults: UserDefaults? = nil) throws -> ThemeStore {
         let dir = try tempDir()
         let bundled = dir.appendingPathComponent("bundled.json")
         try catalogData(bundledIDs).write(to: bundled)
         let loader = ThemeCatalogLoader(transport: loaderTransport, cacheDirectory: dir.appendingPathComponent("cache"),
                                         bundledCatalog: bundled, bundledPreviews: nil)
         let fetcher = ThemeFetcher(transport: fetcherTransport, cacheRoot: dir.appendingPathComponent("themes"), bundledRoot: nil)
-        return ThemeStore(loader: loader, fetcher: fetcher, library: ThemeLibrary(root: libraryRoot ?? dir.appendingPathComponent("My Themes")))
+        return ThemeStore(loader: loader, fetcher: fetcher, library: ThemeLibrary(root: libraryRoot ?? dir.appendingPathComponent("My Themes"), discard: .delete),
+                          legacyLibraryRoot: legacyRoot, defaults: defaults)
     }
 
     /// A store with no network at all and its own empty library.
-    private func offlineStore(bundledIDs: [String] = [], libraryRoot: URL? = nil) async throws -> ThemeStore {
+    /// `defaults` stands for the app's preferences, shared by stores that model a relaunch.
+    private func offlineStore(bundledIDs: [String] = [], libraryRoot: URL? = nil,
+                              legacyRoot: URL? = nil, defaults: UserDefaults? = nil) async throws -> ThemeStore {
         let offline = GatedTransport()
         await offline.open()
-        return try makeStore(bundledIDs: bundledIDs, loaderTransport: offline, fetcherTransport: offline, libraryRoot: libraryRoot)
+        return try makeStore(bundledIDs: bundledIDs, loaderTransport: offline, fetcherTransport: offline, libraryRoot: libraryRoot,
+                             legacyRoot: legacyRoot, defaults: defaults)
     }
 
     /// A theme folder like one a user picks: a theme file that names a picture, the picture, a font, and files that mustn't be kept.
@@ -170,7 +175,9 @@ struct ThemeStoreTests {
     @Test("a theme added from a file is still there for a store started later")
     func importPersists() async throws {
         let libraryRoot = try tempDir().appendingPathComponent("My Themes")
-        let store = try await offlineStore(libraryRoot: libraryRoot)
+        let prefs = TempDefaults()
+        defer { prefs.remove() }
+        let store = try await offlineStore(libraryRoot: libraryRoot, defaults: prefs.defaults)
         let choice = try await store.importCustom(from: themeFolder())
         guard case .custom(let id) = choice else { Issue.record("expected a saved theme, got \(choice)"); return }
         #expect(store.savedThemes.map(\.id) == [id])
@@ -178,12 +185,106 @@ struct ThemeStoreTests {
         #expect(store.savedThemes[0].origin == "Added from a file")
         #expect(store.displayName(for: choice) == "Night Sky")
 
-        // The app starts again: nothing in memory, the same folder on disk.
-        let later = try await offlineStore(libraryRoot: libraryRoot)
+        // The app starts again: nothing in memory, the same folder and preferences on disk.
+        let later = try await offlineStore(libraryRoot: libraryRoot, defaults: prefs.defaults)
         #expect(later.savedThemes.isEmpty)
         await later.load()
         #expect(later.savedThemes == store.savedThemes)
         #expect(later.displayName(for: choice) == "Night Sky")
+    }
+
+    @Test("My Themes isn't read at launch until themes are in use, and then it is on every launch")
+    func libraryReadOnlyWhenInUse() async throws {
+        let libraryRoot = try tempDir().appendingPathComponent("My Themes")
+        let saved = try ThemeLibrary(root: libraryRoot, discard: .delete).save(folder: themeFolder(), name: "Night Sky",
+                                                             settings: .init(file: "theme.txt"), origin: "Added from a file")
+        let prefs = TempDefaults()
+        defer { prefs.remove() }
+
+        // As after removing Mactoy's preferences: the folder is there, but nothing says it is in use.
+        let first = try await offlineStore(libraryRoot: libraryRoot, defaults: prefs.defaults)
+        await first.load()
+        #expect(first.savedThemes.isEmpty)
+        #expect(!first.hasListedLibrary)
+        #expect(!prefs.defaults.bool(forKey: ThemeStore.libraryInUseKey))
+
+        // Opening the picker reads it, once.
+        await first.loadSavedThemesIfNeeded()
+        #expect(first.savedThemes.map(\.id) == [saved.id])
+        #expect(prefs.defaults.bool(forKey: ThemeStore.libraryInUseKey))
+
+        let later = try await offlineStore(libraryRoot: libraryRoot, defaults: prefs.defaults)
+        await later.load()
+        #expect(later.savedThemes.map(\.id) == [saved.id])
+    }
+
+    @Test("a My Themes folder macOS won't let Mactoy read is reported, not shown as empty")
+    func libraryUnreadable() async throws {
+        let libraryRoot = try tempDir().appendingPathComponent("My Themes")
+        try ThemeLibrary(root: libraryRoot, discard: .delete).save(folder: themeFolder(), name: "Night Sky",
+                                                                   settings: .init(file: "theme.txt"), origin: "Added from a file")
+        let store = try await offlineStore(libraryRoot: libraryRoot)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: libraryRoot.path)
+        await store.loadSavedThemes()
+        #expect(store.savedThemes.isEmpty && store.libraryUnreadable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: libraryRoot.path)
+        await store.loadSavedThemes()
+        #expect(store.savedThemes.count == 1 && !store.libraryUnreadable)
+    }
+
+    @Test("an empty My Themes doesn't count as in use")
+    func emptyLibraryNotInUse() async throws {
+        let prefs = TempDefaults()
+        defer { prefs.remove() }
+        let store = try await offlineStore(defaults: prefs.defaults)
+        await store.loadSavedThemesIfNeeded()
+        #expect(store.hasListedLibrary)
+        #expect(!prefs.defaults.bool(forKey: ThemeStore.libraryInUseKey))
+    }
+
+    @Test("themes from the old library move at launch, show up, and leave no old folder behind")
+    func legacyThemesMove() async throws {
+        let support = try tempDir()
+        let legacy = support.appendingPathComponent("Mactoy/My Themes")
+        let old = try ThemeLibrary(root: legacy, discard: .delete).save(folder: themeFolder(), name: "Night Sky",
+                                                      settings: .init(file: "theme.txt"), origin: "Added from a file")
+        let libraryRoot = try tempDir().appendingPathComponent("Mactoy Themes")
+        let prefs = TempDefaults()
+        defer { prefs.remove() }
+
+        let store = try await offlineStore(libraryRoot: libraryRoot, legacyRoot: legacy, defaults: prefs.defaults)
+        await store.load()
+
+        #expect(store.savedThemes == [old])
+        #expect(prefs.defaults.bool(forKey: ThemeStore.libraryInUseKey))
+        #expect(!FileManager.default.fileExists(atPath: support.appendingPathComponent("Mactoy").path))
+        #expect(store.libraryFolder == libraryRoot)
+    }
+
+    @Test("old themes that couldn't be moved are named, so the picker can warn")
+    func legacyThemesStuck() async throws {
+        let legacy = try tempDir().appendingPathComponent("Mactoy/My Themes")
+        let old = try ThemeLibrary(root: legacy, discard: .delete).save(folder: themeFolder(), name: "Night Sky",
+                                                      settings: .init(file: "theme.txt"), origin: "Added from a file")
+        let libraryRoot = try tempDir().appendingPathComponent("Mactoy Themes")
+        // Something else already has the theme's name in the new folder.
+        try FileManager.default.createDirectory(at: libraryRoot.appendingPathComponent(old.id), withIntermediateDirectories: true)
+        let store = try await offlineStore(libraryRoot: libraryRoot, legacyRoot: legacy)
+        await store.load()
+        #expect(store.legacyThemesNotMoved == [old.id])
+        #expect(store.legacyLibraryFolder == legacy)
+        #expect(ThemeLibrary(root: legacy, discard: .delete).list() == [old])
+    }
+
+    @Test("with nothing in the old library, launch doesn't make the new folder")
+    func noLegacyNoFolder() async throws {
+        let support = try tempDir()
+        let legacy = support.appendingPathComponent("Mactoy/My Themes")
+        let libraryRoot = try tempDir().appendingPathComponent("Mactoy Themes")
+        let store = try await offlineStore(libraryRoot: libraryRoot, legacyRoot: legacy)
+        await store.load()
+        #expect(!FileManager.default.fileExists(atPath: libraryRoot.path))
+        #expect(!store.hasListedLibrary)
     }
 
     @Test("importing the same theme twice keeps one entry; an import leaves only the library behind")
@@ -395,7 +496,9 @@ struct ThemeStoreTests {
     @Test("a theme is removed from My Themes and stays removed")
     func removeSaved() async throws {
         let libraryRoot = try tempDir().appendingPathComponent("My Themes")
-        let store = try await offlineStore(libraryRoot: libraryRoot)
+        let prefs = TempDefaults()
+        defer { prefs.remove() }
+        let store = try await offlineStore(libraryRoot: libraryRoot, defaults: prefs.defaults)
         guard case .custom(let keep) = try await store.importCustom(from: themeFolder(name: "Keep", background: pngData())),
               case .custom(let drop) = try await store.importCustom(from: themeFolder(name: "Drop", background: pngData()))
         else { Issue.record("not saved themes"); return }
@@ -403,7 +506,7 @@ struct ThemeStoreTests {
         try await store.removeSaved(id: drop)
         #expect(store.savedThemes.map(\.id) == [keep])
         #expect(store.customPreviews[drop] == nil && store.customPreviews[keep] != nil)
-        let later = try await offlineStore(libraryRoot: libraryRoot)
+        let later = try await offlineStore(libraryRoot: libraryRoot, defaults: prefs.defaults)
         await later.load()
         #expect(later.savedThemes.map(\.id) == [keep])
         await #expect(throws: ThemeLibraryError.notInLibrary("../keep")) { try await store.removeSaved(id: "../keep") }
@@ -437,8 +540,19 @@ struct ThemeStoreTests {
         let choice = try await store.importCustom(from: themeFolder())
         guard case .custom(let id) = choice else { Issue.record("not a saved theme"); return }
         #expect(!store.isSavable(driveTheme(managedID: id)), "already in My Themes")
-        try await store.removeSaved(id: id)
+        // This stand-in's files aren't the entry's, as if changed on the drive, so the decision
+        // offers it. An unchanged copy on a real drive layout: InstallThemeDriveProbeTests.
+        #expect(await store.isSavableNow(driveTheme(managedID: id)))
+        // Deleted in Finder: the list still has it, the decision doesn't.
+        try FileManager.default.removeItem(at: store.libraryFolder.appendingPathComponent(id))
+        #expect(!store.isSavable(driveTheme(managedID: id)))
+        #expect(await store.isSavableNow(driveTheme(managedID: id)))
+        await store.loadSavedThemes()
         #expect(store.isSavable(driveTheme(managedID: id)))
+        // The rest decide as `isSavable` does.
+        #expect(!(await store.isSavableNow(driveTheme(managedID: "from-catalog"))))
+        #expect(await store.isSavableNow(driveTheme(managedID: nil)))
+        #expect(!(await store.isSavableNow(nil)))
     }
 
     // MARK: Ventoy default picture
@@ -458,7 +572,7 @@ struct ThemeStoreTests {
         let loader = ThemeCatalogLoader(transport: offline, cacheDirectory: dir.appendingPathComponent("cache"),
                                         bundledCatalog: nil, bundledPreviews: previews)
         return ThemeStore(loader: loader, fetcher: ThemeFetcher(transport: offline, cacheRoot: dir.appendingPathComponent("themes"), bundledRoot: nil),
-                          library: ThemeLibrary(root: dir.appendingPathComponent("My Themes")))
+                          library: ThemeLibrary(root: dir.appendingPathComponent("My Themes"), discard: .delete))
     }
 
     @Test("the Ventoy default tile gets the bundled picture, once, with no network")
@@ -753,7 +867,7 @@ struct ThemeStoreTests {
         let store = ThemeStore(loader: ThemeCatalogLoader(transport: offline, cacheDirectory: dir.appendingPathComponent("cache"),
                                                           bundledCatalog: bundled, bundledPreviews: nil),
                                fetcher: ThemeFetcher(transport: fetcherTransport, cacheRoot: cache, bundledRoot: nil),
-                               library: ThemeLibrary(root: dir.appendingPathComponent("My Themes")))
+                               library: ThemeLibrary(root: dir.appendingPathComponent("My Themes"), discard: .delete))
         await store.load()
         #expect(store.catalog.map(\.id) == ["fetched-theme"])
         return (store, cache)
@@ -1022,7 +1136,7 @@ struct ThemeStoreTests {
         let store = ThemeStore(loader: ThemeCatalogLoader(transport: list, cacheDirectory: dir.appendingPathComponent("cache"),
                                                           bundledCatalog: bundled, bundledPreviews: nil),
                                fetcher: ThemeFetcher(transport: ScriptedTransport(), cacheRoot: dir.appendingPathComponent("themes"), bundledRoot: nil),
-                               library: ThemeLibrary(root: dir.appendingPathComponent("My Themes")))
+                               library: ThemeLibrary(root: dir.appendingPathComponent("My Themes"), discard: .delete))
         await store.load()
         #expect(store.displayName(for: .catalog(id: "tela")) == "Tela")
         // The online list arrives without it.

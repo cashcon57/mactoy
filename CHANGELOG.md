@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.7.1] — 2026-10-29
+
+My Themes moves to your Documents folder.
+
+### Changed
+
+- **My Themes is now a "Mactoy Themes" folder in Documents.** v0.7.0 kept it inside Mactoy's Application Support folder, which is the kind of folder a full uninstall (`brew uninstall --zap`, or an uninstaller app) deletes, and some themes in it may be the only copy left of a drive's old theme. In Documents they're yours to keep, back up or delete, and removing Mactoy leaves them alone.
+  - Themes from v0.7.0 move there the first time this version starts. Only whole themes are moved; anything else in the old folder is left where it was, and the old folders are removed once empty. If a theme can't be moved (macOS refused access to Documents, say), the picker says so and shows where it still is.
+  - The folder is made when you first save or import a theme. Mactoy doesn't look in Documents until you've used themes, so macOS doesn't ask about access to Documents when you first open the app. Until then, the picker's My Themes section has a **Show My Themes** button.
+  - The picker's My Themes section says where the folder is and has **Show in Finder**. If macOS won't let Mactoy open the folder, it says so instead of showing an empty list.
+  - **Remove from My Themes** now moves the theme to the Trash, since you may have changed files in it.
+
+### Fixed
+
+- Saving a drive's theme that came from My Themes, when it's unchanged and still in My Themes, no longer adds a second copy. Mactoy adds a screen-size setting when it puts a theme on a drive, which made the drive's copy look like a different theme.
+- Before replacing a drive's theme or erasing the drive, Mactoy checks My Themes on disk, not the list it read earlier, and compares it with the drive's copy. A theme deleted in Finder in the meantime, or changed on the drive, is still offered a save.
+- Tests no longer leave empty `mactoy-test-*.plist` files in `~/Library/Preferences`.
+- The app is 0.7.1 (build 16). The helper didn't change.
+
 ## [0.7.0] — 2026-10-28
 
 Boot menu themes, and a new app icon.

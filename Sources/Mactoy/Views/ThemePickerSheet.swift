@@ -40,6 +40,13 @@ struct ThemePickerSheet: View {
                         // My Themes sits below the catalog, so what was just added or opened has to be brought into view.
                         .onAppear { proxy.scrollTo(selection) }
                         .onChange(of: selection) { proxy.scrollTo($0) }
+                        // My Themes is in Documents, where macOS can ask about access, so it is only
+                        // read here once it is in use. Otherwise the user asks for it (`myThemesHeader`).
+                        .task {
+                            guard themes.libraryInUse else { return }
+                            await themes.loadSavedThemesIfNeeded()
+                            proxy.scrollTo(selection)
+                        }
                 }
                 .frame(minWidth: 420)
                 ThemeDetail(selection: selection, isImporting: isImporting, onAddFromFile: addFromFile) { pendingRemoval = $0 }
@@ -54,7 +61,7 @@ struct ThemePickerSheet: View {
                 Button("Remove", role: .destructive) { remove(saved) }
                 Button("Cancel", role: .cancel) {}
             } message: { _ in
-                Text("Drives that already use it keep it.")
+                Text("It moves to the Trash. Drives that already use it keep it.")
             }
             HStack {
                 Button("Add Theme from File…") { addFromFile() }
@@ -104,8 +111,8 @@ struct ThemePickerSheet: View {
                         .task { await themes.loadPreview(for: entry) }
                 }
             }
+            myThemesHeader
             if !themes.savedThemes.isEmpty {
-                Text("My Themes").font(.headline)
                 LazyVGrid(columns: Self.columns, spacing: 12) {
                     ForEach(themes.savedThemes) { saved in
                         ThemeTile(title: saved.name, subtitle: saved.origin, image: themes.customPreviews[saved.id],
@@ -116,6 +123,51 @@ struct ThemePickerSheet: View {
                             .contextMenu { Button("Remove from My Themes") { pendingRemoval = saved } }
                     }
                 }
+            }
+        }
+    }
+
+    @ViewBuilder private var myThemesHeader: some View {
+        let folder = "Documents › \(themes.libraryFolder.lastPathComponent)"
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("My Themes").font(.headline)
+                if !themes.savedThemes.isEmpty {
+                    Text("In \(folder)").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if !themes.savedThemes.isEmpty {
+                    Button("Show in Finder") { NSWorkspace.shared.open(themes.libraryFolder) }
+                        .controlSize(.small)
+                } else if !themes.hasListedLibrary {
+                    Button("Show My Themes") { Task { await themes.loadSavedThemes() } }
+                        .controlSize(.small)
+                }
+            }
+            if themes.libraryUnreadable {
+                Label("Mactoy isn't allowed to open \(folder). Allow Mactoy to use your Documents folder in System Settings › Privacy & Security › Files and Folders, then click Show My Themes.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Show My Themes") { Task { await themes.loadSavedThemes() } }
+                    .controlSize(.small)
+            } else if themes.savedThemes.isEmpty {
+                Text("Themes you add, or save from a drive, are kept in \(folder).")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        if let legacy = themes.legacyLibraryFolder, !themes.legacyThemesNotMoved.isEmpty {
+            let count = themes.legacyThemesNotMoved.count
+            VStack(alignment: .leading, spacing: 4) {
+                Label(count == 1 ? "A saved theme from an older Mactoy couldn't be moved to \(folder)."
+                                 : "\(count) saved themes from an older Mactoy couldn't be moved to \(folder).",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                Text("\(count == 1 ? "It's" : "They're") still in Mactoy's Application Support folder, which uninstalling Mactoy can delete. If macOS asked about your Documents folder, allow Mactoy in System Settings › Privacy & Security › Files and Folders and open Mactoy again. Otherwise, copy \(count == 1 ? "it" : "them") somewhere safe from the old folder.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Show Old Folder") { NSWorkspace.shared.open(legacy) }
+                    .controlSize(.small)
             }
         }
     }

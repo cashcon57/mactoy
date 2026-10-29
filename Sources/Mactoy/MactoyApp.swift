@@ -1,4 +1,5 @@
 import SwiftUI
+import MactoyKit
 import os
 
 private let appLog = Logger(subsystem: "com.mactoy", category: "lifecycle")
@@ -6,7 +7,7 @@ private let appLog = Logger(subsystem: "com.mactoy", category: "lifecycle")
 @main
 struct MactoyApp: App {
     @StateObject private var appState = AppState()
-    @StateObject private var themeStore = ThemeStore()
+    @StateObject private var themeStore = ThemeStore(legacyLibraryRoot: ThemeLibrary.legacyRoot(), defaults: .standard)
 
     init() {
         let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"

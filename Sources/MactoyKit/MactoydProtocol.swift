@@ -42,7 +42,7 @@ public let mactoydMachServiceName = "com.mactoy.mactoyd"
 
 /// The helper's protocol version, checked by the app before every run.
 /// Bumped when what the app sends `mactoyd` (or how it must interpret
-/// it) changes. v0.5.1, v0.6.0 and v0.7.0 left the protocol alone, so it
+/// it) changes. v0.5.1, v0.6.0, v0.7.0 and v0.7.1 left the protocol alone, so it
 /// stays "0.5.0" and updating doesn't re-register the helper. (The
 /// Subprocess fixes in v0.6.0 and v0.7.0 are in the helper's code, but an
 /// older helper running with this app still does exactly what the plan

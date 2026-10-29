@@ -30,7 +30,7 @@ struct ThemeLibraryTests {
         return dir
     }
 
-    private func library() throws -> ThemeLibrary { ThemeLibrary(root: try tempDir("root").appendingPathComponent("My Themes")) }
+    private func library() throws -> ThemeLibrary { ThemeLibrary(root: try tempDir("root").appendingPathComponent("My Themes"), discard: .delete) }
     private let settings = ThemeEntry.Settings(file: "theme.txt", fonts: ["font.pf2"])
 
     private func listing(_ url: URL) -> [String] {
@@ -368,10 +368,202 @@ struct ThemeLibraryTests {
         #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) != nil, "the link itself is still there")
     }
 
-    @Test("the default library is under Application Support, in Mactoy's own folder")
+    @Test("the default library is in Documents, where it outlives Mactoy; the old one was in Application Support")
     func defaultRoot() {
-        let path = ThemeLibrary.defaultRoot().path
-        #expect(path.hasSuffix("/Library/Application Support/Mactoy/My Themes"))
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        #expect(ThemeLibrary.defaultRoot().path == home + "/Documents/Mactoy Themes")
         #expect(ThemeLibrary().root == ThemeLibrary.defaultRoot())
+        #expect(ThemeLibrary.legacyRoot().path == home + "/Library/Application Support/Mactoy/My Themes")
+    }
+
+    // MARK: moving from the old library
+
+    /// `<temp>/Mactoy/My Themes` with the given themes saved in it, laid out like v0.7.0's.
+    private func oldLibrary(themes: [String]) throws -> ThemeLibrary {
+        let lib = ThemeLibrary(root: try tempDir("support").appendingPathComponent("Mactoy/My Themes"), discard: .delete)
+        for name in themes { try lib.save(folder: themeFolder(), name: name, settings: settings, origin: "Added from a file") }
+        if themes.isEmpty { try FileManager.default.createDirectory(at: lib.root, withIntermediateDirectories: true) }
+        return lib
+    }
+
+    private func exists(_ url: URL) -> Bool { ThemeInstaller.fileType(url) != nil }
+
+    @Test("every theme moves with its files and description, and the emptied old folders go")
+    func movesThemes() throws {
+        let old = try oldLibrary(themes: ["Night Sky", "Dawn"])
+        let before = old.list()
+        let files = before.map { listing(old.directory(for: $0)) }
+        let new = try library()
+        let parent = old.root.deletingLastPathComponent()
+
+        let result = new.moveThemes(from: old.root, thenRemoveIfEmpty: parent)
+
+        #expect(Set(result.moved) == Set(before.map(\.id)))
+        #expect(result.leftBehind.isEmpty && result.notMoved.isEmpty)
+        #expect(new.list() == before, "same ids, names, settings, origins and dates")
+        #expect(new.list().map { listing(new.directory(for: $0)) } == files)
+        #expect(!exists(old.root))
+        #expect(!exists(parent))
+        #expect(names(new.root).allSatisfy { !$0.hasPrefix(".staging-") })
+    }
+
+    @Test("anything that isn't a whole theme stays where it was, and so do the folders holding it")
+    func leavesTheRest() throws {
+        let old = try oldLibrary(themes: ["Night Sky"])
+        let fm = FileManager.default
+        let parent = old.root.deletingLastPathComponent()
+        // A note of the user's, a folder with no description, a theme missing its files, and a link.
+        try Data("mine".utf8).write(to: old.root.appendingPathComponent("notes.txt"))
+        try fm.createDirectory(at: old.root.appendingPathComponent("custom-bare-12345678"), withIntermediateDirectories: true)
+        let broken = try oldLibrary(themes: ["Broken"])
+        let brokenTheme = try #require(broken.list().first)
+        try fm.removeItem(at: broken.directory(for: brokenTheme).appendingPathComponent("theme.txt"))
+        try fm.moveItem(at: broken.directory(for: brokenTheme), to: old.root.appendingPathComponent(brokenTheme.id))
+        let away = try tempDir("away")
+        try fm.createSymbolicLink(at: old.root.appendingPathComponent("custom-link-12345678"), withDestinationURL: away)
+        try Data("other app".utf8).write(to: parent.appendingPathComponent("other.txt"))
+
+        let new = try library()
+        let result = new.moveThemes(from: old.root, thenRemoveIfEmpty: parent)
+
+        #expect(result.moved.count == 1)
+        #expect(result.notMoved.isEmpty, "a theme missing its files isn't a whole theme")
+        #expect(result.leftBehind == [brokenTheme.id, "custom-bare-12345678", "custom-link-12345678", "notes.txt"].sorted())
+        #expect(names(old.root) == [brokenTheme.id, "custom-bare-12345678", "custom-link-12345678", "notes.txt"].sorted())
+        #expect(listing(old.root.appendingPathComponent(brokenTheme.id)) == [".mactoy-library.json", "bg.png", "font.pf2", "icons/a.png"])
+        #expect(exists(parent.appendingPathComponent("other.txt")))
+        #expect(new.list().count == 1)
+    }
+
+    @Test("a folder that held only the old library stays when something else is in it")
+    func keepsParentWithOtherThings() throws {
+        let old = try oldLibrary(themes: ["Night Sky"])
+        let parent = old.root.deletingLastPathComponent()
+        try Data("x".utf8).write(to: parent.appendingPathComponent("other.txt"))
+        let result = try library().moveThemes(from: old.root, thenRemoveIfEmpty: parent)
+        #expect(result.moved.count == 1)
+        #expect(!exists(old.root))
+        #expect(names(parent) == ["other.txt"])
+    }
+
+    @Test("a theme already in the new library is the same theme, so the old copy goes")
+    func sameThemeInBoth() throws {
+        let old = try oldLibrary(themes: ["Night Sky"])
+        let new = try library()
+        let here = try new.save(folder: themeFolder(), name: "Night Sky", settings: settings, origin: "Added from a file")
+        #expect(old.list().map(\.id) == [here.id], "same files and settings give the same id")
+
+        let result = new.moveThemes(from: old.root)
+
+        #expect(result.moved == [here.id])
+        #expect(!exists(old.root))
+        #expect(new.list().map(\.id) == [here.id])
+    }
+
+    @Test("something else under the theme's name in the new library is left alone, and so is the theme")
+    func destinationTaken() throws {
+        let old = try oldLibrary(themes: ["Night Sky"])
+        let id = try #require(old.list().first?.id)
+        let new = try library()
+        let taken = new.root.appendingPathComponent(id)
+        try FileManager.default.createDirectory(at: taken, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: taken.appendingPathComponent("keep.txt"))
+
+        let result = new.moveThemes(from: old.root)
+
+        #expect(result.notMoved == [id])
+        #expect(result.leftBehind.isEmpty)
+        #expect(listing(taken) == ["keep.txt"])
+        #expect(old.list().map(\.id) == [id])
+    }
+
+    @Test("Mactoy's half-saved leftovers and Finder's .DS_Store go; a link named like a leftover doesn't")
+    func removesLeftovers() throws {
+        let old = try oldLibrary(themes: [])
+        let fm = FileManager.default
+        let staging = old.root.appendingPathComponent(".staging-ABC")
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Data([1]).write(to: staging.appendingPathComponent("bg.png"))
+        try Data([1]).write(to: old.root.appendingPathComponent(".DS_Store"))
+        let away = try tempDir("away")
+        try Data("keep".utf8).write(to: away.appendingPathComponent("keep.txt"))
+        try fm.createSymbolicLink(at: old.root.appendingPathComponent(".staging-LINK"), withDestinationURL: away)
+
+        let new = try library()
+        let result = new.moveThemes(from: old.root)
+
+        #expect(result == ThemeLibrary.MoveResult())
+        #expect(names(old.root) == [".staging-LINK"])
+        #expect(listing(away) == ["keep.txt"])
+        #expect(!exists(new.root), "no theme to move, so the new folder isn't touched")
+    }
+
+    @Test("no old library, or one with no themes, leaves the new folder untouched")
+    func nothingToMove() throws {
+        let new = try library()
+        let missing = try tempDir("support").appendingPathComponent("Mactoy/My Themes")
+        #expect(new.moveThemes(from: missing) == ThemeLibrary.MoveResult())
+        let empty = try oldLibrary(themes: [])
+        let parent = empty.root.deletingLastPathComponent()
+        #expect(new.moveThemes(from: empty.root, thenRemoveIfEmpty: parent) == ThemeLibrary.MoveResult())
+        #expect(!exists(new.root))
+        #expect(!exists(empty.root) && !exists(parent), "an empty old library is still tidied away")
+    }
+
+    @Test("a new library that can't be written keeps every theme in the old one")
+    func newLibraryUnwritable() throws {
+        let old = try oldLibrary(themes: ["Night Sky", "Dawn"])
+        let ids = old.list().map(\.id).sorted()
+        // Stands in for macOS refusing access to Documents: the new folder can't be made.
+        let locked = try tempDir("locked")
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: locked.path) }
+        let new = ThemeLibrary(root: locked.appendingPathComponent("Mactoy Themes"), discard: .delete)
+
+        let result = new.moveThemes(from: old.root, thenRemoveIfEmpty: old.root.deletingLastPathComponent())
+
+        #expect(result.notMoved == ids)
+        #expect(result.moved.isEmpty)
+        #expect(old.list().map(\.id).sorted() == ids)
+        #expect(old.list().allSatisfy { listing(old.directory(for: $0)) == [".mactoy-library.json", "bg.png", "font.pf2", "icons/a.png", "theme.txt"] })
+    }
+
+    @Test("themes the library lets go of go to the Trash unless told otherwise")
+    func discardsToTrashByDefault() {
+        #expect(ThemeLibrary().discard == .trash)
+        #expect(ThemeLibrary(root: URL(fileURLWithPath: "/nowhere")).discard == .trash)
+    }
+
+    @Test("a folder macOS won't let Mactoy read is told apart from an empty or missing one")
+    func unreadable() throws {
+        let lib = try library()
+        #expect(!lib.isUnreadable(), "missing")
+        try lib.save(folder: themeFolder(), name: "Night Sky", settings: settings, origin: "Added from a file")
+        #expect(!lib.isUnreadable())
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: lib.root.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: lib.root.path) }
+        #expect(lib.list().isEmpty)
+        #expect(lib.isUnreadable())
+    }
+
+    @Test("the id a save would give is worked out without writing to the library")
+    func idIfSaving() throws {
+        let lib = try library()
+        let folder = try themeFolder()
+        let id = try ThemeLibrary.id(ifSaving: folder, name: "Night Sky", settings: settings)
+        #expect(!exists(lib.root))
+        #expect(try lib.save(folder: folder, name: "Night Sky", settings: settings, origin: "Added from a file").id == id)
+        #expect(try ThemeLibrary.id(ifSaving: folder, name: "Night Sky", settings: .init(file: "theme.txt", gfxmode: "1024x768")) != id)
+    }
+
+    @Test("an old library that is a link is never read through")
+    func oldRootIsALink() throws {
+        let real = try oldLibrary(themes: ["Night Sky"])
+        let link = try tempDir("support").appendingPathComponent("My Themes")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real.root)
+        let new = try library()
+        #expect(new.moveThemes(from: link) == ThemeLibrary.MoveResult())
+        #expect(real.list().count == 1)
+        #expect(!exists(new.root))
     }
 }
