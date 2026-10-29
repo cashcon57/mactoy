@@ -59,7 +59,7 @@ public struct VentoyBootImages: Sendable {
         }
         let tried = candidates.map { "  - \(dir.appending(path: $0).path)" }.joined(separator: "\n")
         throw DriverError.corruptPayload(
-            "missing \(displayName); looked in:\n\(tried)"
+            "The Ventoy files are missing \(displayName). Mactoy looked in:\n\(tried)"
         )
     }
 }

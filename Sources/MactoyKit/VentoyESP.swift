@@ -65,7 +65,7 @@ public enum VentoyESP {
         let image = image.startIndex == 0 ? image : Data(image)
         return try FAT16Reader { offset, length in
             guard offset <= UInt64(image.count), length >= 0, Int(offset) + length <= image.count else {
-                throw DriverError.corruptPayload("VTOYEFI image: read past end (\(offset)+\(length) of \(image.count))")
+                throw DriverError.corruptPayload("Ventoy's VTOYEFI image is shorter than its own file table says (\(offset)+\(length) of \(image.count) bytes).")
             }
             return image.subdata(in: Int(offset)..<(Int(offset) + length))
         }
@@ -96,7 +96,7 @@ public enum VentoyESP {
         for arch in arches {
             guard let real = boot.entry(named: arch.realName) else {
                 if arch.required {
-                    throw DriverError.corruptPayload("VTOYEFI image: \(arch.realName) vanished mid-conversion")
+                    throw DriverError.corruptPayload("Ventoy's VTOYEFI image lost \(arch.realName) while Mactoy was converting it.")
                 }
                 continue
             }
@@ -134,13 +134,13 @@ public enum VentoyESP {
     private static func verifyPlainLayout(image: Data, against original: Data, reader before: FAT16Reader) throws {
         let after = try makeReader(over: image)
         guard try !isSecureBootLayout(after) else {
-            throw DriverError.corruptPayload("VTOYEFI conversion failed: grubx64_real.efi is still present")
+            throw DriverError.corruptPayload("Turning off Secure Boot support didn't work: grubx64_real.efi is still in the VTOYEFI image.")
         }
         for arch in arches {
             guard let expected = try? before.readFile(at: "\(bootDir)/\(arch.realName)") else { continue }
             let got = try after.readFile(at: "\(bootDir)/\(arch.bootName)")
             guard got == expected else {
-                throw DriverError.corruptPayload("VTOYEFI conversion failed: \(arch.bootName) doesn't match \(arch.realName)")
+                throw DriverError.corruptPayload("Turning off Secure Boot support didn't work: \(arch.bootName) doesn't match \(arch.realName) in the VTOYEFI image.")
             }
         }
     }

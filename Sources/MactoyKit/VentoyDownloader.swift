@@ -29,7 +29,7 @@ public struct VentoyDownloader: Sendable {
 
     public static func validateVersion(_ v: String) throws {
         guard isValidVersion(v) else {
-            throw DriverError.validation("Invalid Ventoy version string: \(v)")
+            throw DriverError.validation("\"\(v)\" isn't a Ventoy version number.")
         }
     }
 
@@ -97,7 +97,7 @@ public struct VentoyDownloader: Sendable {
             throw DriverError.diskIO("cache: lstat(\(root.path)) failed: \(String(cString: strerror(errno)))")
         }
         guard (st.st_mode & S_IFMT) == S_IFDIR, st.st_uid == geteuid(), (st.st_mode & 0o022) == 0 else {
-            throw DriverError.validation("cache: \(root.path) has unexpected ownership or permissions; not using it")
+            throw DriverError.validation("Mactoy's download folder \(root.path) has unexpected ownership or permissions, so Mactoy won't use it.")
         }
         return root
     }
@@ -142,7 +142,7 @@ public struct VentoyDownloader: Sendable {
             return 0
         }
         guard (st.st_mode & S_IFMT) == S_IFDIR, st.st_uid == geteuid(), (st.st_mode & 0o022) == 0 else {
-            throw DriverError.validation("cache: \(root.path) has unexpected ownership or permissions; not clearing it")
+            throw DriverError.validation("Mactoy's download folder \(root.path) has unexpected ownership or permissions, so Mactoy won't clear it.")
         }
         let freed = allocatedSize(of: root)
         try fm.removeItem(at: root)
@@ -233,7 +233,7 @@ public struct VentoyDownloader: Sendable {
         let actual = try hash(of: dest)
         guard actual == expectedHash else {
             try? FileManager.default.removeItem(at: dest)
-            throw DriverError.validation("SHA256 mismatch for \(name): expected \(expectedHash), got \(actual)")
+            throw DriverError.validation("The downloaded \(name) doesn't match the SHA-256 Ventoy published (expected \(expectedHash), got \(actual)), so it was deleted and nothing was written. Try again.")
         }
 
         let size = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? NSNumber)?.uint64Value ?? 0
@@ -266,12 +266,12 @@ public struct VentoyDownloader: Sendable {
             if parts.count >= 2, parts.last == Substring(filename) {
                 let hex = String(parts[0]).lowercased()
                 guard hex.count == 64, hex.allSatisfy(\.isHexDigit) else {
-                    throw DriverError.validation("Malformed SHA256 line for \(filename)")
+                    throw DriverError.validation("Ventoy's published checksum for \(filename) is malformed, so Mactoy can't check the download. Nothing was written.")
                 }
                 return hex
             }
         }
-        throw DriverError.validation("sha256.txt missing entry for \(filename)")
+        throw DriverError.validation("Ventoy's checksum file doesn't list \(filename), so Mactoy can't check the download. Nothing was written.")
     }
 
     /// Download a file and emit per-chunk progress updates so the UI's
@@ -340,7 +340,7 @@ public struct VentoyDownloader: Sendable {
                 return candidate
             }
         }
-        throw DriverError.corruptPayload("Could not find extracted ventoy-* directory in \(workDir.path)")
+        throw DriverError.corruptPayload("The Ventoy archive doesn't contain the folder Mactoy expects.")
     }
 }
 

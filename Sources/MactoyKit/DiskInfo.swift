@@ -9,16 +9,22 @@ public enum DiskInfo {
             throw DriverError.diskIO("diskutil produced non-UTF8 output")
         }
         let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] ?? [:]
+        return target(bsdName: bsdName, info: plist, volumes: enumerateVolumes(on: bsdName),
+                      serialNumber: serialNumber(bsdName: bsdName))
+    }
 
+    /// A `DiskTarget` from `diskutil info -plist` output. Separate so tests can feed it the
+    /// output for each kind of drive.
+    ///
+    /// External: `diskutil` says `Internal = false`. Before v0.8.0 this read `DeviceInternal`,
+    /// a key `diskutil` doesn't have, so no drive was ever seen as external; writes were still
+    /// allowed through the removable and ejectable flags, which every USB drive sets.
+    static func target(bsdName: String, info plist: [String: Any], volumes: [DiskVolumeInfo], serialNumber: String?) -> DiskTarget {
+        func flag(_ key: String) -> Bool? { (plist[key] as? NSNumber)?.boolValue }
         let size = (plist["TotalSize"] as? NSNumber)?.uint64Value ?? (plist["Size"] as? NSNumber)?.uint64Value ?? 0
-        let external = (plist["DeviceInternal"] as? NSNumber)?.boolValue == false
-        let removable = (plist["Removable"] as? NSNumber)?.boolValue == true
-            || (plist["RemovableMedia"] as? NSNumber)?.boolValue == true
-            || (plist["Ejectable"] as? NSNumber)?.boolValue == true
-
+        let external = flag("Internal") == false || flag("DeviceInternal") == false
+        let removable = flag("Removable") == true || flag("RemovableMedia") == true || flag("Ejectable") == true
         let mediaName = (plist["MediaName"] as? String)?.trimmingCharacters(in: .whitespaces)
-        let volumes = enumerateVolumes(on: bsdName)
-
         return DiskTarget(
             bsdName: bsdName,
             sizeInBytes: size,
@@ -26,42 +32,39 @@ public enum DiskInfo {
             isRemovable: removable,
             mediaName: mediaName?.isEmpty == true ? nil : mediaName,
             volumes: volumes,
-            serialNumber: serialNumber(bsdName: bsdName)
+            serialNumber: serialNumber
         )
     }
 
     /// The drive's own serial number from the IORegistry, or nil (#21).
-    ///
-    /// Walks up from the disk's IOMedia and takes the first of: a storage device's
-    /// `Device Characteristics` > `Serial Number`, or the USB device's `USB Serial Number`.
-    /// The walk stops at the first USB device, so a hub's serial is never mistaken for the
-    /// drive's: that would change when the same drive moves to another port.
     static func serialNumber(bsdName: String) -> String? {
         guard let matching = IOBSDNameMatching(kIOMainPortDefault, 0, bsdName) else { return nil }
         // IOServiceGetMatchingService consumes `matching`.
-        var entry = IOServiceGetMatchingService(kIOMainPortDefault, matching)
-        guard entry != IO_OBJECT_NULL else { return nil }
-        defer { if entry != IO_OBJECT_NULL { IOObjectRelease(entry) } }
+        let media = IOServiceGetMatchingService(kIOMainPortDefault, matching)
+        guard media != IO_OBJECT_NULL else { return nil }
+        return serialNumber(walkingUpFrom: IORegistryNode(retained: media))
+    }
 
+    /// Walks up from the disk's IOMedia and takes the first of: a storage device's
+    /// `Device Characteristics` > `Serial Number`, or the USB device's `USB Serial Number`.
+    /// The walk stops at the first USB device, so a hub's serial is never mistaken for the
+    /// drive's: that would change when the same drive moves to another port. Separate from
+    /// IOKit so tests can walk the device trees of each kind of drive.
+    static func serialNumber(walkingUpFrom start: some RegistryNode) -> String? {
+        var node: (any RegistryNode)? = start
         for _ in 0..<32 {
-            if IOObjectConformsTo(entry, "IOBlockStorageDevice") != 0,
-               let characteristics = property("Device Characteristics", of: entry) as? [String: Any],
+            guard let current = node else { return nil }
+            if current.conforms(to: "IOBlockStorageDevice"),
+               let characteristics = current.property("Device Characteristics") as? [String: Any],
                let serial = cleanSerial(characteristics["Serial Number"]) {
                 return serial
             }
-            if IOObjectConformsTo(entry, "IOUSBHostDevice") != 0 || IOObjectConformsTo(entry, "IOUSBDevice") != 0 {
-                return cleanSerial(property("USB Serial Number", of: entry))
+            if current.conforms(to: "IOUSBHostDevice") || current.conforms(to: "IOUSBDevice") {
+                return cleanSerial(current.property("USB Serial Number"))
             }
-            var parent: io_registry_entry_t = IO_OBJECT_NULL
-            guard IORegistryEntryGetParentEntry(entry, kIOServicePlane, &parent) == KERN_SUCCESS else { return nil }
-            IOObjectRelease(entry)
-            entry = parent
+            node = current.parent()
         }
         return nil
-    }
-
-    private static func property(_ key: String, of entry: io_registry_entry_t) -> Any? {
-        IORegistryEntryCreateCFProperty(entry, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
     }
 
     /// Trims spaces and NULs; nil for an empty or placeholder serial. Some drives report all
@@ -282,3 +285,31 @@ public enum DiskInfo {
         return used
     }
 }
+
+/// One entry in the device registry, as the serial-number walk sees it.
+protocol RegistryNode {
+    func conforms(to className: String) -> Bool
+    func property(_ key: String) -> Any?
+    func parent() -> (any RegistryNode)?
+}
+
+/// A live IORegistry entry in the service plane. Owns one reference, released on deinit.
+final class IORegistryNode: RegistryNode {
+    private let entry: io_registry_entry_t
+
+    init(retained entry: io_registry_entry_t) { self.entry = entry }
+    deinit { IOObjectRelease(entry) }
+
+    func conforms(to className: String) -> Bool { IOObjectConformsTo(entry, className) != 0 }
+
+    func property(_ key: String) -> Any? {
+        IORegistryEntryCreateCFProperty(entry, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
+    }
+
+    func parent() -> (any RegistryNode)? {
+        var parent: io_registry_entry_t = IO_OBJECT_NULL
+        guard IORegistryEntryGetParentEntry(entry, kIOServicePlane, &parent) == KERN_SUCCESS else { return nil }
+        return IORegistryNode(retained: parent)
+    }
+}
+

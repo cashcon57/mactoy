@@ -7,6 +7,12 @@ import os
 /// (AppState gates on this before calling `run(...)`).
 enum HelperInvoker {
 
+    /// How every call reaches the helper. Tests point it at an in-process XPC listener that runs
+    /// the real `MactoydService`, so the app's side of each call goes over real XPC.
+    nonisolated(unsafe) static var makeConnection: @Sendable () -> NSXPCConnection = {
+        NSXPCConnection(machServiceName: mactoydMachServiceName, options: .privileged)
+    }
+
     enum HelperError: LocalizedError {
         case xpcUnreachable(String)
         /// The connection broke after the plan was sent (#39): the helper may have written part
@@ -36,7 +42,7 @@ enum HelperInvoker {
     /// **Always** returns a result (never nil); a non-Ventoy disk
     /// surfaces as `isVentoyDisk == false` rather than as an error.
     static func probeVentoy(bsdName: String) async throws -> VentoyProbeResult {
-        let connection = NSXPCConnection(machServiceName: mactoydMachServiceName, options: .privileged)
+        let connection = makeConnection()
         connection.remoteObjectInterface = NSXPCInterface(with: MactoydProtocol.self)
         connection.resume()
         defer { connection.invalidate() }
@@ -68,7 +74,7 @@ enum HelperInvoker {
         onUpdate: @escaping @MainActor (ProgressUpdate) -> Void
     ) async throws {
 
-        let connection = NSXPCConnection(machServiceName: mactoydMachServiceName, options: .privileged)
+        let connection = makeConnection()
         connection.remoteObjectInterface = NSXPCInterface(with: MactoydProtocol.self)
         connection.exportedInterface = NSXPCInterface(with: MactoyClientProtocol.self)
 
@@ -144,7 +150,7 @@ extension HelperInvoker {
     /// Ask the helper to delete its Ventoy download cache (issue #22). Returns the bytes freed.
     /// Checks the helper's version first: an older helper doesn't know this call.
     static func clearDownloads() async throws -> UInt64 {
-        let connection = NSXPCConnection(machServiceName: mactoydMachServiceName, options: .privileged)
+        let connection = makeConnection()
         connection.remoteObjectInterface = NSXPCInterface(with: MactoydProtocol.self)
         connection.resume()
         defer { connection.invalidate() }
@@ -173,7 +179,7 @@ extension HelperInvoker {
     /// Ask the helper to stop the run in progress (#21). False when it's too late to stop safely
     /// or nothing is running.
     static func cancelCurrentRun() async throws -> Bool {
-        let connection = NSXPCConnection(machServiceName: mactoydMachServiceName, options: .privileged)
+        let connection = makeConnection()
         connection.remoteObjectInterface = NSXPCInterface(with: MactoydProtocol.self)
         connection.resume()
         defer { connection.invalidate() }
