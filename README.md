@@ -69,15 +69,24 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 
 ## Installing
 
-### Download
+Mactoy needs macOS 13.5 or later, on Apple Silicon or Intel.
 
-Grab `Mactoy-<version>.dmg` from the [Releases page](https://github.com/cashcon57/mactoy/releases/latest).
+### With Homebrew (easiest to keep up to date)
 
-### Open it
+```sh
+brew install --cask mactoy
+```
 
-1. Open `Mactoy-0.8.0.dmg` (or whichever `Mactoy-*.dmg` is on the latest release page).
-2. Drag `Mactoy.app` into `/Applications`.
-3. Launch from Launchpad or `/Applications`. Opens normally — no right-click dance needed. The DMG is Apple-notarized, so Gatekeeper sees it as a known-good Developer ID build.
+- **Update:** `brew upgrade --cask mactoy`, or `brew upgrade` to update everything. New Mactoy releases reach Homebrew shortly after they're published.
+- **Uninstall:** `brew uninstall --cask mactoy`. Add `--zap` to also delete Mactoy's caches, settings and the helper's Ventoy downloads. Themes you saved in **Documents › Mactoy Themes** are kept either way.
+
+### Download the DMG
+
+1. Download `Mactoy-<version>.dmg` from the [latest release](https://github.com/cashcon57/mactoy/releases/latest).
+2. Open it and drag `Mactoy.app` into `/Applications`.
+3. Open Mactoy from Launchpad or `/Applications`. It opens normally, with no right-click needed: the DMG is signed with a Developer ID and notarized by Apple, so Gatekeeper accepts it.
+
+To update, download the new DMG and replace the app in `/Applications`.
 
 ## Permissions
 
@@ -241,7 +250,7 @@ log show --predicate 'subsystem == "com.mactoy"' --last 1h --info --debug > mact
 
 ### Why not the Mac App Store?
 
-The MAS sandbox forbids privilege escalation and raw block-device access, which is exactly what any USB-flashing tool needs. Privileged helper tools (SMJobBless, SMAppService, AuthorizationExecuteWithPrivileges) all require entitlements MAS review rejects, and even Full Disk Access isn't granted to sandboxed helpers. Every disk utility on macOS (Disk Utility aside) distributes outside the App Store for this reason. Mactoy ships as a Developer ID–signed, Apple-notarized DMG; a Homebrew cask is on the roadmap.
+The MAS sandbox forbids privilege escalation and raw block-device access, which is exactly what any USB-flashing tool needs. Privileged helper tools (SMJobBless, SMAppService, AuthorizationExecuteWithPrivileges) all require entitlements MAS review rejects, and even Full Disk Access isn't granted to sandboxed helpers. Every disk utility on macOS (Disk Utility aside) distributes outside the App Store for this reason. Mactoy ships as a Developer ID–signed, Apple-notarized DMG, and as a Homebrew cask (`brew install --cask mactoy`).
 
 ### Why not Python-wrapped-in-Swift?
 

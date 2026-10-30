@@ -11,6 +11,7 @@ Safer writes: checked and streamed image flashing, Cancel, a stronger check that
   - After writing, Mactoy reads the drive back and compares it with the image. On by default; it catches a failing drive or one that's smaller than it claims.
 - **Cancel** ([#38](https://github.com/cashcon57/mactoy/pull/38)). Install and Update can be cancelled until Mactoy starts writing the drive, and nothing is written. After that, Cancel is refused, because stopping between Ventoy's partition writes would leave a drive that neither starts nor mounts. A flash can be stopped at any point, after a warning that the drive will be left partly written. A cancelled run ends with Done only; starting again goes through the confirmation.
 - **Mactoy > Clear Ventoy Downloads** ([#33](https://github.com/cashcon57/mactoy/pull/33)).
+- **Homebrew:** `brew install --cask mactoy` ([Homebrew/homebrew-cask#298276](https://github.com/Homebrew/homebrew-cask/pull/298276)), with `brew upgrade` for updates. The README covers both install paths.
 
 ### Changed
 
