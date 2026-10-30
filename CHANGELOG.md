@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.8.0] — 2026-10-30
+
+Safer writes: checked and streamed image flashing, Cancel, a stronger check that it's still the drive you confirmed, and fewer files left behind.
+
+### Added
+
+- **Flash Image checks the image and the drive** ([#37](https://github.com/cashcon57/mactoy/pull/37)).
+  - Paste the image's SHA-256, or load it from the download page's checksum file (`sha256sum`, BSD and OpenSSL styles). The image is checked against it before the drive is erased.
+  - After writing, Mactoy reads the drive back and compares it with the image. On by default; it catches a failing drive or one that's smaller than it claims.
+- **Cancel** ([#38](https://github.com/cashcon57/mactoy/pull/38)). Install and Update can be cancelled until Mactoy starts writing the drive, and nothing is written. After that, Cancel is refused, because stopping between Ventoy's partition writes would leave a drive that neither starts nor mounts. A flash can be stopped at any point, after a warning that the drive will be left partly written. A cancelled run ends with Done only; starting again goes through the confirmation.
+- **Mactoy > Clear Ventoy Downloads** ([#33](https://github.com/cashcon57/mactoy/pull/33)).
+- **Homebrew:** `brew install --cask mactoy` ([Homebrew/homebrew-cask#298276](https://github.com/Homebrew/homebrew-cask/pull/298276)), with `brew upgrade` for updates. The README covers both install paths.
+
+### Changed
+
+- **`.xz` and `.gz` images are decompressed while writing** ([#37](https://github.com/cashcon57/mactoy/pull/37)), so memory use stays small whatever the image's size. Before, the whole image was decompressed into memory first. A file Mactoy can't read is caught before anything is written, and a raw or `.xz` image too big for the drive is refused up front.
+- **The drive's serial number is part of its fingerprint** ([#35](https://github.com/cashcon57/mactoy/pull/35)), so a different drive of the same model and size is caught. It's compared when both the confirmed drive and the live one report one.
+- **The fingerprint is checked again right before formatting** a fresh install's Ventoy partition ([#34](https://github.com/cashcon57/mactoy/pull/34)).
+- **Fewer files left behind** ([#33](https://github.com/cashcon57/mactoy/pull/33)). Downloads no longer leave a web cache or `HTTPStorages` folder (old ones are deleted), and the helper deletes its Ventoy downloads before it's removed after an install. Most installs now download Ventoy again (about 20 MB, SHA-256 checked) unless you keep the helper.
+- Tests run on every pull request ([#32](https://github.com/cashcon57/mactoy/pull/32)). New tests run the app and the helper over real XPC, and the real drivers through that path onto disk images ([#43](https://github.com/cashcon57/mactoy/pull/43)).
+
+### Fixed
+
+- **The helper read the image to flash as root** ([#36](https://github.com/cashcon57/mactoy/issues/36)), so on a Mac with several accounts a user could flash a file they can't read. The app now opens the image with your permissions and hands it to the helper, which only accepts a regular file.
+- If the helper's connection broke partway through a run, Mactoy could start the same run again by itself ([#39](https://github.com/cashcon57/mactoy/issues/39)). It now stops and offers Retry.
+- **Mactoy never recognised a drive as external** ([#43](https://github.com/cashcon57/mactoy/pull/43)). It read a `diskutil` key that doesn't exist (`DeviceInternal`; the key is `Internal`), from v0.1.0 on. Writes were still allowed through the removable and ejectable flags every USB drive sets, and the Mac's own disk was still refused, but one of the two flags in that safety check never worked.
+- Disk names and Ventoy versions accept ASCII digits only, and the read-only Ventoy probe checks the disk name before opening anything ([#34](https://github.com/cashcon57/mactoy/pull/34)).
+- A Time Machine drive's unlock for the session no longer carries over to another backup drive of the same model.
+- A failed move of a finished Ventoy download no longer crashes the app.
+- Images whose size isn't a whole number of sectors flash correctly, and writes use 4 KB blocks so drives with 4 KB sectors work.
+- Error messages are plain sentences: no more "Validation error:" in front, and a problem with Ventoy's own files says nothing was written. The image and its checksum can't be changed while a run is in progress.
+- The app is 0.8.0 (build 17). **The helper changed** (protocol 0.8.0). If macOS asks you to approve it again, that's why.
+
 ## [0.7.1] — 2026-10-29
 
 My Themes moves to your Documents folder.
