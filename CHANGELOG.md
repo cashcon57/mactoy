@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.8.0] — unreleased
+## [0.8.0] — 2026-10-30
 
 Safer writes: checked and streamed image flashing, Cancel, a stronger check that it's still the drive you confirmed, and fewer files left behind.
 
