@@ -43,7 +43,7 @@ struct UpdateVentoyPanel: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .mactoyGlass(cornerRadius: 16)
+            .mactoyCard(cornerRadius: 16)
 
             // Pre-flight quirky-enclosure warning (issue #4). Same
             // banner InstallVentoyPanel shows — non-blocking, points
@@ -141,7 +141,7 @@ struct UpdateVentoyPanel: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .mactoyGlass(
+        .mactoyCard(
             cornerRadius: 14,
             tint: isUpToDate ? .green.opacity(0.15) : .accentColor.opacity(0.18)
         )
@@ -205,7 +205,7 @@ private struct ProbeFailedHint: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .mactoyGlass(cornerRadius: 14, tint: .orange.opacity(0.15))
+        .mactoyCard(cornerRadius: 14, tint: .orange.opacity(0.15))
     }
 }
 
@@ -219,7 +219,7 @@ private struct ProbingHint: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .mactoyGlass(cornerRadius: 14)
+        .mactoyCard(cornerRadius: 14)
     }
 }
 
@@ -256,7 +256,7 @@ private struct NoVentoyHint: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .mactoyGlass(cornerRadius: 14)
+        .mactoyCard(cornerRadius: 14)
     }
 }
 
@@ -293,7 +293,7 @@ private struct BrokenVentoyHint: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .mactoyGlass(cornerRadius: 14, tint: .orange.opacity(0.18))
+        .mactoyCard(cornerRadius: 14, tint: .orange.opacity(0.18))
     }
 }
 

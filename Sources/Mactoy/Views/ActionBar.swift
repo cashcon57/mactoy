@@ -71,7 +71,7 @@ private struct StatusRow: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity)
-            .mactoyGlass(cornerRadius: 16)
+            .mactoyCard(cornerRadius: 16)
         case .success(let m):
             HStack {
                 Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
@@ -80,7 +80,7 @@ private struct StatusRow: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .mactoyGlass(cornerRadius: 16, tint: .green.opacity(0.25))
+            .mactoyCard(cornerRadius: 16, tint: .green.opacity(0.25))
         case .cancelled(let m):
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
@@ -92,7 +92,7 @@ private struct StatusRow: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .mactoyGlass(cornerRadius: 16)
+            .mactoyCard(cornerRadius: 16)
         case .failed(let m):
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
@@ -104,7 +104,7 @@ private struct StatusRow: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .mactoyGlass(cornerRadius: 16, tint: .red.opacity(0.25))
+            .mactoyCard(cornerRadius: 16, tint: .red.opacity(0.25))
         }
     }
 }

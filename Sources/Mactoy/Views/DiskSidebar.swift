@@ -6,13 +6,8 @@ struct DiskSidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Mactoy")
-                .font(.largeTitle.bold())
-                .padding(.top, 8)
-                .padding(.horizontal, 20)
-
-            Text("External disks")
-                .font(.caption)
+            Text("External Disks")
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 20)
 
@@ -26,24 +21,22 @@ struct DiskSidebar: View {
             }
 
             ScrollView {
-                MactoyGlassContainer(spacing: 12) {
-                    VStack(spacing: 12) {
-                        if state.disks.isEmpty {
-                            EmptyDisksHint()
-                        } else {
-                            ForEach(state.disks, id: \.bsdName) { disk in
-                                DiskCard(
-                                    disk: disk,
-                                    timeMachine: state.isTimeMachineBackup(disk)
-                                        ? (state.isLockedBackup(disk) ? .locked : .unlocked) : nil,
-                                    isSelected: state.selectedDiskBSD == disk.bsdName,
-                                    onTap: { state.selectDisk(disk.bsdName) }
-                                )
-                            }
+                VStack(spacing: 12) {
+                    if state.disks.isEmpty {
+                        EmptyDisksHint()
+                    } else {
+                        ForEach(state.disks, id: \.bsdName) { disk in
+                            DiskCard(
+                                disk: disk,
+                                timeMachine: state.isTimeMachineBackup(disk)
+                                    ? (state.isLockedBackup(disk) ? .locked : .unlocked) : nil,
+                                isSelected: state.selectedDiskBSD == disk.bsdName,
+                                onTap: { state.selectDisk(disk.bsdName) }
+                            )
                         }
                     }
-                    .padding(.horizontal, 20)
                 }
+                .padding(.horizontal, 20)
             }
         }
         .padding(.vertical, 8)
@@ -123,11 +116,7 @@ private struct DiskCard: View {
             .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
-        .mactoyGlass(
-            cornerRadius: 14,
-            tint: isSelected ? .accentColor : nil,
-            interactive: true
-        )
+        .mactoyCard(cornerRadius: 14, tint: isSelected ? Color.accentColor.opacity(0.22) : nil)
     }
 
     static func sizeString(_ bytes: UInt64) -> String {
@@ -156,6 +145,6 @@ private struct EmptyDisksHint: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity)
-        .mactoyGlass(cornerRadius: 14)
+        .mactoyCard(cornerRadius: 14)
     }
 }

@@ -35,7 +35,7 @@ struct FullDiskAccessSheet: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .mactoyGlass(cornerRadius: 14)
+            .mactoyCard(cornerRadius: 14)
 
             Text("Why this is one-time: the grant stays in place after the first install, so you won't see this sheet again.")
                 .font(.caption)

@@ -42,6 +42,8 @@ struct MactoyApp: App {
                 }
         }
         .windowResizability(.contentMinSize)
+        // The mode picker sits in the toolbar; the window title would only repeat the app's name.
+        .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
             CommandGroup(after: .appSettings) {
                 Button("Clear Ventoy Downloads") {

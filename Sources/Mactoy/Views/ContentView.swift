@@ -5,15 +5,25 @@ struct ContentView: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
-        HStack(spacing: 0) {
+        // A real split view, so macOS draws the window the modern way: the
+        // sidebar runs to the top edge with the window buttons on it, and the
+        // toolbar shares their row. On macOS 26 the sidebar and toolbar are
+        // Liquid Glass; on 13 to 15 the sidebar is the standard translucent one.
+        NavigationSplitView {
             DiskSidebar()
-                .frame(width: 300)
-                .background(Color(nsColor: .windowBackgroundColor))
-
-            Divider()
-
+                .frame(minWidth: 260)
+                .background { WindowTranslucency(material: .sidebar).ignoresSafeArea() }
+                .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
+                .modifier(KeepSidebarOpen())
+        } detail: {
             DetailPane()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background { WindowTranslucency(material: .underWindowBackground).ignoresSafeArea() }
+        }
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                ModePicker()
+            }
         }
         .frame(minWidth: 880, minHeight: 600)
         .task { state.refreshHelperStatus() }
@@ -37,13 +47,6 @@ struct DetailPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ModeTabs()
-                .padding(.horizontal, 20)
-                .padding(.top, 20)
-                .padding(.bottom, 12)
-
-            Divider()
-
             // **Manage Disk skips the outer ScrollView (issue #1, v0.3.1).**
             // ManageDiskPanel renders a `List`, and `List` inside
             // `ScrollView` crashes SwiftUI on macOS 26 (Sequoia/Tahoe)
@@ -71,6 +74,18 @@ struct DetailPane: View {
 
             ActionBar()
                 .padding(20)
+        }
+    }
+}
+
+/// The drive list is how you pick a drive, so its button to hide the sidebar
+/// is removed where macOS allows it (14 and later).
+private struct KeepSidebarOpen: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content.toolbar(removing: .sidebarToggle)
+        } else {
+            content
         }
     }
 }
