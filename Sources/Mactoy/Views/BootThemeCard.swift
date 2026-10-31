@@ -31,7 +31,7 @@ struct BootThemeCard: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity)
-        .mactoyGlass(cornerRadius: 14)
+        .mactoyCard(cornerRadius: 14)
         // The picture is fetched when a tile scrolls into view in the picker, and
         // this card may be on screen long before the picker is opened. It is asked
         // for again when the catalog arrives, since the choice can be named before then.

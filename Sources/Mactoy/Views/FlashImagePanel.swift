@@ -24,7 +24,7 @@ struct FlashImagePanel: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .mactoyGlass(cornerRadius: 16)
+            .mactoyCard(cornerRadius: 16)
 
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -37,7 +37,7 @@ struct FlashImagePanel: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .mactoyGlass(cornerRadius: 14, tint: .red.opacity(0.22))
+            .mactoyCard(cornerRadius: 14, tint: .red.opacity(0.22))
 
             // Locked during a run: a Retry reads the image and these options as they are then.
             DropZone(
@@ -98,7 +98,7 @@ private struct DropZone: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: 180)
-        .mactoyGlass(cornerRadius: 14, interactive: true)
+        .mactoyCard(cornerRadius: 14)
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
             guard let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -170,7 +170,7 @@ private struct ImageCheckCard: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .mactoyGlass(cornerRadius: 16)
+        .mactoyCard(cornerRadius: 16)
         .onChange(of: state.selectedImagePath) { _ in loadProblem = nil }
     }
 
