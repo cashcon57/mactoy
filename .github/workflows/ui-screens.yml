@@ -1,0 +1,77 @@
+name: UI screenshots
+
+# Screenshots of the main screens on each macOS version Mactoy supports, so UI
+# changes can be checked on older macOS without a machine running it. One debug
+# build (made on macOS 26, which the Liquid Glass code needs) is launched in
+# screenshot mode on each runner: made-up drives, no real disks, no helper,
+# no file picker. Download the "screens-<os>" artifacts from the run to look.
+on:
+  pull_request:
+    paths:
+      - "Sources/Mactoy/**"
+      - "app-support/**"
+      - "scripts/build-app.sh"
+      - ".github/workflows/ui-screens.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-screens-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build a debug app (contains the screenshot mode)
+        run: scripts/build-app.sh debug sign
+      # tar keeps the bundle's permissions and symlinks; the artifact upload alone doesn't.
+      - name: Pack the app
+        run: tar -czf Mactoy-debug.tar.gz -C build Mactoy.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mactoy-debug-app
+          path: Mactoy-debug.tar.gz
+          retention-days: 3
+
+  screens:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mactoy-debug-app
+      - name: Unpack
+        run: tar -xzf Mactoy-debug.tar.gz && sw_vers
+      - name: Take screenshots
+        run: |
+          mkdir -p screens
+          MACTOY_RENDER_SCREENS="$PWD/screens" ./Mactoy.app/Contents/MacOS/Mactoy &
+          pid=$!
+          # Give up after two minutes rather than hang the job.
+          for _ in $(seq 120); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 1
+          done
+          if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid"
+            echo "::error::screenshot mode didn't finish in two minutes"
+            exit 1
+          fi
+          ls -la screens
+          test -n "$(ls screens/*.png 2>/dev/null)" || { echo "::error::no screenshots"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screens-${{ matrix.os }}
+          path: screens
+          retention-days: 14

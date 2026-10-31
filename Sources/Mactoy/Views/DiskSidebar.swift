@@ -38,6 +38,10 @@ struct DiskSidebar: View {
                 }
                 .padding(.horizontal, 20)
             }
+
+            KofiButton()
+                .padding(.horizontal, 20)
+                .padding(.bottom, 12)
         }
         .padding(.vertical, 8)
         .frame(maxHeight: .infinity, alignment: .top)

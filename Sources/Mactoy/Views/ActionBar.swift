@@ -10,7 +10,6 @@ struct ActionBar: View {
         VStack(spacing: 10) {
             StatusRow()
             HStack {
-                KofiButton()
                 Spacer()
                 PrimaryButton(confirmingCancel: $confirmingCancel)
             }

@@ -21,8 +21,18 @@ struct ContentView: View {
                 .background { WindowTranslucency(material: .underWindowBackground).ignoresSafeArea() }
         }
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                ModePicker()
+            // On macOS 26 the toolbar puts each item on its own glass bubble that
+            // lights up on hover. The segmented control has its own glass track,
+            // so only its segments should react.
+            if #available(macOS 26.0, *) {
+                ToolbarItem(placement: .principal) {
+                    ModePicker()
+                }
+                .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .principal) {
+                    ModePicker()
+                }
             }
         }
         .frame(minWidth: 880, minHeight: 600)
@@ -74,16 +84,16 @@ struct DetailPane: View {
     }
 }
 
-/// The action bar floats over the bottom of the panel. On macOS 26 the
-/// content scrolls underneath it and blurs at the edge; earlier versions get
-/// a translucent bar with a divider.
+/// The action bar floats over the bottom of the panel. On macOS 26 there is
+/// no bar behind it: the glass button floats over the content, which scrolls
+/// underneath. Earlier versions get a translucent bar with a divider.
 private struct FloatingActionBar: ViewModifier {
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
-            content.safeAreaBar(edge: .bottom) {
+            content.safeAreaInset(edge: .bottom, spacing: 0) {
                 ActionBar()
                     .padding(.horizontal, 20)
-                    .padding(.vertical, 14)
+                    .padding(.vertical, 16)
             }
         } else {
             content.safeAreaInset(edge: .bottom, spacing: 0) {

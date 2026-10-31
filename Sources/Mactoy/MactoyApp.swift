@@ -32,6 +32,13 @@ struct MactoyApp: App {
                     Text(appState.clearDownloadsReport ?? "")
                 }
                 .task {
+                    #if DEBUG
+                    // Screenshot mode for CI: made-up drives, no real disks, then quit.
+                    if let folder = ScreenRender.outputDirectory {
+                        await ScreenRender.run(appState, into: folder)
+                        return
+                    }
+                    #endif
                     // Before v0.8.0 macOS kept a web cache and HTTPStorages for Mactoy; nothing uses them now (issue #22).
                     Task.detached(priority: .background) { MactoyHTTP.removeStaleSharedSessionFiles() }
                     appLog.info("first-window task: starting disk enumeration")
