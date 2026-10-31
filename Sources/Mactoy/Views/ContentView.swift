@@ -69,11 +69,30 @@ struct DetailPane: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .modifier(FloatingActionBar())
+    }
+}
 
-            Divider()
-
-            ActionBar()
-                .padding(20)
+/// The action bar floats over the bottom of the panel. On macOS 26 the
+/// content scrolls underneath it and blurs at the edge; earlier versions get
+/// a translucent bar with a divider.
+private struct FloatingActionBar: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.safeAreaBar(edge: .bottom) {
+                ActionBar()
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 14)
+            }
+        } else {
+            content.safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    Divider()
+                    ActionBar().padding(20)
+                }
+                .background(.bar)
+            }
         }
     }
 }

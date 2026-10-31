@@ -56,6 +56,16 @@ cp "$BUILD_DIR/Mactoy"   "$APP/Contents/MacOS/Mactoy"
 cp "$BUILD_DIR/mactoyd"  "$APP/Contents/MacOS/mactoyd"
 chmod +x "$APP/Contents/MacOS/Mactoy" "$APP/Contents/MacOS/mactoyd"
 
+# Record the SDK the binaries were really built with. SwiftPM writes the
+# deployment target (13.5) as the SDK version, and macOS reads that number
+# to pick an app's look: an app that claims a pre-26 SDK never gets Liquid
+# Glass window chrome, toolbars or controls on macOS 26 and later. vtool
+# fixes the number for every architecture; older macOS versions ignore it.
+SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
+for bin in "$APP/Contents/MacOS/Mactoy" "$APP/Contents/MacOS/mactoyd"; do
+    vtool -set-build-version macos 13.5 "$SDK_VERSION" -replace -output "$bin" "$bin"
+done
+
 cp "$ROOT/app-support/Info.plist" "$APP/Contents/Info.plist"
 
 # LaunchDaemon plist. SMAppService reads this from
