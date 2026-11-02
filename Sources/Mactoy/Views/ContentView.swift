@@ -3,19 +3,45 @@ import MactoyKit
 
 struct ContentView: View {
     @EnvironmentObject private var state: AppState
+    @State private var columnVisibility = NavigationSplitViewVisibility.all
 
     var body: some View {
-        HStack(spacing: 0) {
+        // A real split view, so macOS draws the window the modern way: the
+        // sidebar runs to the top edge with the window buttons on it, and the
+        // toolbar shares their row. On macOS 26 the sidebar and toolbar are
+        // Liquid Glass; on 13 to 15 the sidebar is the standard translucent one.
+        // The drive list is how you pick a drive, so it can't stay hidden: if
+        // it's collapsed (dragging the divider, say), it opens again.
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             DiskSidebar()
-                .frame(width: 300)
-                .background(Color(nsColor: .windowBackgroundColor))
-
-            Divider()
-
+                .frame(minWidth: 260)
+                .background { WindowTranslucency(material: .sidebar).ignoresSafeArea() }
+                .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
+                .modifier(KeepSidebarOpen())
+        } detail: {
             DetailPane()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background { WindowTranslucency(material: .underWindowBackground).ignoresSafeArea() }
+        }
+        .toolbar {
+            // On macOS 26 the toolbar puts each item on its own glass bubble that
+            // lights up on hover. The segmented control has its own glass track,
+            // so only its segments should react.
+            if #available(macOS 26.0, *) {
+                ToolbarItem(placement: .principal) {
+                    ModePicker()
+                }
+                .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .principal) {
+                    ModePicker()
+                }
+            }
         }
         .frame(minWidth: 880, minHeight: 600)
+        .onChange(of: columnVisibility) { visibility in
+            if visibility != .all { columnVisibility = .all }
+        }
         .task { state.refreshHelperStatus() }
         .sheet(isPresented: $state.showHelperExplainer) {
             HelperExplainerSheet()
@@ -37,13 +63,6 @@ struct DetailPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ModeTabs()
-                .padding(.horizontal, 20)
-                .padding(.top, 20)
-                .padding(.bottom, 12)
-
-            Divider()
-
             // **Manage Disk skips the outer ScrollView (issue #1, v0.3.1).**
             // ManageDiskPanel renders a `List`, and `List` inside
             // `ScrollView` crashes SwiftUI on macOS 26 (Sequoia/Tahoe)
@@ -66,11 +85,48 @@ struct DetailPane: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .modifier(FloatingActionBar())
+    }
+}
 
-            Divider()
+/// The action bar floats over the bottom of the panel. On macOS 26 there is
+/// no bar behind it: the glass button floats over the content, which scrolls
+/// underneath. Earlier versions get a translucent bar with a divider.
+private struct FloatingActionBar: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.safeAreaInset(edge: .bottom, spacing: 0) {
+                ActionBar()
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 16)
+            }
+            // No toolbar background: by default macOS draws one over the
+            // content column, a lighter strip behind the mode picker that
+            // reads as the whole bar being highlighted. Content scrolling
+            // under the toolbar fades out with the soft edge effect instead.
+            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+            .scrollEdgeEffectStyle(.soft, for: .top)
+        } else {
+            content.safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    Divider()
+                    ActionBar().padding(20)
+                }
+                .background(.bar)
+            }
+        }
+    }
+}
 
-            ActionBar()
-                .padding(20)
+/// The drive list is how you pick a drive, so its button to hide the sidebar
+/// is removed where macOS allows it (14 and later).
+private struct KeepSidebarOpen: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content.toolbar(removing: .sidebarToggle)
+        } else {
+            content
         }
     }
 }

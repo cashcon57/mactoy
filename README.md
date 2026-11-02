@@ -60,7 +60,7 @@ Both write modes share one Liquid Glass UI and one privileged helper binary.
 - [x] **New app icon** (v0.7.0). Drawn as vector layers in Icon Composer: a Liquid Glass icon with default, dark, tinted and clear looks on macOS 26, and a matching standard icon on macOS 13 to 15.
 - [x] **Iron-clad targeting defense** (v0.3.1). Six-layer defense against wrong-disk wipes: fingerprint capture at confirmation, selection freeze while sheet is open, captured-target threading through run(), app-side + daemon-side re-verification (with re-verify immediately before write to bracket long-running download/decompress), and BSD-name guard.
 - [x] Raw image flashing with `.xz` and `.gz` decompression.
-- [x] Liquid Glass SwiftUI interface on macOS 26 Tahoe; automatic `regularMaterial` fallback on macOS 13–15 so the same binary runs on Ventura, Sonoma, Sequoia, and Tahoe — Apple Silicon *and* Intel.
+- [x] Liquid Glass interface on macOS 26 Tahoe: a see-through window, glass toolbar and buttons, and a floating Install button (fixed in v0.8.1; earlier builds showed the older opaque look). On macOS 13 to 15 the same binary uses the standard translucent sidebar and toolbar, so it runs on Ventura, Sonoma, Sequoia and Tahoe, on Apple Silicon *and* Intel.
 - [x] Unit tests for partition layout, GPT header/entry/CRC, MBR, plan validation, version-string allowlist.
 - [x] **Developer ID signed + Apple notarized.** DMG and app are signed under the hardened runtime, notarized by Apple, and the notary ticket is stapled to the DMG. `spctl --assess` reports `accepted, source=Notarized Developer ID`.
 - [x] **Verified on real hardware (Apple Silicon, macOS 26).** v0.1.3 was tested end-to-end on a 128 GB USB drive on macOS 26.2 — the resulting drive boots and runs Ventoy, and the `Ventoy` exFAT partition accepts ISO drops. v0.2.0's universal binary is static-verified (`lipo -info` reports `x86_64 arm64` on both `Mactoy` and `mactoyd`); **runtime verification on Intel Macs is pending user reports** — see *Known limitations* in the v0.2.0 release notes.
@@ -172,7 +172,7 @@ Ventoy's boot menu can be themed. Mactoy has a picker with previews of community
 - **If a theme's download has moved:** themes download from their authors' pages, which can change. When one is gone or no longer matches, Mactoy says so instead of showing a download error, marks it **Unavailable** in the picker, and offers **Report Problem**, **Open Theme's Page** and **Add Theme from File…** so you can still use it.
 
 <p align="center">
-  <img src="docs/assets/install-theme-card.png" width="640" alt="The Install tab, with Catppuccin Mocha as the boot menu theme">
+  <img src="docs/assets/install-theme-card.png" width="760" alt="The Install tab on macOS 26, with Catppuccin Mocha as the boot menu theme">
 </p>
 
 A few of the themes, as they look when you boot:
@@ -273,7 +273,7 @@ The [original proof-of-concept](https://gist.github.com/VladimirMakaev/93503ab7c
 
 ### Requirements
 
-- **macOS 13.5 (Ventura) or newer** — runs on both Apple Silicon *and* Intel Macs. The 13.5 floor (rather than 13.0) is deliberate: early Ventura shipped several `SMAppService` bugs that prevented the privileged helper from registering reliably. Apple fixed those by 13.5. Liquid Glass UI kicks in automatically on macOS 26 (Tahoe); on 13.5 / 14 / 15 Mactoy falls back to a translucent `regularMaterial` look and keeps the rest of the behavior identical.
+- **macOS 13.5 (Ventura) or newer** — runs on both Apple Silicon *and* Intel Macs. The 13.5 floor (rather than 13.0) is deliberate: early Ventura shipped several `SMAppService` bugs that prevented the privileged helper from registering reliably. Apple fixed those by 13.5. Liquid Glass UI kicks in automatically on macOS 26 (Tahoe); on 13.5 / 14 / 15 Mactoy uses the standard translucent sidebar and toolbar and keeps the rest of the behavior identical.
 - Xcode 16+ / Swift 6.0+ (Xcode 26.2 builds it cleanly). Swift 5 toolchains will not accept the Package.swift `swift-tools-version: 6.0` header.
 - `create-dmg` (for building the DMG): `brew install create-dmg`
 

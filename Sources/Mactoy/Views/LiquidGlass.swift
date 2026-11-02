@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Cross-version wrapper for Tahoe's Liquid Glass APIs.
@@ -130,5 +131,53 @@ struct MactoyGlassContainer<Content: View>: View {
         } else {
             content()
         }
+    }
+}
+
+/// A plain content card: an opaque rounded box with an optional tint.
+///
+/// Liquid Glass is for controls and navigation that float above content
+/// (buttons, menus, the toolbar, the sidebar). Content itself sits on cards
+/// like these, so the glass has something to show through it.
+extension View {
+    func mactoyCard(cornerRadius: CGFloat = 14, tint: Color? = nil) -> some View {
+        background {
+            MactoyCardBackground(shape: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous), tint: tint)
+        }
+    }
+}
+
+private struct MactoyCardBackground<S: InsettableShape>: View {
+    let shape: S
+    let tint: Color?
+
+    var body: some View {
+        ZStack {
+            shape.fill(.quaternary.opacity(0.55))
+            if let tint {
+                shape.fill(tint)
+            }
+            shape.strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5)
+        }
+    }
+}
+
+/// A see-through window background: the desktop behind the window shows
+/// through, blurred. This is the AppKit view macOS uses for translucent
+/// sidebars, so it behaves the same on every supported macOS version and
+/// turns opaque by itself when Reduce Transparency is on.
+struct WindowTranslucency: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .underWindowBackground
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        view.material = material
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        view.material = material
     }
 }

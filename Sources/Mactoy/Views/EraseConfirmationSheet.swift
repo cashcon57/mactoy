@@ -95,7 +95,7 @@ struct EraseConfirmationSheet: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .mactoyGlass(
+            .mactoyCard(
                 cornerRadius: 14,
                 tint: isUpdate ? .accentColor.opacity(0.15) : .red.opacity(0.15)
             )

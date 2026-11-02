@@ -26,7 +26,7 @@ struct InstallVentoyPanel: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .mactoyGlass(cornerRadius: 16)
+            .mactoyCard(cornerRadius: 16)
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Version")
@@ -149,7 +149,7 @@ struct DangerBanner: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity)
-        .mactoyGlass(cornerRadius: 14, tint: .red.opacity(0.25))
+        .mactoyCard(cornerRadius: 14, tint: .red.opacity(0.25))
     }
 
     static func sizeString(_ bytes: UInt64) -> String {

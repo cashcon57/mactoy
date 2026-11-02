@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.8.1] — 2026-11-02
+
+Liquid Glass, for real this time.
+
+### Fixed
+
+- **Liquid Glass never showed on macOS 26** ([#44](https://github.com/cashcon57/mactoy/pull/44)). The build recorded macOS 13.5 as the SDK the app was built with, so macOS 26 drew every release so far in its older, opaque style. The build now records the SDK it really used. The app still runs on macOS 13.5 and later.
+- Debug builds made on one Mac crashed when run on another, because the app's Ko-fi badge was looked up at the build machine's path. Releases weren't affected. The badge is now drawn in code, so the app has no resource bundle to find.
+
+### Changed
+
+- **A new window** ([#44](https://github.com/cashcon57/mactoy/pull/44)).
+  - The title bar and the mode buttons are one toolbar, with the mode picker in the middle.
+  - The window is see-through: the sidebar and the content show what's behind them, blurred. With Reduce Transparency on, they're opaque.
+  - Glass is on the controls (buttons, menus, the toolbar, status messages). Content sits on plain cards.
+  - The main button (Install Ventoy, Flash Image and the rest) floats over the content on macOS 26, with no bar behind it. On macOS 13 to 15 it sits in a translucent bar at the bottom.
+  - **Support on Ko-fi** moved to the bottom of the sidebar. It's a glass button with a drawn Ko-fi mug.
+- New CI job: a debug build runs a screenshot mode on macOS 14, 15 and 26 and saves each screen, light and dark, so a pull request that changes the app can be looked at on macOS 14 and 15 as well as 26.
+- The app is 0.8.1 (build 18). The helper didn't change.
+
 ## [0.8.0] — 2026-10-30
 
 Safer writes: checked and streamed image flashing, Cancel, a stronger check that it's still the drive you confirmed, and fewer files left behind.

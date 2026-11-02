@@ -42,7 +42,7 @@ struct PartitionStyleCard: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .mactoyGlass(cornerRadius: 16)
+        .mactoyCard(cornerRadius: 16)
     }
 
     private var description: String {

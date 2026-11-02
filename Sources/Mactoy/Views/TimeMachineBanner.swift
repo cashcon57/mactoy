@@ -42,7 +42,7 @@ struct TimeMachineBanner: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .mactoyGlass(cornerRadius: 14, tint: (locked ? Color.orange : Color.red).opacity(0.15))
+        .mactoyCard(cornerRadius: 14, tint: (locked ? Color.orange : Color.red).opacity(0.15))
         .confirmationDialog(
             "Unlock \(name) for erasing?",
             isPresented: $confirmingUnlock,

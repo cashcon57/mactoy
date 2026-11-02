@@ -259,7 +259,7 @@ struct DriveThemeSection: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .mactoyGlass(cornerRadius: 16)
+        .mactoyCard(cornerRadius: 16)
         .task(id: volumeURL) { await refresh() }
         .sheet(isPresented: $flow.showPicker, onDismiss: {
             flow.pickerStart = nil

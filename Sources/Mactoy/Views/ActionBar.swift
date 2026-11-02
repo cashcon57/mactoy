@@ -10,7 +10,6 @@ struct ActionBar: View {
         VStack(spacing: 10) {
             StatusRow()
             HStack {
-                KofiButton()
                 Spacer()
                 PrimaryButton(confirmingCancel: $confirmingCancel)
             }
@@ -42,7 +41,11 @@ private struct StatusRow: View {
             HStack {
                 ProgressView().controlSize(.small)
                 Text(m).font(.callout).foregroundStyle(.secondary)
+                Spacer()
             }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .mactoyGlass(cornerRadius: 16)
         case .running(let update):
             VStack(alignment: .leading, spacing: 6) {
                 HStack {

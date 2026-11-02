@@ -43,6 +43,6 @@ struct QuirkyEnclosureBanner: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .mactoyGlass(cornerRadius: 14, tint: .orange.opacity(0.18))
+        .mactoyCard(cornerRadius: 14, tint: .orange.opacity(0.18))
     }
 }

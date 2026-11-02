@@ -271,7 +271,11 @@ struct AppStateSelectionTests {
         #expect(state.pendingEraseConfirmation != nil, "sheet must not wait on the disk")
         #expect(state.pendingEraseConfirmation?.usedBytes == nil)
 
-        try await Task.sleep(nanoseconds: 400_000_000)
+        // Poll rather than sleep a fixed time: under a parallel test run the
+        // measurement can take longer than its 200 ms sleep.
+        for _ in 0..<100 where state.pendingEraseConfirmation?.usedBytes == nil {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
         #expect(state.pendingEraseConfirmation?.usedBytes == 42)
     }
 

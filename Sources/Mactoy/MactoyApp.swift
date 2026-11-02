@@ -32,6 +32,15 @@ struct MactoyApp: App {
                     Text(appState.clearDownloadsReport ?? "")
                 }
                 .task {
+                    #if DEBUG
+                    // Screenshot mode for CI: made-up drives, no real disks, then quit.
+                    if let folder = ScreenRender.outputDirectory {
+                        // The theme list, so the Install tab's theme card has its preview.
+                        Task { await themeStore.load() }
+                        await ScreenRender.run(appState, into: folder)
+                        return
+                    }
+                    #endif
                     // Before v0.8.0 macOS kept a web cache and HTTPStorages for Mactoy; nothing uses them now (issue #22).
                     Task.detached(priority: .background) { MactoyHTTP.removeStaleSharedSessionFiles() }
                     appLog.info("first-window task: starting disk enumeration")
@@ -42,6 +51,8 @@ struct MactoyApp: App {
                 }
         }
         .windowResizability(.contentMinSize)
+        // The mode picker sits in the toolbar; the window title would only repeat the app's name.
+        .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
             CommandGroup(after: .appSettings) {
                 Button("Clear Ventoy Downloads") {

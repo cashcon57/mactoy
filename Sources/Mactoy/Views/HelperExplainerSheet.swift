@@ -51,7 +51,7 @@ struct HelperExplainerSheet: View {
             .toggleStyle(.switch)
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .mactoyGlass(cornerRadius: 14)
+            .mactoyCard(cornerRadius: 14)
 
             HStack(spacing: 10) {
                 Spacer()
