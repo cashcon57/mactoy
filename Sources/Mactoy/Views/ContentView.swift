@@ -101,9 +101,11 @@ private struct FloatingActionBar: ViewModifier {
                     .padding(.horizontal, 20)
                     .padding(.vertical, 16)
             }
-            // The default edge effect under the toolbar is a frosted strip
-            // with a hard bottom edge, which reads as a highlighted bar
-            // behind the mode picker. The soft one fades content out instead.
+            // No toolbar background: by default macOS draws one over the
+            // content column, a lighter strip behind the mode picker that
+            // reads as the whole bar being highlighted. Content scrolling
+            // under the toolbar fades out with the soft edge effect instead.
+            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             .scrollEdgeEffectStyle(.soft, for: .top)
         } else {
             content.safeAreaInset(edge: .bottom, spacing: 0) {
