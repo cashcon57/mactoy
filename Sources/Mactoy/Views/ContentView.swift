@@ -97,6 +97,10 @@ private struct FloatingActionBar: ViewModifier {
                     .padding(.horizontal, 20)
                     .padding(.vertical, 16)
             }
+            // The default edge effect under the toolbar is a frosted strip
+            // with a hard bottom edge, which reads as a highlighted bar
+            // behind the mode picker. The soft one fades content out instead.
+            .scrollEdgeEffectStyle(.soft, for: .top)
         } else {
             content.safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
