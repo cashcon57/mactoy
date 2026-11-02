@@ -172,7 +172,7 @@ Ventoy's boot menu can be themed. Mactoy has a picker with previews of community
 - **If a theme's download has moved:** themes download from their authors' pages, which can change. When one is gone or no longer matches, Mactoy says so instead of showing a download error, marks it **Unavailable** in the picker, and offers **Report Problem**, **Open Theme's Page** and **Add Theme from File…** so you can still use it.
 
 <p align="center">
-  <img src="docs/assets/install-theme-card.png" width="640" alt="The Install tab, with Catppuccin Mocha as the boot menu theme">
+  <img src="docs/assets/install-theme-card.png" width="760" alt="The Install tab on macOS 26, with Catppuccin Mocha as the boot menu theme">
 </p>
 
 A few of the themes, as they look when you boot:
