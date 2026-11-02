@@ -3,15 +3,16 @@ import MactoyKit
 
 struct ContentView: View {
     @EnvironmentObject private var state: AppState
+    @State private var columnVisibility = NavigationSplitViewVisibility.all
 
     var body: some View {
         // A real split view, so macOS draws the window the modern way: the
         // sidebar runs to the top edge with the window buttons on it, and the
         // toolbar shares their row. On macOS 26 the sidebar and toolbar are
         // Liquid Glass; on 13 to 15 the sidebar is the standard translucent one.
-        // The drive list is how you pick a drive, so it can't be hidden: the
-        // binding ignores attempts to collapse it (dragging the divider, say).
-        NavigationSplitView(columnVisibility: .constant(.all)) {
+        // The drive list is how you pick a drive, so it can't stay hidden: if
+        // it's collapsed (dragging the divider, say), it opens again.
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             DiskSidebar()
                 .frame(minWidth: 260)
                 .background { WindowTranslucency(material: .sidebar).ignoresSafeArea() }
@@ -38,6 +39,9 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 880, minHeight: 600)
+        .onChange(of: columnVisibility) { visibility in
+            if visibility != .all { columnVisibility = .all }
+        }
         .task { state.refreshHelperStatus() }
         .sheet(isPresented: $state.showHelperExplainer) {
             HelperExplainerSheet()

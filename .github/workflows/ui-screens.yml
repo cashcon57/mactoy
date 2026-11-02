@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - "Sources/Mactoy/**"
+      - "Sources/MactoyKit/**"
       - "app-support/**"
       - "scripts/build-app.sh"
       - ".github/workflows/ui-screens.yml"

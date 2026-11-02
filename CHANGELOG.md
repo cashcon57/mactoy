@@ -17,7 +17,7 @@ Liquid Glass, for real this time.
   - Glass is on the controls (buttons, menus, the toolbar, status messages). Content sits on plain cards.
   - The main button (Install Ventoy, Flash Image and the rest) floats over the content on macOS 26, with no bar behind it. On macOS 13 to 15 it sits in a translucent bar at the bottom.
   - **Support on Ko-fi** moved to the bottom of the sidebar. It's a glass button with a drawn Ko-fi mug.
-- New CI job: a debug build runs a screenshot mode on macOS 14, 15 and 26 and saves each screen, light and dark, so every pull request that changes the app is checked on macOS 14 and 15 as well as 26.
+- New CI job: a debug build runs a screenshot mode on macOS 14, 15 and 26 and saves each screen, light and dark, so a pull request that changes the app can be looked at on macOS 14 and 15 as well as 26.
 - The app is 0.8.1 (build 18). The helper didn't change.
 
 ## [0.8.0] — 2026-10-30

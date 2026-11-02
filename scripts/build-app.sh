@@ -63,8 +63,8 @@ chmod +x "$APP/Contents/MacOS/Mactoy" "$APP/Contents/MacOS/mactoyd"
 # fixes the number for every architecture; older macOS versions ignore it.
 # Only the app: the helper has no UI, and keeping its binary as SwiftPM
 # built it keeps it identical to what the tests and scripts/e2e run.
-# vtool breaks the binary's signature from the linker; every signing mode
-# below signs the app again, so it still opens on Apple Silicon.
+# vtool breaks the binary's signature from the linker; the signing step
+# below signs the app again in every mode, so it still opens on Apple Silicon.
 SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
 vtool -set-build-version macos 13.5 "$SDK_VERSION" -replace \
     -output "$APP/Contents/MacOS/Mactoy" "$APP/Contents/MacOS/Mactoy"
@@ -162,6 +162,12 @@ elif [[ "$SIGN" == "devid" ]]; then
     # Verify — use --deep here to confirm every nested mach-O is signed.
     codesign --verify --deep --strict --verbose=2 "$APP"
 else
+    # The linker signs arm64 code only, so in a universal build the helper's
+    # Intel half is unsigned and codesign won't seal an app around it. Sign
+    # the helper only then: otherwise it stays exactly as SwiftPM built it.
+    if ! codesign -v "$APP/Contents/MacOS/mactoyd" 2>/dev/null; then
+        codesign --force --sign - "$APP/Contents/MacOS/mactoyd"
+    fi
     codesign --force --sign - "$APP"
 fi
 
