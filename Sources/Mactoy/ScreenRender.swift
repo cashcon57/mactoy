@@ -41,6 +41,10 @@ enum ScreenRender {
         }
         window.setContentSize(NSSize(width: 1000, height: 720))
         window.center()
+        // A window in front draws its materials and accent colors as people see them.
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        await settle()
 
         for dark in [false, true] {
             NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)

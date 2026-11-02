@@ -35,6 +35,8 @@ struct MactoyApp: App {
                     #if DEBUG
                     // Screenshot mode for CI: made-up drives, no real disks, then quit.
                     if let folder = ScreenRender.outputDirectory {
+                        // The theme list, so the Install tab's theme card has its preview.
+                        Task { await themeStore.load() }
                         await ScreenRender.run(appState, into: folder)
                         return
                     }
