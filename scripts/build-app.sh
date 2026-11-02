@@ -56,15 +56,18 @@ cp "$BUILD_DIR/Mactoy"   "$APP/Contents/MacOS/Mactoy"
 cp "$BUILD_DIR/mactoyd"  "$APP/Contents/MacOS/mactoyd"
 chmod +x "$APP/Contents/MacOS/Mactoy" "$APP/Contents/MacOS/mactoyd"
 
-# Record the SDK the binaries were really built with. SwiftPM writes the
+# Record the SDK the app was really built with. SwiftPM writes the
 # deployment target (13.5) as the SDK version, and macOS reads that number
 # to pick an app's look: an app that claims a pre-26 SDK never gets Liquid
 # Glass window chrome, toolbars or controls on macOS 26 and later. vtool
 # fixes the number for every architecture; older macOS versions ignore it.
+# Only the app: the helper has no UI, and keeping its binary as SwiftPM
+# built it keeps it identical to what the tests and scripts/e2e run.
+# vtool breaks the binary's signature from the linker; every signing mode
+# below signs the app again, so it still opens on Apple Silicon.
 SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
-for bin in "$APP/Contents/MacOS/Mactoy" "$APP/Contents/MacOS/mactoyd"; do
-    vtool -set-build-version macos 13.5 "$SDK_VERSION" -replace -output "$bin" "$bin"
-done
+vtool -set-build-version macos 13.5 "$SDK_VERSION" -replace \
+    -output "$APP/Contents/MacOS/Mactoy" "$APP/Contents/MacOS/Mactoy"
 
 cp "$ROOT/app-support/Info.plist" "$APP/Contents/Info.plist"
 
@@ -95,11 +98,6 @@ else
 fi
 rm -rf "$ICON_OUT"
 
-# Copy SPM-bundled resources if they exist
-if [[ -d "$BUILD_DIR/Mactoy_Mactoy.bundle" ]]; then
-    cp -R "$BUILD_DIR/Mactoy_Mactoy.bundle" "$APP/Contents/Resources/"
-fi
-
 # Boot theme list, screenshots and the default theme, used when the online
 # list can't be reached. cp -R keeps the hidden .complete marker inside each
 # bundled theme folder; without it the app ignores that folder and downloads.
@@ -116,7 +114,9 @@ for folder in "$APP/Contents/Resources/Themes/bundled"/*/; do
 done
 
 # Signing:
-#   SIGN=nosign    : no codesign at all
+#   SIGN=nosign    : only a plain ad-hoc signature on the app, no
+#                    entitlements (Apple Silicon won't run an unsigned binary,
+#                    and vtool above invalidated the linker's signature)
 #   SIGN=sign      : ad-hoc sign (for local dev)
 #   SIGN=devid     : Developer ID Application + hardened runtime (release-ready)
 # The Developer ID identity is read from env var MACTOY_DEVID_IDENTITY or
@@ -142,13 +142,6 @@ elif [[ "$SIGN" == "devid" ]]; then
     # would overwrite mactoyd's entitlements with the app's, so we sign
     # each piece explicitly and without --deep on the final app pass.
 
-    # SPM's resource bundles (Mactoy_Mactoy.bundle) are flat directories
-    # without Contents/MacOS structure — codesign treats them as mach-O
-    # bundles and rejects them. They have no executable code, so we
-    # intentionally skip signing them; the outer app signature still
-    # hashes their contents into the resource bag, so tampering breaks
-    # the app signature.
-
     # Sign the daemon with its own (narrow) entitlements. The identifier
     # must match the LaunchDaemon plist Label — SMAppService rejects a
     # daemon whose code-signature identifier doesn't match.
@@ -168,6 +161,8 @@ elif [[ "$SIGN" == "devid" ]]; then
 
     # Verify — use --deep here to confirm every nested mach-O is signed.
     codesign --verify --deep --strict --verbose=2 "$APP"
+else
+    codesign --force --sign - "$APP"
 fi
 
 echo "==> Built $APP"

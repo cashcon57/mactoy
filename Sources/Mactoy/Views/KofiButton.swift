@@ -24,7 +24,7 @@ struct KofiButton: View {
         .buttonStyle(.plain)
         .mactoyGlass(tint: KofiMug.orange.opacity(0.18), interactive: true)
         .help("Support Mactoy on Ko-fi (opens ko-fi.com/cash508287)")
-        .accessibilityLabel("Support Mactoy on Ko-fi")
+        .accessibilityLabel("Support on Ko-fi")
     }
 
     private func open() {

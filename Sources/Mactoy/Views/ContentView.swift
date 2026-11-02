@@ -9,7 +9,9 @@ struct ContentView: View {
         // sidebar runs to the top edge with the window buttons on it, and the
         // toolbar shares their row. On macOS 26 the sidebar and toolbar are
         // Liquid Glass; on 13 to 15 the sidebar is the standard translucent one.
-        NavigationSplitView {
+        // The drive list is how you pick a drive, so it can't be hidden: the
+        // binding ignores attempts to collapse it (dragging the divider, say).
+        NavigationSplitView(columnVisibility: .constant(.all)) {
             DiskSidebar()
                 .frame(minWidth: 260)
                 .background { WindowTranslucency(material: .sidebar).ignoresSafeArea() }

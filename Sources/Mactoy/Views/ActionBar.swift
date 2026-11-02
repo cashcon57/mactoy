@@ -42,6 +42,9 @@ private struct StatusRow: View {
                 ProgressView().controlSize(.small)
                 Text(m).font(.callout).foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .mactoyGlass(cornerRadius: 12)
         case .running(let update):
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
