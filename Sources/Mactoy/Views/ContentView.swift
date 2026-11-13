@@ -43,6 +43,15 @@ struct ContentView: View {
             if visibility != .all { columnVisibility = .all }
         }
         .task { state.refreshHelperStatus() }
+        // Here rather than in Manage Disk: a copy can end after the user switched tabs.
+        .alert("Copying to the drive", isPresented: Binding(
+            get: { state.imageCopyReport != nil },
+            set: { if !$0 { state.imageCopyReport = nil } }
+        )) {
+            Button("OK") {}
+        } message: {
+            Text(state.imageCopyReport ?? "")
+        }
         .sheet(isPresented: $state.showHelperExplainer) {
             HelperExplainerSheet()
         }

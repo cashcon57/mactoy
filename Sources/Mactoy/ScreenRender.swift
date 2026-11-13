@@ -69,6 +69,25 @@ enum ScreenRender {
         capture(window, "status-success", into: folder)
         state.status = .idle
 
+        // A copy to a drive in progress (#45): Install is disabled and says why. The copier
+        // is a stand-in that writes nothing and waits for Cancel.
+        state.imageCopier = { _, _, control, progress in
+            progress(ImageCopier.Progress(fileNumber: 2, fileCount: 3, fileName: "Windows11_Client_x64.iso",
+                                          bytesDone: 4_200_000_000, bytesTotal: 13_600_000_000))
+            while !control.isCancelled { usleep(20_000) }
+            var result = ImageCopier.Result()
+            result.cancelled = true
+            return result
+        }
+        state.mode = .installVentoy
+        let copy = Task { await state.copyImages([URL(fileURLWithPath: "/nonexistent/x.iso")],
+                                                 into: URL(fileURLWithPath: "/nonexistent"), onDisk: disks[0].bsdName) }
+        await settle()
+        capture(window, "copy-in-progress", into: folder)
+        state.cancelImageCopy()
+        _ = await copy.value
+        state.imageCopyReport = nil
+
         state.mode = .installVentoy
         state.pendingEraseConfirmation = EraseConfirmation(mode: .installVentoy, disk: disks[0], usedBytes: 12_000_000_000,
                                                            totalBytes: disks[0].sizeInBytes, partitionStyle: .mbr)

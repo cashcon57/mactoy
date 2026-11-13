@@ -21,7 +21,7 @@ struct ManageDiskPanel: View {
                 // when the user switches between disks, instead of
                 // keeping stale items from the previously-selected
                 // drive.
-                ImageLibrary(volumeURL: volumeURL)
+                ImageLibrary(volumeURL: volumeURL, diskBSD: disk.bsdName)
                     .id(volumeURL)
                     .frame(maxHeight: .infinity)
             } else {
@@ -53,6 +53,8 @@ struct ManageDiskPanel: View {
 /// folders — and rescans after any change it makes.
 private struct ImageLibrary: View {
     let volumeURL: URL
+    let diskBSD: String
+    @EnvironmentObject private var state: AppState
     @State private var scan: VentoyImageLibrary.Scan?
     /// Bumped by every reload; a scan that finishes after a newer one
     /// started is discarded, so a slow early scan can't bring back a
@@ -106,6 +108,8 @@ private struct ImageLibrary: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Button(role: .destructive) {
+                            // The copy may be writing next to it, and the list rescans when it ends.
+                            guard state.imageCopy == nil else { return }
                             do {
                                 try FileManager.default.removeItem(at: url)
                             } catch {
@@ -119,11 +123,16 @@ private struct ImageLibrary: View {
                             Image(systemName: "trash")
                         }
                         .buttonStyle(.borderless)
+                        .disabled(state.imageCopy != nil)
                     }
                 }
                 .listStyle(.inset)
             }
             .frame(maxHeight: .infinity)
+
+            if let job = state.imageCopy {
+                ImageCopyCard(job: job, isThisDrive: job.diskBSD == diskBSD) { state.cancelImageCopy() }
+            }
 
             HStack {
                 Button("Open in Finder") {
@@ -132,15 +141,19 @@ private struct ImageLibrary: View {
                 Button("Add ISO…") {
                     guard let directory = scan?.directory else { return }
                     addISO(to: directory)
-                    Task { await reload() }
                 }
                 // Until the first scan finishes we don't know the search
-                // root, and would copy to the wrong folder.
-                .disabled(scan == nil)
+                // root, and would copy to the wrong folder. One copy at a
+                // time, and none while a run has the drive.
+                .disabled(scan == nil || !state.canCopyImages)
                 Spacer()
             }
         }
         .task(id: volumeURL) { await reload() }
+        // A copy started here may finish after the user looked elsewhere; rescan when it ends.
+        .onChange(of: state.imageCopy == nil) { finished in
+            if finished { Task { await reload() } }
+        }
     }
 
     private func reload() async {
@@ -161,23 +174,16 @@ private struct ImageLibrary: View {
         return path.hasPrefix(root + "/") ? String(path.dropFirst(root.count + 1)) : path
     }
 
-    private func addISO(to vol: URL) {
+    /// Picks the files, then copies them off the main thread (#45): the window stays usable,
+    /// with progress and Cancel below the list.
+    private func addISO(to directory: URL) {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        if panel.runModal() == .OK {
-            for src in panel.urls {
-                let dest = vol.appendingPathComponent(src.lastPathComponent)
-                do {
-                    try FileManager.default.copyItem(at: src, to: dest)
-                } catch {
-                    presentError(
-                        title: "Could not copy \(src.lastPathComponent)",
-                        message: error.localizedDescription
-                    )
-                }
-            }
-        }
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        let urls = panel.urls
+        let bsd = diskBSD
+        Task { await state.copyImages(urls, into: directory, onDisk: bsd) }
     }
 
     private func presentError(title: String, message: String) {
@@ -194,5 +200,50 @@ private struct ImageLibrary: View {
         return gb >= 1
             ? String(format: "%.2f GB", gb)
             : String(format: "%.0f MB", Double(bytes) / 1_048_576)
+    }
+}
+
+/// Progress of a copy onto a Ventoy volume, with Cancel.
+private struct ImageCopyCard: View {
+    let job: AppState.ImageCopyJob
+    /// False when the copy is going to another drive than the one shown.
+    let isThisDrive: Bool
+    let cancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.callout.bold())
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button(job.cancelRequested ? "Cancelling…" : "Cancel", action: cancel)
+                    .disabled(job.cancelRequested)
+            }
+            if let p = job.progress, p.bytesTotal > 0 {
+                ProgressView(value: Double(p.bytesDone), total: Double(p.bytesTotal))
+                Text("\(Self.bytes(p.bytesDone)) of \(Self.bytes(p.bytesTotal))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            } else {
+                ProgressView(value: 0, total: 1)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .mactoyCard(cornerRadius: 14)
+    }
+
+    private var title: String {
+        let target = isThisDrive ? "" : " to /dev/\(job.diskBSD)"
+        guard let p = job.progress else { return "Getting ready to copy\(target)…" }
+        let position = p.fileCount > 1 ? " (\(p.fileNumber) of \(p.fileCount))" : ""
+        return "Copying \(p.fileName)\(target)\(position)"
+    }
+
+    private static func bytes(_ n: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(clamping: n), countStyle: .file)
     }
 }

@@ -36,7 +36,20 @@ private struct StatusRow: View {
     var body: some View {
         switch state.status {
         case .idle:
-            EmptyView()
+            // Install, Update and Flash are disabled while files are copied to a drive; say why.
+            if state.imageCopy != nil, state.mode != .manageDisk {
+                HStack {
+                    Image(systemName: "doc.on.doc")
+                        .foregroundStyle(.secondary)
+                    Text("Copying files to a drive. Install, Update and Flash Image wait until it's done (see Manage Disk).")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .mactoyGlass(cornerRadius: 16)
+            }
         case .preparing(let m):
             HStack {
                 ProgressView().controlSize(.small)
