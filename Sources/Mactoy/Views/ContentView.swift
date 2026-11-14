@@ -4,6 +4,7 @@ import MactoyKit
 struct ContentView: View {
     @EnvironmentObject private var state: AppState
     @State private var columnVisibility = NavigationSplitViewVisibility.all
+    @State private var lastSidebarReopen = Date.distantPast
 
     var body: some View {
         // A real split view, so macOS draws the window the modern way: the
@@ -40,7 +41,13 @@ struct ContentView: View {
         }
         .frame(minWidth: 880, minHeight: 600)
         .onChange(of: columnVisibility) { visibility in
-            if visibility != .all { columnVisibility = .all }
+            // Only a collapsed sidebar is reopened, and not again within a second. With two
+            // columns, macOS can report the same layout as .doubleColumn or .automatic; writing
+            // .all back every time could make it and SwiftUI fight over the value on each
+            // layout pass, which AppKit ends by crashing the app (#46, suspected).
+            guard visibility == .detailOnly, Date().timeIntervalSince(lastSidebarReopen) > 1 else { return }
+            lastSidebarReopen = Date()
+            columnVisibility = .all
         }
         .task { state.refreshHelperStatus() }
         .sheet(isPresented: $state.showHelperExplainer) {
