@@ -1,6 +1,8 @@
 # Changelog
 
-## [0.8.2] — unreleased
+## [0.8.2] — 2026-11-13
+
+Fixes: adding images in Manage Disk no longer freezes the window, Manage Disk no longer shows an empty window, and a likely fix for a crash when starting a run on macOS 27.2.
 
 ### Changed
 
@@ -23,6 +25,7 @@
 - Manage Disk no longer shows an empty main button and bar when there's nothing to run.
 - **View > Show Sidebar** brings the drive list back if it's ever hidden.
 - Changing a drive's boot theme in Manage Disk, or saving its theme to My Themes before replacing it, checks right before it touches the drive that the volume is still on that drive, in case another drive is now mounted at the same path.
+- The app is 0.8.2 (build 19). The helper didn't change.
 
 ## [0.8.1] — 2026-11-02
 
