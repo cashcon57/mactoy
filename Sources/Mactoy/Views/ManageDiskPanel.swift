@@ -41,7 +41,7 @@ struct ManageDiskPanel: View {
                 Text("Ventoy volume mounted at \(volumeURL.path)")
                     .foregroundStyle(.secondary)
 
-                DriveThemeSection(volumeURL: volumeURL)
+                DriveThemeSection(volumeURL: volumeURL, diskBSD: disk.bsdName)
                     .id(volumeURL)
 
                 // `id: volumeURL` forces the library to rebuild its state

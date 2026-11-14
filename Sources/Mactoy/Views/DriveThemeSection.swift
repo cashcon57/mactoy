@@ -149,6 +149,9 @@ struct ThemeImportFlow {
 struct DriveThemeSection: View {
     @EnvironmentObject private var themes: ThemeStore
     let volumeURL: URL
+    /// The drive `volumeURL` was found on. Checked before changing anything, in case another
+    /// drive is mounted at the same path now.
+    let diskBSD: String
     @State private var current: ThemeInstaller.Current?
     @State private var driveTheme: DriveTheme?
     @State private var readOnly = false
@@ -364,6 +367,12 @@ struct DriveThemeSection: View {
     private func replace(_ choice: ThemeChoice, answer: ThemeReplacement.Answer) async {
         working = true
         message = nil
+        guard ImageCopier.isOnDisk(volumeURL, diskBSD: diskBSD) else {
+            working = false
+            isError = true
+            message = "The drive is no longer mounted here, so its theme wasn't changed. Select it again in the sidebar."
+            return
+        }
         var savedName: String?
         var warnings: [String] = []
         var alert: UnavailableAlert?
