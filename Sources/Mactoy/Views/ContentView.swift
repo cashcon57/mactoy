@@ -1,10 +1,12 @@
 import SwiftUI
 import MactoyKit
+import os
+
+private let layoutLog = Logger(subsystem: "com.mactoy", category: "layout")
 
 struct ContentView: View {
     @EnvironmentObject private var state: AppState
     @State private var columnVisibility = NavigationSplitViewVisibility.all
-    @State private var lastSidebarReopen = Date.distantPast
 
     var body: some View {
         // A real split view, so macOS draws the window the modern way: the
@@ -15,7 +17,6 @@ struct ContentView: View {
         // it's collapsed (dragging the divider, say), it opens again.
         NavigationSplitView(columnVisibility: $columnVisibility) {
             DiskSidebar()
-                .frame(minWidth: 260)
                 .background { WindowTranslucency(material: .sidebar).ignoresSafeArea() }
                 .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
                 .modifier(KeepSidebarOpen())
@@ -39,15 +40,18 @@ struct ContentView: View {
                 }
             }
         }
-        .frame(minWidth: 880, minHeight: 600)
         .onChange(of: columnVisibility) { visibility in
-            // Only a collapsed sidebar is reopened, and not again within a second. With two
-            // columns, macOS can report the same layout as .doubleColumn or .automatic; writing
-            // .all back every time could make it and SwiftUI fight over the value on each
-            // layout pass, which AppKit ends by crashing the app (#46, suspected).
-            guard visibility == .detailOnly, Date().timeIntervalSince(lastSidebarReopen) > 1 else { return }
-            lastSidebarReopen = Date()
-            columnVisibility = .all
+            layoutLog.info("sidebar visibility -> \(String(describing: visibility), privacy: .public)")
+            // Only a collapsed sidebar is reopened, and a moment later, outside the layout pass
+            // that collapsed it. With two columns, macOS can report the same layout as
+            // .doubleColumn or .automatic; writing .all back straight away every time could make
+            // it and SwiftUI fight over the value on each layout pass, which AppKit ends by
+            // crashing the app (suspected cause of #46).
+            guard visibility == .detailOnly else { return }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                if columnVisibility == .detailOnly { columnVisibility = .all }
+            }
         }
         .task { state.refreshHelperStatus() }
         .sheet(isPresented: $state.showHelperExplainer) {
@@ -101,13 +105,25 @@ struct DetailPane: View {
 /// no bar behind it: the glass button floats over the content, which scrolls
 /// underneath. Earlier versions get a translucent bar with a divider.
 private struct FloatingActionBar: ViewModifier {
+    /// The main button (about 38 pt) plus the bar's padding.
+    static let reservedHeight: CGFloat = 70
+
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
-            content.safeAreaInset(edge: .bottom, spacing: 0) {
-                ActionBar()
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 16)
-            }
+            // A fixed inset with the bar floating on top, rather than the bar itself as the
+            // inset: a status appearing when a run starts would otherwise resize the whole
+            // content column in the same moment, the kind of change behind the layout-loop
+            // crash in #46. The inset fits the button; a status grows the bar upward over
+            // the content.
+            content
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    Color.clear.frame(height: Self.reservedHeight)
+                }
+                .overlay(alignment: .bottom) {
+                    ActionBar()
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 16)
+                }
             // No toolbar background: by default macOS draws one over the
             // content column, a lighter strip behind the mode picker that
             // reads as the whole bar being highlighted. Content scrolling

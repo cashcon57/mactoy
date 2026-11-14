@@ -41,15 +41,16 @@ struct ManageDiskPanel: View {
                 Text("Ventoy volume mounted at \(volumeURL.path)")
                     .foregroundStyle(.secondary)
 
+                // Keyed on the drive too: another drive can be mounted at the same path.
                 DriveThemeSection(volumeURL: volumeURL, diskBSD: disk.bsdName)
-                    .id(volumeURL)
+                    .id(VolumeKey(url: volumeURL, diskBSD: disk.bsdName))
 
                 // `id: volumeURL` forces the library to rebuild its state
                 // when the user switches between disks, instead of
                 // keeping stale items from the previously-selected
                 // drive.
                 ImageLibrary(volumeURL: volumeURL, diskBSD: disk.bsdName)
-                    .id(volumeURL)
+                    .id(VolumeKey(url: volumeURL, diskBSD: disk.bsdName))
                     .frame(maxHeight: .infinity)
             } else {
                 VStack(alignment: .leading, spacing: 8) {
@@ -81,6 +82,12 @@ struct ManageDiskPanel: View {
             volumeLookedUpFor = key
         }
     }
+}
+
+/// Identifies a mounted volume by path and drive, for view identity.
+private struct VolumeKey: Hashable {
+    let url: URL
+    let diskBSD: String
 }
 
 /// The Ventoy volume's image list plus its actions. Scans off the main

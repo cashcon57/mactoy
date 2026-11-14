@@ -13,7 +13,10 @@
   - Images that don't fit in the free space are refused before anything is copied, as are images of 4 GB or more on a FAT-formatted drive. A file already on the drive is skipped and reported, never replaced, and the others are still copied. If the drive is unplugged, the copy stops and says so.
   - Install, Update and Flash Image wait while files are copied to a drive, so a drive can't be erased mid-copy. Quitting during a copy asks first.
   - Progress and the result stay at the top of Manage Disk whichever drive is selected, and the list of images refreshes when the copy ends.
-- **Possible fix for a crash right after confirming Install or Update** ([#46](https://github.com/cashcon57/mactoy/issues/46), reported on macOS 27.2). The crash is a layout loop in the window's split view. Mactoy forced the drive list open whenever macOS reported the sidebar in any state but "all columns", which could fight macOS over the same layout; it now reopens the drive list only if it's actually collapsed, and not more than once a second. This couldn't be reproduced on macOS 27.0, so it's a best guess until confirmed.
+- **Possible fix for a crash right after confirming Install or Update** ([#46](https://github.com/cashcon57/mactoy/issues/46), reported on macOS 27.2). The crash report shows AppKit stopping the app after a layout loop that never settled; the suspected source is the window's split view, as a run starts. Two changes take away what most likely set it off:
+  - On macOS 26 and later, a status appearing no longer resizes the content area: the bottom bar floats over the content in a space of fixed height, and a status grows it upward.
+  - The drive list is reopened only if it's actually collapsed, a moment later, instead of being forced open whenever macOS reports the sidebar in any other state, which could fight macOS over the same layout.
+  The crash doesn't happen on macOS 27.0, so whether this fixes it is still to be confirmed.
 - Changing a drive's boot theme in Manage Disk checks first that the volume is still on that drive, in case another drive is now mounted at the same path.
 
 ## [0.8.1] — 2026-11-02

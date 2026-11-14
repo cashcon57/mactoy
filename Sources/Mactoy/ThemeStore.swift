@@ -78,11 +78,15 @@ enum ThemeStoreError: Error, Equatable, LocalizedError {
     case busy
     /// The drive has no theme Mactoy can keep (it may have changed since it was read).
     case nothingToSave
+    /// The volume is no longer on the drive it was found on: another drive may be mounted at
+    /// the same path now.
+    case driveChanged
 
     var errorDescription: String? {
         switch self {
         case .busy: return "Mactoy is already changing this drive's theme."
         case .nothingToSave: return "Mactoy couldn't find a theme on this drive that it can save."
+        case .driveChanged: return "The drive is no longer mounted here, so its theme wasn't changed. Select it again in the sidebar."
         }
     }
 }
@@ -509,7 +513,13 @@ final class ThemeStore: ObservableObject {
 
     /// Puts the choice on a mounted Ventoy volume. Returns warnings to show.
     /// Throws `ThemeStoreError.busy` if this drive is already being changed.
-    func apply(_ choice: ThemeChoice, to volume: URL) async throws -> [String] {
+    /// - Parameter diskBSD: the drive `volume` was found on. When given, the write only happens
+    ///   if `volume` is still a partition of that drive, checked right before writing (after any
+    ///   download): another drive may have been mounted at the same path meanwhile.
+    func apply(
+        _ choice: ThemeChoice, to volume: URL, onDisk diskBSD: String? = nil,
+        isOnDisk: @escaping @Sendable (URL, String) -> Bool = { ImageCopier.isOnDisk($0, diskBSD: $1) }
+    ) async throws -> [String] {
         // A path string only: no file system call on the main actor, where a
         // drive mid-eject could stall it.
         let volumeKey = volume.standardizedFileURL.path
@@ -517,7 +527,12 @@ final class ThemeStore: ObservableObject {
         // Held across the download too, so two changes to a drive finish in the order they began.
         defer { busyVolumes.remove(volumeKey) }
 
-        return try await write(try await resolve(choice), to: volume)
+        let theme = try await resolve(choice)
+        if let diskBSD {
+            let stillThere = await Task.detached(priority: .userInitiated) { isOnDisk(volume, diskBSD) }.value
+            guard stillThere else { throw ThemeStoreError.driveChanged }
+        }
+        return try await write(theme, to: volume)
     }
 
     /// For a fresh install: wait for macOS to mount the new volume, then

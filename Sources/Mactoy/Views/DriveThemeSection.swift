@@ -367,18 +367,12 @@ struct DriveThemeSection: View {
     private func replace(_ choice: ThemeChoice, answer: ThemeReplacement.Answer) async {
         working = true
         message = nil
-        guard ImageCopier.isOnDisk(volumeURL, diskBSD: diskBSD) else {
-            working = false
-            isError = true
-            message = "The drive is no longer mounted here, so its theme wasn't changed. Select it again in the sidebar."
-            return
-        }
         var savedName: String?
         var warnings: [String] = []
         var alert: UnavailableAlert?
         do {
             try await ThemeReplacement.perform(answer, save: { savedName = try await saveDriveTheme().name },
-                                               apply: { warnings = try await themes.apply(choice, to: volumeURL) })
+                                               apply: { warnings = try await themes.apply(choice, to: volumeURL, onDisk: diskBSD) })
             isError = false
             let saved = savedName.map { [DriveThemeCopy.saved(name: $0)] } ?? []
             message = (saved + [DriveThemeCopy.success(removed: choice == .ventoyDefault)] + warnings).joined(separator: " ")
