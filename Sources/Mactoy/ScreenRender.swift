@@ -71,7 +71,7 @@ enum ScreenRender {
 
         // A copy to a drive in progress (#45): Install is disabled and says why. The copier
         // is a stand-in that writes nothing and waits for Cancel.
-        state.imageCopier = { _, _, control, progress in
+        state.imageCopier = { _, _, _, control, progress in
             progress(ImageCopier.Progress(fileNumber: 2, fileCount: 3, fileName: "Windows11_Client_x64.iso",
                                           bytesDone: 4_200_000_000, bytesTotal: 13_600_000_000))
             while !control.isCancelled { usleep(20_000) }

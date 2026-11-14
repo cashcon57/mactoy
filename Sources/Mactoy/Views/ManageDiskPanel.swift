@@ -7,7 +7,19 @@ struct ManageDiskPanel: View {
     /// The selected drive's `Ventoy` volume, looked up off the main thread once per drive:
     /// the lookup runs `diskutil`, and this view redraws often.
     @State private var volumeURL: URL?
-    @State private var volumeLookedUpFor: DiskTarget?
+    @State private var volumeLookedUpFor: LookupKey?
+    /// Bumped whenever any volume is mounted, unmounted or renamed: the disk list doesn't
+    /// change when a volume is mounted or unmounted, so the lookup can't rely on it.
+    @State private var mountChanges = 0
+
+    private struct LookupKey: Equatable {
+        let disk: DiskTarget
+        let mountChanges: Int
+    }
+
+    private var lookupKey: LookupKey? {
+        state.selectedDisk.map { LookupKey(disk: $0, mountChanges: mountChanges) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -21,7 +33,7 @@ struct ManageDiskPanel: View {
                 ImageCopyReportCard(report: report) { state.imageCopyReport = nil }
             }
 
-            if let disk = state.selectedDisk, volumeLookedUpFor != disk {
+            if let key = lookupKey, volumeLookedUpFor?.disk != key.disk {
                 Text("Looking for the Ventoy volume…")
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -54,16 +66,19 @@ struct ManageDiskPanel: View {
                 Spacer()
             }
         }
-        // Again when the drive's volumes change (mounted, renamed), not only for another drive.
-        .task(id: state.selectedDisk) {
-            guard let disk = state.selectedDisk else { volumeURL = nil; volumeLookedUpFor = nil; return }
-            let bsd = disk.bsdName
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)) { _ in mountChanges += 1 }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didUnmountNotification)) { _ in mountChanges += 1 }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didRenameVolumeNotification)) { _ in mountChanges += 1 }
+        // Again for another drive, and whenever a volume is mounted, unmounted or renamed.
+        .task(id: lookupKey) {
+            guard let key = lookupKey else { volumeURL = nil; volumeLookedUpFor = nil; return }
+            let bsd = key.disk.bsdName
             // The `Ventoy` volume on this drive, not just any volume named `Ventoy` (two
             // sticks can be plugged in at once).
             let found = await Task.detached(priority: .userInitiated) { VentoyVolumeLocator.find(onDisk: bsd) }.value
             guard !Task.isCancelled else { return }
             volumeURL = found
-            volumeLookedUpFor = disk
+            volumeLookedUpFor = key
         }
     }
 }
@@ -130,6 +145,12 @@ private struct ImageLibrary: View {
                         Button(role: .destructive) {
                             // The copy may be writing next to it, and the list rescans when it ends.
                             guard !isCopyingHere else { return }
+                            // Another drive may be mounted at this path now.
+                            guard ImageCopier.isOnDisk(url, diskBSD: diskBSD) else {
+                                presentError(title: "Could not delete \(url.lastPathComponent)",
+                                             message: "The drive is no longer mounted here. Select it again in the sidebar.")
+                                return
+                            }
                             do {
                                 try FileManager.default.removeItem(at: url)
                             } catch {

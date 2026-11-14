@@ -59,17 +59,52 @@ public enum ImageCopier {
 
     static let alreadyThere = "A file with this name is already on the drive."
     static let driveGone = "The drive is no longer available. Nothing more was copied."
+    static let fat32Limit: UInt64 = 4 * 1024 * 1024 * 1024 - 1
+
+    /// Where a folder is mounted from and its file system, from `statfs`.
+    public struct Mount: Sendable, Equatable {
+        public let device: String      // e.g. "/dev/disk4s1"
+        public let fileSystem: String  // e.g. "exfat", "msdos"
+
+        public init(device: String, fileSystem: String) {
+            self.device = device
+            self.fileSystem = fileSystem
+        }
+
+        /// Whether this is a partition of `diskBSD` ("disk4" matches disk4s1, not disk41s1).
+        public func isOnDisk(_ diskBSD: String) -> Bool {
+            device.hasPrefix("/dev/\(diskBSD)s")
+        }
+    }
+
+    /// The mount holding `url`, or nil if it can't be read (nothing mounted there any more).
+    public static func mount(of url: URL) -> Mount? {
+        var info = statfs()
+        guard statfs(url.path, &info) == 0 else { return nil }
+        let device = withUnsafeBytes(of: &info.f_mntfromname) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
+        let type = withUnsafeBytes(of: &info.f_fstypename) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
+        return Mount(device: device, fileSystem: type)
+    }
+
+    /// Whether `url` is on a mounted partition of `diskBSD`. Manage Disk checks this before
+    /// deleting, in case another drive is now mounted at the same path.
+    public static func isOnDisk(_ url: URL, diskBSD: String) -> Bool {
+        mount(of: url)?.isOnDisk(diskBSD) == true
+    }
 
     /// Whether `name` is a temporary file this copier makes.
     public static func isPartialName(_ name: String) -> Bool {
         name.hasPrefix(".") && name.hasSuffix(partialSuffix)
     }
 
-    /// The temporary name a file is written under while it's being copied.
+    /// The temporary name a file is written under while it's being copied. The real name is
+    /// shortened in it if needed, so a name close to the 255-character limit still fits.
     static func partialURL(for destination: URL) -> URL {
         let token = String(UUID().uuidString.prefix(8))
+        var base = destination.lastPathComponent
+        while base.utf8.count > 200 { base.removeLast() }
         return destination.deletingLastPathComponent()
-            .appendingPathComponent("." + destination.lastPathComponent + "." + token + partialSuffix)
+            .appendingPathComponent("." + base + "." + token + partialSuffix)
     }
 
     /// Copies `sources` into `directory`, in order.
@@ -79,21 +114,30 @@ public enum ImageCopier {
     /// - Files already in `directory`, two picked files with the same name, and anything that
     ///   isn't a regular file are skipped and reported; the rest are still copied.
     /// - If the files to copy don't fit in the free space, nothing is copied.
-    /// - A file that fails is reported and the next one is tried, unless the drive is gone (or
-    ///   another one is mounted in its place), which stops the copy.
+    /// - A file that fails is reported and the next one is tried, unless `directory` is no longer
+    ///   on `diskBSD` (the drive was unplugged, or another one is mounted in its place), which
+    ///   stops the copy. Nothing is copied if it isn't on `diskBSD` to begin with.
+    /// - On FAT32, files of 4 GB or more are refused up front: FAT32 can't hold them.
     /// - `isCancelled` is checked between chunks; the file in progress is then deleted and no
     ///   more are copied. Files already copied stay.
     public static func copy(
         _ sources: [URL],
         into directory: URL,
+        onDisk diskBSD: String,
         chunkSize: Int = defaultChunkSize,
         availableCapacity: (URL) -> Int64? = Self.availableCapacity(of:),
-        volumeIdentity: (URL) -> AnyHashable? = Self.volumeIdentity(of:),
+        mount: (URL) -> Mount? = Self.mount(of:),
+        exclusiveRename: (String, String) -> Int32 = { renamex_np($0, $1, UInt32(RENAME_EXCL)) },
         isCancelled: () -> Bool,
         progress: (Progress) -> Void
     ) -> Result {
         var result = Result()
         let fm = FileManager.default
+        guard let startMount = mount(directory), startMount.isOnDisk(diskBSD) else {
+            result.failures = sources.map { Failure(fileName: $0.lastPathComponent, message: driveGone) }
+            return result
+        }
+        let isFAT32 = startMount.fileSystem == "msdos"
         removeLeftovers(in: directory)
 
         var jobs: [(source: URL, destination: URL, size: UInt64)] = []
@@ -108,6 +152,11 @@ public enum ImageCopier {
             // exFAT and FAT32 names ignore case and Unicode normalisation.
             guard names.insert(name.precomposedStringWithCanonicalMapping.lowercased()).inserted else {
                 result.failures.append(Failure(fileName: name, message: "Another file you picked has the same name."))
+                continue
+            }
+            if isFAT32, UInt64(size) > fat32Limit {
+                result.failures.append(Failure(fileName: name, message:
+                    "It's 4 GB or larger, and this drive's file system (FAT32) can't hold files that big."))
                 continue
             }
             let destination = directory.appendingPathComponent(name)
@@ -126,13 +175,12 @@ public enum ImageCopier {
             return result
         }
 
-        let volume = volumeIdentity(directory)
         var done: UInt64 = 0
         for (index, job) in jobs.enumerated() {
             if isCancelled() { result.cancelled = true; break }
             let name = job.destination.lastPathComponent
             // The drive was unplugged, or another one is mounted at the same path.
-            if volume == nil || volumeIdentity(directory) != volume {
+            if mount(directory)?.isOnDisk(diskBSD) != true {
                 for rest in jobs[index...] {
                     result.failures.append(Failure(fileName: rest.destination.lastPathComponent, message: driveGone))
                 }
@@ -145,7 +193,8 @@ public enum ImageCopier {
             report(done, false)
             let start = done
             do {
-                let finished = try copyOne(job.source, to: job.destination, chunkSize: chunkSize, isCancelled: isCancelled,
+                let finished = try copyOne(job.source, to: job.destination, chunkSize: chunkSize,
+                                           exclusiveRename: exclusiveRename, isCancelled: isCancelled,
                                            written: { report(start + $0, false) },
                                            finishing: { report(start + job.size, true) })
                 if !finished {
@@ -169,12 +218,6 @@ public enum ImageCopier {
         // returns the free space from then, before the last copy filled some of it.
         let values = try? URL(fileURLWithPath: url.path).resourceValues(forKeys: [.volumeAvailableCapacityKey])
         return values?.volumeAvailableCapacity.map(Int64.init)
-    }
-
-    /// Identifies the mounted volume holding `url`; nil when nothing is mounted there.
-    public static func volumeIdentity(of url: URL) -> AnyHashable? {
-        let values = try? URL(fileURLWithPath: url.path).resourceValues(forKeys: [.volumeIdentifierKey])
-        return (values?.volumeIdentifier as? NSObject).map(AnyHashable.init)
     }
 
     /// Deletes this copier's temporary files directly in `directory` (regular files only).
@@ -204,6 +247,7 @@ public enum ImageCopier {
         _ source: URL,
         to destination: URL,
         chunkSize: Int,
+        exclusiveRename: (String, String) -> Int32,
         isCancelled: () -> Bool,
         written: (UInt64) -> Void,
         finishing: () -> Void
@@ -221,6 +265,9 @@ public enum ImageCopier {
         let fd = open(partial.path, O_WRONLY | O_CREAT | O_EXCL, 0o644)
         guard fd >= 0 else { throw posixError(errno) }
         let output = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        // Straight to the drive rather than into the system's cache, so progress follows what
+        // the drive has taken, and the final flush doesn't hold minutes of data.
+        _ = fcntl(fd, F_NOCACHE, 1)
         var keep = false
         var outputOpen = true
         defer {
@@ -245,13 +292,15 @@ public enum ImageCopier {
         if isCancelled() { return false }
 
         // Fails, rather than replacing it, if a file with the real name appeared meanwhile.
-        if renamex_np(partial.path, destination.path, UInt32(RENAME_EXCL)) != 0 {
+        if exclusiveRename(partial.path, destination.path) != 0 {
             let code = errno
             switch code {
             case EEXIST:
                 throw CopyError(message: alreadyThere)
             case ENOTSUP, EINVAL:
-                // A file system without exclusive rename: FileManager also refuses to replace.
+                // exFAT, Ventoy's usual file system, reports ENOTSUP whenever the name is free
+                // (and EEXIST on a clash), so this is the normal path there. FileManager checks
+                // and refuses to replace; only the instant between its check and rename is open.
                 do {
                     try FileManager.default.moveItem(at: partial, to: destination)
                 } catch CocoaError.fileWriteFileExists {

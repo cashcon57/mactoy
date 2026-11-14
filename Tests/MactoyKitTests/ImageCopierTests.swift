@@ -40,13 +40,27 @@ final class ImageCopierTests {
         try fm.contentsOfDirectory(atPath: dir.path).sorted()
     }
 
+    /// Temp folders sit on the Mac's own disk; the tests pretend it's drive "disk9".
+    static let testMount = ImageCopier.Mount(device: "/dev/disk9s1", fileSystem: "apfs")
+
+    private func copy(
+        _ sources: [URL], into dir: URL, chunkSize: Int = ImageCopier.defaultChunkSize,
+        availableCapacity: (URL) -> Int64? = ImageCopier.availableCapacity(of:),
+        mount: (URL) -> ImageCopier.Mount? = { _ in ImageCopierTests.testMount },
+        exclusiveRename: (String, String) -> Int32 = { renamex_np($0, $1, UInt32(RENAME_EXCL)) },
+        isCancelled: () -> Bool, progress: (ImageCopier.Progress) -> Void
+    ) -> ImageCopier.Result {
+        ImageCopier.copy(sources, into: dir, onDisk: "disk9", chunkSize: chunkSize, availableCapacity: availableCapacity,
+                         mount: mount, exclusiveRename: exclusiveRename, isCancelled: isCancelled, progress: progress)
+    }
+
     @Test("copies every file byte for byte, reporting progress up to the total")
     func copiesWithProgress() throws {
         let src = try tempDir("src"), dst = try tempDir("dst")
         let a = try file("a.iso", size: 100_000, in: src)
         let b = try file("b.img", size: 33_333, in: src)
         var seen: [ImageCopier.Progress] = []
-        let result = ImageCopier.copy([a, b], into: dst, chunkSize: 4096, isCancelled: { false }) { seen.append($0) }
+        let result = copy([a, b], into: dst, chunkSize: 4096, isCancelled: { false }) { seen.append($0) }
 
         #expect(result.copied == ["a.iso", "b.img"])
         #expect(result.failures.isEmpty && !result.cancelled && result.notEnoughSpace == nil)
@@ -65,7 +79,7 @@ final class ImageCopierTests {
         let a = try file("a.iso", size: 5000, in: src)
         let b = try file("b.iso", size: 5000, in: src)
         try Data("keep me".utf8).write(to: dst.appendingPathComponent("a.iso"))
-        let result = ImageCopier.copy([a, b], into: dst, isCancelled: { false }) { _ in }
+        let result = copy([a, b], into: dst, isCancelled: { false }) { _ in }
 
         #expect(result.copied == ["b.iso"])
         #expect(result.failures == [.init(fileName: "a.iso", message: ImageCopier.alreadyThere)])
@@ -77,7 +91,7 @@ final class ImageCopierTests {
         let src = try tempDir("src"), dst = try tempDir("dst")
         let a = try file("a.iso", size: 50_000, in: src)
         let user = dst.appendingPathComponent("a.iso")
-        let result = ImageCopier.copy([a], into: dst, chunkSize: 4096, isCancelled: { false }) { p in
+        let result = copy([a], into: dst, chunkSize: 4096, isCancelled: { false }) { p in
             if p.bytesDone > 10_000, !FileManager.default.fileExists(atPath: user.path) {
                 try? Data("the user's file".utf8).write(to: user)
             }
@@ -94,7 +108,7 @@ final class ImageCopierTests {
         let a1 = try file("Same.iso", size: 1000, in: src1)
         let a2 = try file("same.ISO", size: 2000, in: src2)
         var total: UInt64 = 0
-        let result = ImageCopier.copy([a1, a2], into: dst, isCancelled: { false }) { total = $0.bytesTotal }
+        let result = copy([a1, a2], into: dst, isCancelled: { false }) { total = $0.bytesTotal }
         #expect(result.copied == ["Same.iso"])
         #expect(result.failures.map(\.fileName) == ["same.ISO"])
         #expect(total == 1000, "the skipped file isn't counted against the free space")
@@ -105,7 +119,7 @@ final class ImageCopierTests {
         let src = try tempDir("src"), dst = try tempDir("dst")
         let a = try file("a.iso", size: 6000, in: src)
         let b = try file("b.iso", size: 6000, in: src)
-        let result = ImageCopier.copy([a, b], into: dst, availableCapacity: { _ in 10_000 }, isCancelled: { false }) { _ in }
+        let result = copy([a, b], into: dst, availableCapacity: { _ in 10_000 }, isCancelled: { false }) { _ in }
         #expect(result.notEnoughSpace != nil)
         #expect(result.copied.isEmpty)
         #expect(try contents(dst).isEmpty)
@@ -118,7 +132,7 @@ final class ImageCopierTests {
         let b = try file("b.iso", size: 100_000, in: src)
         let c = try file("c.iso", size: 10_000, in: src)
         var stop = false
-        let result = ImageCopier.copy([a, b, c], into: dst, chunkSize: 4096, isCancelled: { stop }) { p in
+        let result = copy([a, b, c], into: dst, chunkSize: 4096, isCancelled: { stop }) { p in
             if p.fileName == "b.iso", p.bytesDone > 10_000 + 20_000 { stop = true }
         }
         #expect(result.cancelled)
@@ -132,8 +146,7 @@ final class ImageCopierTests {
         let src = try tempDir("src"), dst = try tempDir("dst")
         let files = try ["a.iso", "b.iso", "c.iso"].map { try file($0, size: 1000, in: src) }
         var mounted = true
-        let result = ImageCopier.copy(files, into: dst, volumeIdentity: { _ in mounted ? AnyHashable("vol-1") : nil },
-                                      isCancelled: { false }) { p in
+        let result = copy(files, into: dst, mount: { _ in mounted ? Self.testMount : nil }, isCancelled: { false }) { p in
             if p.fileName == "a.iso", p.finishing { mounted = false }
         }
         #expect(result.copied == ["a.iso"])
@@ -145,13 +158,78 @@ final class ImageCopierTests {
     func driveReplaced() throws {
         let src = try tempDir("src"), dst = try tempDir("dst")
         let files = try ["a.iso", "b.iso"].map { try file($0, size: 1000, in: src) }
-        var volume = "stick-1"
-        let result = ImageCopier.copy(files, into: dst, volumeIdentity: { _ in AnyHashable(volume) },
-                                      isCancelled: { false }) { p in
-            if p.fileName == "a.iso", p.finishing { volume = "stick-2" }
+        var device = "/dev/disk9s1"
+        let result = copy(files, into: dst, mount: { _ in ImageCopier.Mount(device: device, fileSystem: "exfat") },
+                          isCancelled: { false }) { p in
+            if p.fileName == "a.iso", p.finishing { device = "/dev/disk12s1" }
         }
         #expect(result.copied == ["a.iso"])
         #expect(result.failures.map(\.message) == [ImageCopier.driveGone])
+    }
+
+    @Test("nothing is copied when the folder isn't on the selected drive to begin with")
+    func wrongDriveFromTheStart() throws {
+        let src = try tempDir("src"), dst = try tempDir("dst")
+        let a = try file("a.iso", size: 1000, in: src)
+        let result = copy([a], into: dst, mount: { _ in ImageCopier.Mount(device: "/dev/disk91s1", fileSystem: "exfat") },
+                          isCancelled: { false }) { _ in }
+        #expect(result.copied.isEmpty)
+        #expect(result.failures.map(\.message) == [ImageCopier.driveGone])
+        #expect(try contents(dst).isEmpty)
+    }
+
+    @Test("a partition belongs to its own disk only")
+    func mountMatchesDisk() {
+        let m = ImageCopier.Mount(device: "/dev/disk4s1", fileSystem: "exfat")
+        #expect(m.isOnDisk("disk4"))
+        #expect(!m.isOnDisk("disk41"))
+        #expect(!ImageCopier.Mount(device: "/dev/disk41s1", fileSystem: "exfat").isOnDisk("disk4"))
+    }
+
+    @Test("on FAT32, a file of 4 GB or more is refused up front; smaller ones are copied")
+    func fat32Limit() throws {
+        let src = try tempDir("src"), dst = try tempDir("dst")
+        let big = src.appendingPathComponent("big.iso")
+        fm.createFile(atPath: big.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: big)
+        try handle.truncate(atOffset: 4 * 1024 * 1024 * 1024)  // sparse: takes no space
+        try handle.close()
+        let small = try file("small.iso", size: 1000, in: src)
+        let result = copy([big, small], into: dst, availableCapacity: { _ in .max },
+                          mount: { _ in ImageCopier.Mount(device: "/dev/disk9s1", fileSystem: "msdos") },
+                          isCancelled: { false }) { _ in }
+        #expect(result.copied == ["small.iso"])
+        #expect(result.failures.map(\.fileName) == ["big.iso"])
+        #expect(result.failures.first?.message.contains("FAT32") == true)
+    }
+
+    @Test("without exclusive rename (exFAT), the fallback still copies and still never replaces")
+    func renameFallback() throws {
+        let src = try tempDir("src"), dst = try tempDir("dst")
+        let a = try file("a.iso", size: 20_000, in: src)
+        let b = try file("b.iso", size: 20_000, in: src)
+        let unsupported: (String, String) -> Int32 = { _, _ in errno = ENOTSUP; return -1 }
+        let user = dst.appendingPathComponent("b.iso")
+        let result = copy([a, b], into: dst, chunkSize: 4096, exclusiveRename: unsupported, isCancelled: { false }) { p in
+            if p.fileName == "b.iso", p.bytesDone > 25_000, !FileManager.default.fileExists(atPath: user.path) {
+                try? Data("the user's file".utf8).write(to: user)
+            }
+        }
+        #expect(result.copied == ["a.iso"])
+        #expect(try Data(contentsOf: dst.appendingPathComponent("a.iso")) == Data(contentsOf: a))
+        #expect(result.failures == [.init(fileName: "b.iso", message: ImageCopier.alreadyThere)])
+        #expect(try String(contentsOf: user, encoding: .utf8) == "the user's file")
+        #expect(try contents(dst) == ["a.iso", "b.iso"])
+    }
+
+    @Test("a name close to the length limit still fits as a temporary name")
+    func longNames() throws {
+        let src = try tempDir("src"), dst = try tempDir("dst")
+        let name = String(repeating: "n", count: 250) + ".iso"
+        let a = try file(name, size: 1000, in: src)
+        let result = copy([a], into: dst, isCancelled: { false }) { _ in }
+        #expect(result.copied == [name])
+        #expect(ImageCopier.partialURL(for: dst.appendingPathComponent(name)).lastPathComponent.utf8.count <= 255)
     }
 
     @Test("something that isn't a regular file is reported, not copied")
@@ -161,7 +239,7 @@ final class ImageCopierTests {
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         let missing = src.appendingPathComponent("gone.iso")
         let ok = try file("ok.iso", size: 100, in: src)
-        let result = ImageCopier.copy([folder, missing, ok], into: dst, isCancelled: { false }) { _ in }
+        let result = copy([folder, missing, ok], into: dst, isCancelled: { false }) { _ in }
         #expect(result.copied == ["ok.iso"])
         #expect(Set(result.failures.map(\.fileName)) == ["folder.iso", "gone.iso"])
     }
@@ -172,7 +250,7 @@ final class ImageCopierTests {
         let a = try file("a.iso", size: 5000, in: src)
         let b = try file("b.iso", size: 5000, in: src)
         try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: a.path)
-        let result = ImageCopier.copy([a, b], into: dst, isCancelled: { false }) { _ in }
+        let result = copy([a, b], into: dst, isCancelled: { false }) { _ in }
         #expect(result.failures.map(\.fileName) == ["a.iso"])
         #expect(result.failures.first?.message.hasPrefix("Mactoy couldn't read it") == true)
         #expect(result.copied == ["b.iso"])
@@ -184,7 +262,7 @@ final class ImageCopierTests {
         let src = try tempDir("src"), dst = try tempDir("dst")
         let a = try file("a.iso", size: 50_000, in: src)
         // Deleting the temporary file mid-copy makes the final rename fail.
-        let result = ImageCopier.copy([a], into: dst, chunkSize: 4096, isCancelled: { false }) { p in
+        let result = copy([a], into: dst, chunkSize: 4096, isCancelled: { false }) { p in
             guard p.bytesDone > 10_000, let names = try? FileManager.default.contentsOfDirectory(atPath: dst.path) else { return }
             for name in names where ImageCopier.isPartialName(name) {
                 try? FileManager.default.removeItem(at: dst.appendingPathComponent(name))
@@ -201,7 +279,7 @@ final class ImageCopierTests {
         let a = try file("a.iso", size: 5000, in: src)
         try Data(count: 4096).write(to: dst.appendingPathComponent(".big.iso.1A2B3C4D.mactoy-partial"))
         try Data("user".utf8).write(to: dst.appendingPathComponent(".hidden-notes"))
-        let result = ImageCopier.copy([a], into: dst, isCancelled: { false }) { _ in }
+        let result = copy([a], into: dst, isCancelled: { false }) { _ in }
         #expect(result.copied == ["a.iso"])
         #expect(try contents(dst) == [".hidden-notes", "a.iso"])
     }

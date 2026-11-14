@@ -98,7 +98,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
         // It may have finished while the alert was up.
         guard state.imageCopy != nil else { return .terminateNow }
-        state.onImageCopyEnded = { NSApp.reply(toApplicationShouldTerminate: true) }
+        state.onImageCopyEnded = { [weak state] in
+            state?.onImageCopyEnded = nil
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
         state.cancelImageCopy()
         return .terminateLater
     }

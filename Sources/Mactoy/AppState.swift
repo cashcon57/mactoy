@@ -1556,9 +1556,9 @@ final class AppState: ObservableObject {
     /// Called once a copy has ended, for the app's quit confirmation.
     var onImageCopyEnded: (() -> Void)?
     /// Seam for tests: the copier, run off the main thread.
-    var imageCopier: @Sendable ([URL], URL, RunControl, @escaping @Sendable (ImageCopier.Progress) -> Void) -> ImageCopier.Result = {
-        sources, directory, control, progress in
-        ImageCopier.copy(sources, into: directory, isCancelled: { control.isCancelled }, progress: progress)
+    var imageCopier: @Sendable ([URL], URL, String, RunControl, @escaping @Sendable (ImageCopier.Progress) -> Void) -> ImageCopier.Result = {
+        sources, directory, diskBSD, control, progress in
+        ImageCopier.copy(sources, into: directory, onDisk: diskBSD, isCancelled: { control.isCancelled }, progress: progress)
     }
 
     /// Copying can start when no copy or run is under way and no sheet is up.
@@ -1592,7 +1592,7 @@ final class AppState: ObservableObject {
         let result = await Task.detached(priority: .userInitiated) { () -> ImageCopier.Result in
             // A few updates a second is plenty for a progress bar.
             let lastSent = OSAllocatedUnfairLock(initialState: Date.distantPast)
-            return copier(sources, directory, control) { progress in
+            return copier(sources, directory, diskBSD, control) { progress in
                 let now = Date()
                 let send = lastSent.withLock { last -> Bool in
                     guard now.timeIntervalSince(last) >= 0.1 || progress.finishing || progress.bytesDone == progress.bytesTotal
@@ -1629,8 +1629,13 @@ final class AppState: ObservableObject {
         } else if result.notEnoughSpace == nil, !result.failures.isEmpty, copied > 0 {
             lines.append("\(copiedText); \(result.failures.count) couldn't be:")
         }
-        for failure in result.failures {
+        // A handful of lines at most: the card sits above the image list.
+        let shown = 5
+        for failure in result.failures.prefix(shown) {
             lines.append("\(failure.fileName): \(failure.message)")
+        }
+        if result.failures.count > shown {
+            lines.append("…and \(result.failures.count - shown) more.")
         }
         if lines.isEmpty {
             guard copied > 0 else { return nil }

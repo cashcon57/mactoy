@@ -28,8 +28,8 @@ struct AppStateImageCopyTests {
 
     /// A copier that reports one progress update, then runs until cancelled (at most 5 s).
     private static func waitingCopier(started: Flag)
-        -> @Sendable ([URL], URL, RunControl, @escaping @Sendable (ImageCopier.Progress) -> Void) -> ImageCopier.Result {
-        { _, _, control, progress in
+        -> @Sendable ([URL], URL, String, RunControl, @escaping @Sendable (ImageCopier.Progress) -> Void) -> ImageCopier.Result {
+        { _, _, _, control, progress in
             progress(ImageCopier.Progress(fileNumber: 1, fileCount: 2, fileName: "a.iso", bytesDone: 10, bytesTotal: 100))
             started.set()
             let deadline = Date().addingTimeInterval(5)
@@ -102,7 +102,7 @@ struct AppStateImageCopyTests {
     func noCopyWhenBusy() async {
         let state = makeState()
         let called = Flag()
-        state.imageCopier = { _, _, _, _ in called.set(); return ImageCopier.Result() }
+        state.imageCopier = { _, _, _, _, _ in called.set(); return ImageCopier.Result() }
 
         state.status = .preparing("Preparing install plan...")
         #expect(!state.canCopyImages)
@@ -124,6 +124,15 @@ struct AppStateImageCopyTests {
 
         #expect(state.canCopyImages)
         #expect(!called.value)
+    }
+
+    @Test("a long list of failures is cut short, so the card stays small")
+    func reportIsCapped() {
+        var many = ImageCopier.Result()
+        many.failures = (1...40).map { .init(fileName: "f\($0).iso", message: "A file with this name is already on the drive.") }
+        let lines = AppState.imageCopyReport(for: many)?.text.split(separator: "\n") ?? []
+        #expect(lines.count == 6)
+        #expect(lines.last == "…and 35 more.")
     }
 
     @Test("the report: a short success line, the reason when it didn't fit, one line per failed file")
