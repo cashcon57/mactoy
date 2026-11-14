@@ -56,6 +56,8 @@ struct MactoyApp: App {
         // The mode picker sits in the toolbar; the window title would only repeat the app's name.
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
+            // View > Show Sidebar: a way back to the drive list if it's ever collapsed.
+            SidebarCommands()
             CommandGroup(after: .appSettings) {
                 Button("Clear Ventoy Downloads") {
                     Task { await appState.clearVentoyDownloads() }

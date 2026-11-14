@@ -149,6 +149,9 @@ struct ThemeImportFlow {
 struct DriveThemeSection: View {
     @EnvironmentObject private var themes: ThemeStore
     let volumeURL: URL
+    /// The drive `volumeURL` was found on. Checked before changing anything, in case another
+    /// drive is mounted at the same path now.
+    let diskBSD: String
     @State private var current: ThemeInstaller.Current?
     @State private var driveTheme: DriveTheme?
     @State private var readOnly = false
@@ -368,8 +371,14 @@ struct DriveThemeSection: View {
         var warnings: [String] = []
         var alert: UnavailableAlert?
         do {
-            try await ThemeReplacement.perform(answer, save: { savedName = try await saveDriveTheme().name },
-                                               apply: { warnings = try await themes.apply(choice, to: volumeURL) })
+            try await ThemeReplacement.perform(answer, save: {
+                // The theme copied into My Themes must be this drive's, too.
+                let volume = volumeURL, bsd = diskBSD
+                guard await Task.detached(priority: .userInitiated, operation: { ImageCopier.isOnDisk(volume, diskBSD: bsd) }).value
+                else { throw ThemeStoreError.driveChanged }
+                savedName = try await saveDriveTheme().name
+            },
+                                               apply: { warnings = try await themes.apply(choice, to: volumeURL, onDisk: diskBSD) })
             isError = false
             let saved = savedName.map { [DriveThemeCopy.saved(name: $0)] } ?? []
             message = (saved + [DriveThemeCopy.success(removed: choice == .ventoyDefault)] + warnings).joined(separator: " ")

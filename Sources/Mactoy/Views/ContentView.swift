@@ -1,9 +1,15 @@
 import SwiftUI
 import MactoyKit
+import os
+
+private let layoutLog = Logger(subsystem: "com.mactoy", category: "layout")
 
 struct ContentView: View {
     @EnvironmentObject private var state: AppState
     @State private var columnVisibility = NavigationSplitViewVisibility.all
+    /// When the sidebar was last reopened (system uptime), to stop reopening if something
+    /// keeps collapsing it.
+    @State private var sidebarReopens: [TimeInterval] = []
 
     var body: some View {
         // A real split view, so macOS draws the window the modern way: the
@@ -14,13 +20,20 @@ struct ContentView: View {
         // it's collapsed (dragging the divider, say), it opens again.
         NavigationSplitView(columnVisibility: $columnVisibility) {
             DiskSidebar()
-                .frame(minWidth: 260)
+                .frame(minHeight: 0, maxHeight: .infinity)
                 .background { WindowTranslucency(material: .sidebar).ignoresSafeArea() }
                 .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
                 .modifier(KeepSidebarOpen())
         } detail: {
             DetailPane()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Minimum 0 x 0: the split view sizes itself from its columns' minimums, and
+                // text that wraps reports a taller minimum the narrower it's measured. Without
+                // this, Manage Disk's text (not in a scroll view) made the split view thousands
+                // of points tall, leaving the window blank, and a status appearing at the
+                // bottom could keep resizing it (#46).
+                // Top-aligned: if content is taller than a short window, it runs off the
+                // bottom, not up under the toolbar.
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
                 .background { WindowTranslucency(material: .underWindowBackground).ignoresSafeArea() }
         }
         .toolbar {
@@ -38,9 +51,27 @@ struct ContentView: View {
                 }
             }
         }
-        .frame(minWidth: 880, minHeight: 600)
         .onChange(of: columnVisibility) { visibility in
-            if visibility != .all { columnVisibility = .all }
+            layoutLog.notice("sidebar visibility -> \(String(describing: visibility), privacy: .public)")
+            // Only a collapsed sidebar is reopened, and a moment later, outside the layout pass
+            // that collapsed it. With two columns, macOS can report the same layout as
+            // .doubleColumn or .automatic; writing .all back straight away every time could make
+            // it and SwiftUI fight over the value on each layout pass, which AppKit ends by
+            // crashing the app (suspected cause of #46).
+            // At most three times in five seconds: if something keeps collapsing it, reopening
+            // would only keep that going.
+            guard visibility == .detailOnly else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            sidebarReopens = sidebarReopens.filter { now - $0 < 5 }
+            guard sidebarReopens.count < 3 else {
+                layoutLog.error("sidebar keeps collapsing; not reopening it again for now")
+                return
+            }
+            sidebarReopens.append(now)
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                if columnVisibility == .detailOnly { columnVisibility = .all }
+            }
         }
         .task { state.refreshHelperStatus() }
         .sheet(isPresented: $state.showHelperExplainer) {
@@ -94,13 +125,43 @@ struct DetailPane: View {
 /// no bar behind it: the glass button floats over the content, which scrolls
 /// underneath. Earlier versions get a translucent bar with a divider.
 private struct FloatingActionBar: ViewModifier {
+    /// The main button (about 38 pt) plus the bar's padding.
+    static let reservedHeight: CGFloat = 70
+    @EnvironmentObject private var state: AppState
+    /// The bar's real height, measured: more than `reservedHeight` while a status shows.
+    @State private var barHeight: CGFloat = 0
+
+    /// Manage Disk with no run status has nothing to show in the bar.
+    private var barIsEmpty: Bool {
+        guard state.mode == .manageDisk, case .idle = state.status else { return false }
+        return true
+    }
+
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
-            content.safeAreaInset(edge: .bottom, spacing: 0) {
-                ActionBar()
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 16)
-            }
+            // A fixed inset with the bar floating on top, rather than the bar itself as the
+            // inset: a status appearing when a run starts would otherwise resize the whole
+            // content column in the same moment, the kind of change behind the layout-loop
+            // crash in #46. The inset fits the button; a status grows the bar upward over
+            // the content.
+            // What a status adds is made up as scroll space, not as a smaller frame, so
+            // everything can still be scrolled clear of the bar. Manage Disk doesn't scroll as
+            // a whole (its list does), so it gets padding instead; no run starts there, so a
+            // status never appears on it at run start.
+            let extra = max(0, barHeight - Self.reservedHeight)
+            let manageDisk = state.mode == .manageDisk
+            content
+                .contentMargins(.bottom, manageDisk ? 0 : extra, for: .scrollContent)
+                .padding(.bottom, manageDisk ? extra : 0)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    Color.clear.frame(height: barIsEmpty ? 0 : Self.reservedHeight)
+                }
+                .overlay(alignment: .bottom) {
+                    ActionBar()
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 16)
+                        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { barHeight = $0 }
+                }
             // No toolbar background: by default macOS draws one over the
             // content column, a lighter strip behind the mode picker that
             // reads as the whole bar being highlighted. Content scrolling
@@ -109,11 +170,13 @@ private struct FloatingActionBar: ViewModifier {
             .scrollEdgeEffectStyle(.soft, for: .top)
         } else {
             content.safeAreaInset(edge: .bottom, spacing: 0) {
-                VStack(spacing: 0) {
-                    Divider()
-                    ActionBar().padding(20)
+                if !barIsEmpty {
+                    VStack(spacing: 0) {
+                        Divider()
+                        ActionBar().padding(20)
+                    }
+                    .background(.bar)
                 }
-                .background(.bar)
             }
         }
     }

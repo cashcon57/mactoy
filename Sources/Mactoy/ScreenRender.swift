@@ -27,6 +27,7 @@ enum ScreenRender {
 
     static func run(_ state: AppState, into folder: URL) async {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: folder.appendingPathComponent("layout-problems.txt"))
         state.timeMachineLookup = { [] }
         state.ventoyProber = { .unknownDisk(bsdName: $0, reason: "screenshot mode") }
         state.usedBytesEstimator = { _ in nil }
@@ -98,6 +99,24 @@ enum ScreenRender {
         state.pendingEraseConfirmation = nil
         await settle()
 
+        // The smallest window allowed, where content that doesn't fit is most likely to push
+        // the layout around: Manage Disk idle and with a status, and Install while running.
+        let minimum = window.contentMinSize
+        window.setContentSize(minimum)
+        state.mode = .manageDisk
+        await settle()
+        capture(window, "min-size-manageDisk", into: folder)
+        state.status = .failed("The image's SHA-256 doesn't match the one you entered. The download may be incomplete or damaged; download it again. Nothing was written to the drive.")
+        await settle()
+        capture(window, "min-size-manageDisk-status", into: folder)
+        state.mode = .installVentoy
+        state.status = .running(ProgressUpdate(phase: .writing, message: "Writing the image to the drive",
+                                               bytesDone: 3_200_000_000, bytesTotal: 5_800_000_000))
+        await settle()
+        capture(window, "min-size-install-running", into: folder)
+        state.status = .idle
+        window.setContentSize(NSSize(width: 1000, height: 720))
+
         state.disks = []
         state.selectedDiskBSD = nil
         await settle()
@@ -111,10 +130,44 @@ enum ScreenRender {
         try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
 
+    /// Screens where the window's split view didn't fit the window (see `checkLayout`).
+    private static var layoutProblems: [String] = []
+
+    /// The split view must be exactly the window's content size. In v0.8.1 text that wraps,
+    /// outside a scroll view, made it thousands of points tall on Manage Disk, so the window
+    /// showed an empty slice of it (and #46 crashed in the same layout code). CI fails on this.
+    private static func checkLayout(_ window: NSWindow, _ name: String, into folder: URL) {
+        // Sheets have no split view; only the main window is checked.
+        guard window.sheetParent == nil, let content = window.contentView else { return }
+        func find(_ v: NSView) -> NSView? {
+            if String(describing: type(of: v)).contains("NavigationSplit") { return v }
+            for s in v.subviews { if let f = find(s) { return f } }
+            return nil
+        }
+        var problem: String?
+        if let split = find(content) {
+            let frame = split.convert(split.bounds, to: content)
+            let bounds = content.bounds
+            let fits = abs(frame.minX - bounds.minX) <= 1 && abs(frame.minY - bounds.minY) <= 1
+                && abs(frame.width - bounds.width) <= 1 && abs(frame.height - bounds.height) <= 1
+            if !fits { problem = "split view \(NSStringFromRect(frame)) in window content \(NSStringFromSize(bounds.size))" }
+        } else {
+            // Fail rather than pass silently if the split view can't be found (renamed in a
+            // later macOS, say).
+            problem = "couldn't find the split view to check"
+        }
+        guard let problem else { return }
+        layoutProblems.append("\(name): \(problem)")
+        try? layoutProblems.joined(separator: "\n").appending("\n")
+            .write(to: folder.appendingPathComponent("layout-problems.txt"), atomically: true, encoding: .utf8)
+        FileHandle.standardError.write("screen render: LAYOUT PROBLEM \(layoutProblems.last!)\n".data(using: .utf8)!)
+    }
+
     /// Captures one window (never the screen) with `screencapture -l`, which
     /// includes the window frame and toolbar. If that fails, for example
     /// without Screen Recording permission, it draws the window's views instead.
     private static func capture(_ window: NSWindow, _ name: String, into folder: URL) {
+        checkLayout(window, name, into: folder)
         let file = folder.appendingPathComponent("\(name).png")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")

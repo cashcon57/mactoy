@@ -145,6 +145,43 @@ struct ThemeStoreTests {
         #expect(!store.isLoading)
     }
 
+    @Test("a theme change is refused, with nothing written, when the volume is no longer on the drive it was found on")
+    func driveChangedRefused() async throws {
+        let offline = GatedTransport()
+        await offline.open()
+        let store = try makeStore(bundledIDs: ["from-bundle"], loaderTransport: offline, fetcherTransport: offline)
+        await store.load()
+        let volume = try tempDir()
+
+        await #expect(throws: ThemeStoreError.driveChanged) {
+            _ = try await store.apply(.ventoyDefault, to: volume, onDisk: "disk4", isOnDisk: { _, _ in false })
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: volume.path).isEmpty, "nothing written")
+        // The same change goes ahead when the volume is still on that drive.
+        let checked = DiskCheckRecord()
+        #expect(try await store.apply(.ventoyDefault, to: volume, onDisk: "disk4",
+                                      isOnDisk: { _, bsd in checked.set(bsd); return true }).isEmpty)
+        #expect(checked.value == "disk4")
+    }
+
+    @Test("the drive check comes after the theme is downloaded, right before the write")
+    func driveCheckAfterDownload() async throws {
+        let offline = GatedTransport()
+        await offline.open()
+        let gate = GatedTransport()
+        await gate.open()   // answers nothing: the download fails
+        let store = try makeStore(bundledIDs: ["busy-one"], loaderTransport: offline, fetcherTransport: gate)
+        await store.load()
+        let asked = DiskCheckRecord()
+        // A failed download ends the change before the drive is checked.
+        await #expect(throws: DriverError.self) {
+            _ = try await store.apply(.catalog(id: "busy-one"), to: try tempDir(), onDisk: "disk4",
+                                      isOnDisk: { _, bsd in asked.set(bsd); return false })
+        }
+        #expect(await gate.requestCount == 1)
+        #expect(asked.value == nil)
+    }
+
     @Test("a second change to a drive that is already being changed is refused; other drives and later changes are not")
     func busyVolume() async throws {
         let gate = GatedTransport()   // the theme download waits here
@@ -1216,4 +1253,12 @@ fileprivate final class ScriptedTransport: ThemeTransport, @unchecked Sendable {
         if let gate { _ = try? await gate.data(from: url, maxBytes: maxBytes) }
         return try result.get()
     }
+}
+
+/// Records what the drive check was asked, from off the main actor.
+private final class DiskCheckRecord: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: String?
+    func set(_ v: String) { lock.lock(); stored = v; lock.unlock() }
+    var value: String? { lock.lock(); defer { lock.unlock() }; return stored }
 }
