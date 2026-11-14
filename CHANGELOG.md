@@ -2,6 +2,10 @@
 
 ## [0.8.2] — unreleased
 
+### Changed
+
+- The UI screenshot job runs on macOS 15 and 26 only: GitHub no longer offers macOS 14 machines.
+
 ### Fixed
 
 - **Manage Disk froze while adding images** ([#45](https://github.com/cashcon57/mactoy/issues/45)). Files were copied on the main thread, so the window stopped responding until the last one finished. Copies now run in the background with a progress bar (current file, bytes copied) and Cancel.

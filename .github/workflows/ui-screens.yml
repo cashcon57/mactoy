@@ -44,7 +44,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15, macos-26]
+        # GitHub retired its macOS 14 runners in 2026 ("macos-14-arm64-us-default is not
+        # supported"); macOS 15 is the oldest it offers.
+        os: [macos-15, macos-26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
