@@ -117,7 +117,7 @@ public enum ImageCopier {
     /// - A file that fails is reported and the next one is tried, unless `directory` is no longer
     ///   on `diskBSD` (the drive was unplugged, or another one is mounted in its place), which
     ///   stops the copy. Nothing is copied if it isn't on `diskBSD` to begin with.
-    /// - On FAT32, files of 4 GB or more are refused up front: FAT32 can't hold them.
+    /// - On FAT (FAT32, FAT16), files of 4 GB or more are refused up front: FAT can't hold them.
     /// - `isCancelled` is checked between chunks; the file in progress is then deleted and no
     ///   more are copied. Files already copied stay.
     public static func copy(
@@ -156,7 +156,7 @@ public enum ImageCopier {
             }
             if isFAT32, UInt64(size) > fat32Limit {
                 result.failures.append(Failure(fileName: name, message:
-                    "It's 4 GB or larger, and this drive's file system (FAT32) can't hold files that big."))
+                    "It's 4 GB or larger, and this drive's file system (FAT) can't hold files that big."))
                 continue
             }
             let destination = directory.appendingPathComponent(name)

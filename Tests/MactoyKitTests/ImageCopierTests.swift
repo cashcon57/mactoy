@@ -178,6 +178,15 @@ final class ImageCopierTests {
         #expect(try contents(dst).isEmpty)
     }
 
+    @Test("reads where a real folder is mounted from")
+    func realMount() throws {
+        let dir = try tempDir("mount")
+        let mount = try #require(ImageCopier.mount(of: dir))
+        #expect(mount.device.hasPrefix("/dev/disk"))
+        #expect(!mount.fileSystem.isEmpty)
+        #expect(ImageCopier.mount(of: dir.appendingPathComponent("no/such/folder")) == nil)
+    }
+
     @Test("a partition belongs to its own disk only")
     func mountMatchesDisk() {
         let m = ImageCopier.Mount(device: "/dev/disk4s1", fileSystem: "exfat")
@@ -200,7 +209,7 @@ final class ImageCopierTests {
                           isCancelled: { false }) { _ in }
         #expect(result.copied == ["small.iso"])
         #expect(result.failures.map(\.fileName) == ["big.iso"])
-        #expect(result.failures.first?.message.contains("FAT32") == true)
+        #expect(result.failures.first?.message.contains("(FAT)") == true)
     }
 
     @Test("without exclusive rename (exFAT), the fallback still copies and still never replaces")

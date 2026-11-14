@@ -146,7 +146,7 @@ private struct ImageLibrary: View {
                             // The copy may be writing next to it, and the list rescans when it ends.
                             guard !isCopyingHere else { return }
                             // Another drive may be mounted at this path now.
-                            guard ImageCopier.isOnDisk(url, diskBSD: diskBSD) else {
+                            guard ImageCopier.isOnDisk(volumeURL, diskBSD: diskBSD) else {
                                 presentError(title: "Could not delete \(url.lastPathComponent)",
                                              message: "The drive is no longer mounted here. Select it again in the sidebar.")
                                 return
