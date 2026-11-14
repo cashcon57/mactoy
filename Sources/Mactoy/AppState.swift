@@ -397,6 +397,8 @@ final class AppState: ObservableObject {
 
     var canRun: Bool {
         guard case .idle = status else { return false }
+        // Files are being copied to a drive: erasing or rewriting it now would wreck both.
+        guard imageCopy == nil else { return false }
         guard let disk = selectedDisk else { return false }
         if mode != .manageDisk, isLockedBackup(disk) { return false }
         switch mode {
@@ -998,6 +1000,13 @@ final class AppState: ObservableObject {
         confirmedTheme: ThemeChoice = .ventoyDefault,
         confirmedSaveThemeFrom: URL? = nil
     ) async {
+        // `canRun` already refuses while files are copied to a drive, but a run can also resume
+        // on its own after the helper is approved, and that path doesn't go through it.
+        if imageCopy != nil {
+            status = .failed("Mactoy is still copying files to a drive. Wait for the copy to finish or cancel it, then try again. Nothing was written.")
+            Self.log.error("run() refused: an image copy is in progress")
+            return
+        }
         // A Retry pressed while the last run is still removing the helper waits for that to
         // finish. Otherwise the removal could stop the helper partway through this run.
         if let removal = helperRemoval {
@@ -1523,6 +1532,118 @@ final class AppState: ObservableObject {
     /// What the last Clear Ventoy Downloads did. Drives an alert.
     @Published var clearDownloadsReport: String?
 
+    // MARK: Copying images onto a Ventoy volume (Manage Disk, #45)
+
+    /// A copy in progress, by drive. Kept here rather than in the Manage Disk view, so switching
+    /// tabs or drives doesn't lose track of it, and so no run can start while files are copied.
+    /// Changes only when a copy starts or ends; progress is in `imageCopyProgress`, so progress
+    /// updates redraw the progress card and nothing else.
+    @Published private(set) var imageCopy: ImageCopyJob?
+    struct ImageCopyJob: Equatable {
+        let id: UUID
+        let diskBSD: String
+        let diskName: String
+    }
+    let imageCopyProgress = ImageCopyProgress()
+    /// What the last copy did, shown in Manage Disk until dismissed. A card rather than an
+    /// alert: the copy can end while a sheet is open, and an alert can't show over one.
+    @Published var imageCopyReport: ImageCopyReport?
+    struct ImageCopyReport: Equatable {
+        let succeeded: Bool
+        let text: String
+    }
+    private var imageCopyControl: RunControl?
+    /// Called once a copy has ended, for the app's quit confirmation.
+    var onImageCopyEnded: (() -> Void)?
+    /// Seam for tests: the copier, run off the main thread.
+    var imageCopier: @Sendable ([URL], URL, String, RunControl, @escaping @Sendable (ImageCopier.Progress) -> Void) -> ImageCopier.Result = {
+        sources, directory, diskBSD, control, progress in
+        ImageCopier.copy(sources, into: directory, onDisk: diskBSD, isCancelled: { control.isCancelled }, progress: progress)
+    }
+
+    /// Copying can start when no copy or run is under way and no sheet is up.
+    var canCopyImages: Bool {
+        imageCopy == nil && !isRunInProgress && pendingEraseConfirmation == nil
+            && !showHelperExplainer && !isAwaitingHelperApproval && !showFullDiskAccessSheet
+    }
+
+    /// Copies `sources` into `directory` on drive `diskBSD`, off the main thread, and returns
+    /// what happened (also put in `imageCopyReport`).
+    @discardableResult
+    func copyImages(_ sources: [URL], into directory: URL, onDisk diskBSD: String) async -> ImageCopier.Result? {
+        guard canCopyImages, !sources.isEmpty else { return nil }
+        let control = RunControl()
+        let job = ImageCopyJob(id: UUID(), diskBSD: diskBSD,
+                               diskName: disks.first { $0.bsdName == diskBSD }?.mediaName ?? "/dev/\(diskBSD)")
+        imageCopyControl = control
+        imageCopyReport = nil
+        imageCopyProgress.start(job.id)
+        imageCopy = job
+        defer {
+            imageCopy = nil
+            imageCopyControl = nil
+            imageCopyProgress.finish()
+            onImageCopyEnded?()
+        }
+
+        let copier = imageCopier
+        let monitor = imageCopyProgress
+        let jobID = job.id
+        let result = await Task.detached(priority: .userInitiated) { () -> ImageCopier.Result in
+            // A few updates a second is plenty for a progress bar.
+            let lastSent = OSAllocatedUnfairLock(initialState: Date.distantPast)
+            return copier(sources, directory, diskBSD, control) { progress in
+                let now = Date()
+                let send = lastSent.withLock { last -> Bool in
+                    guard now.timeIntervalSince(last) >= 0.1 || progress.finishing || progress.bytesDone == progress.bytesTotal
+                    else { return false }
+                    last = now
+                    return true
+                }
+                guard send else { return }
+                Task { @MainActor in monitor.update(progress, for: jobID) }
+            }
+        }.value
+
+        imageCopyReport = Self.imageCopyReport(for: result)
+        return result
+    }
+
+    /// Stops the copy after the chunk being written; the file in progress is deleted.
+    func cancelImageCopy() {
+        guard imageCopy != nil else { return }
+        imageCopyControl?.requestCancel()
+        imageCopyProgress.cancelRequested = true
+    }
+
+    static func imageCopyReport(for result: ImageCopier.Result) -> ImageCopyReport? {
+        var lines: [String] = []
+        if let space = result.notEnoughSpace { lines.append(space) }
+        let copied = result.copied.count
+        let copiedText = "\(copied) file\(copied == 1 ? " was" : "s were") copied"
+        if result.cancelled {
+            var line = "Copy cancelled."
+            if copied > 0 { line += " \(copiedText)." }
+            if let name = result.removedUnfinished { line += " The unfinished copy of \(name) was removed from the drive." }
+            lines.append(line)
+        } else if result.notEnoughSpace == nil, !result.failures.isEmpty, copied > 0 {
+            lines.append("\(copiedText); \(result.failures.count) couldn't be:")
+        }
+        // A handful of lines at most: the card sits above the image list.
+        let shown = 5
+        for failure in result.failures.prefix(shown) {
+            lines.append("\(failure.fileName): \(failure.message)")
+        }
+        if result.failures.count > shown {
+            lines.append("…and \(result.failures.count - shown) more.")
+        }
+        if lines.isEmpty {
+            guard copied > 0 else { return nil }
+            return ImageCopyReport(succeeded: true, text: "\(copiedText) to the drive.")
+        }
+        return ImageCopyReport(succeeded: false, text: lines.joined(separator: "\n"))
+    }
+
     /// A run is under way: inputs that feed a run are locked meanwhile.
     var isRunInProgress: Bool {
         switch status {
@@ -1700,5 +1821,32 @@ final class AppState: ObservableObject {
             log.removeFirst(dropCount)
         }
         log.append(update)
+    }
+}
+
+/// How far the current Manage Disk copy has got. Separate from `AppState` so progress updates,
+/// several a second, only redraw the views that show them.
+@MainActor
+final class ImageCopyProgress: ObservableObject {
+    @Published private(set) var progress: ImageCopier.Progress?
+    @Published var cancelRequested = false
+    private var jobID: UUID?
+
+    func start(_ id: UUID) {
+        jobID = id
+        progress = nil
+        cancelRequested = false
+    }
+
+    /// Ignores an update from a copy that has already ended.
+    func update(_ progress: ImageCopier.Progress, for id: UUID) {
+        guard id == jobID else { return }
+        self.progress = progress
+    }
+
+    func finish() {
+        jobID = nil
+        progress = nil
+        cancelRequested = false
     }
 }
