@@ -5,10 +5,10 @@
 ### Fixed
 
 - **Manage Disk froze while adding images** ([#45](https://github.com/cashcon57/mactoy/issues/45)). Files were copied on the main thread, so the window stopped responding until the last one finished. Copies now run in the background with a progress bar (current file, bytes copied) and Cancel.
-  - Each image is copied under a hidden name and renamed when it's complete and flushed to the drive, so a cancelled, failed or interrupted copy never leaves a half-written image in Ventoy's boot menu.
-  - Images that don't fit in the free space are refused before anything is copied; a file already on the drive is skipped and reported, and the others are still copied.
-  - Install, Update and Flash Image wait while files are copied to a drive, so a drive can't be erased mid-copy.
-  - The list of images refreshes when the copy ends.
+  - Each image is copied under a temporary name and renamed when it's complete and flushed to the drive, so a cancelled, failed or interrupted copy never leaves a half-written image in Ventoy's boot menu. Temporary files left by an interrupted copy are cleaned up by the next one.
+  - Images that don't fit in the free space are refused before anything is copied. A file already on the drive is skipped and reported, never replaced, and the others are still copied. If the drive is unplugged, the copy stops and says so.
+  - Install, Update and Flash Image wait while files are copied to a drive, so a drive can't be erased mid-copy. Quitting during a copy asks first.
+  - Progress and the result stay at the top of Manage Disk whichever drive is selected, and the list of images refreshes when the copy ends.
 
 ## [0.8.1] — 2026-11-02
 

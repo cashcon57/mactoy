@@ -6,6 +6,7 @@ private let appLog = Logger(subsystem: "com.mactoy", category: "lifecycle")
 
 @main
 struct MactoyApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var appState = AppState()
     @StateObject private var themeStore = ThemeStore(legacyLibraryRoot: ThemeLibrary.legacyRoot(), defaults: .standard)
 
@@ -32,6 +33,7 @@ struct MactoyApp: App {
                     Text(appState.clearDownloadsReport ?? "")
                 }
                 .task {
+                    appDelegate.appState = appState
                     #if DEBUG
                     // Screenshot mode for CI: made-up drives, no real disks, then quit.
                     if let folder = ScreenRender.outputDirectory {
@@ -77,5 +79,27 @@ struct MactoyApp: App {
             // the erase doesn't start (the user asked for it to be kept).
             guard try await themeStore.saveDriveTheme(on: volume) != nil else { throw ThemeStoreError.nothingToSave }
         }
+    }
+}
+
+/// Asks before quitting while Manage Disk copies files to a drive, and lets the copy remove
+/// its unfinished file first.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var appState: AppState?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let state = appState, state.imageCopy != nil else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "Mactoy is copying files to a drive."
+        alert.informativeText = "If you quit now, the copy stops and the unfinished file is removed from the drive. Files already copied stay."
+        alert.addButton(withTitle: "Keep Copying")
+        alert.addButton(withTitle: "Stop and Quit")
+        guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+        // It may have finished while the alert was up.
+        guard state.imageCopy != nil else { return .terminateNow }
+        state.onImageCopyEnded = { NSApp.reply(toApplicationShouldTerminate: true) }
+        state.cancelImageCopy()
+        return .terminateLater
     }
 }

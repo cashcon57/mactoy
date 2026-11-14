@@ -4,13 +4,28 @@ import MactoyKit
 
 struct ManageDiskPanel: View {
     @EnvironmentObject private var state: AppState
+    /// The selected drive's `Ventoy` volume, looked up off the main thread once per drive:
+    /// the lookup runs `diskutil`, and this view redraws often.
+    @State private var volumeURL: URL?
+    @State private var volumeLookedUpFor: DiskTarget?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Manage Disk")
                 .font(.title.bold())
 
-            if let disk = state.selectedDisk, let volumeURL = ventoyVolumeURL(for: disk) {
+            // Up here, whichever drive is selected: Cancel must stay in reach.
+            if let job = state.imageCopy {
+                ImageCopyCard(job: job, progress: state.imageCopyProgress) { state.cancelImageCopy() }
+            } else if let report = state.imageCopyReport {
+                ImageCopyReportCard(report: report) { state.imageCopyReport = nil }
+            }
+
+            if let disk = state.selectedDisk, volumeLookedUpFor != disk {
+                Text("Looking for the Ventoy volume…")
+                    .foregroundStyle(.secondary)
+                Spacer()
+            } else if let disk = state.selectedDisk, let volumeURL {
                 Text("Ventoy volume mounted at \(volumeURL.path)")
                     .foregroundStyle(.secondary)
 
@@ -39,12 +54,17 @@ struct ManageDiskPanel: View {
                 Spacer()
             }
         }
-    }
-
-    /// The `Ventoy` volume on the selected disk, not just any volume named
-    /// `Ventoy` (two sticks can be plugged in at once).
-    private func ventoyVolumeURL(for disk: DiskTarget) -> URL? {
-        VentoyVolumeLocator.find(onDisk: disk.bsdName)
+        // Again when the drive's volumes change (mounted, renamed), not only for another drive.
+        .task(id: state.selectedDisk) {
+            guard let disk = state.selectedDisk else { volumeURL = nil; volumeLookedUpFor = nil; return }
+            let bsd = disk.bsdName
+            // The `Ventoy` volume on this drive, not just any volume named `Ventoy` (two
+            // sticks can be plugged in at once).
+            let found = await Task.detached(priority: .userInitiated) { VentoyVolumeLocator.find(onDisk: bsd) }.value
+            guard !Task.isCancelled else { return }
+            volumeURL = found
+            volumeLookedUpFor = disk
+        }
     }
 }
 
@@ -109,7 +129,7 @@ private struct ImageLibrary: View {
                             .foregroundStyle(.secondary)
                         Button(role: .destructive) {
                             // The copy may be writing next to it, and the list rescans when it ends.
-                            guard state.imageCopy == nil else { return }
+                            guard !isCopyingHere else { return }
                             do {
                                 try FileManager.default.removeItem(at: url)
                             } catch {
@@ -123,16 +143,12 @@ private struct ImageLibrary: View {
                             Image(systemName: "trash")
                         }
                         .buttonStyle(.borderless)
-                        .disabled(state.imageCopy != nil)
+                        .disabled(isCopyingHere)
                     }
                 }
                 .listStyle(.inset)
             }
             .frame(maxHeight: .infinity)
-
-            if let job = state.imageCopy {
-                ImageCopyCard(job: job, isThisDrive: job.diskBSD == diskBSD) { state.cancelImageCopy() }
-            }
 
             HStack {
                 Button("Open in Finder") {
@@ -155,6 +171,8 @@ private struct ImageLibrary: View {
             if finished { Task { await reload() } }
         }
     }
+
+    private var isCopyingHere: Bool { state.imageCopy?.diskBSD == diskBSD }
 
     private func reload() async {
         generation += 1
@@ -203,11 +221,11 @@ private struct ImageLibrary: View {
     }
 }
 
-/// Progress of a copy onto a Ventoy volume, with Cancel.
+/// Progress of a copy onto a Ventoy volume, with Cancel. Watches only the progress object,
+/// so its updates redraw this card and nothing else.
 private struct ImageCopyCard: View {
     let job: AppState.ImageCopyJob
-    /// False when the copy is going to another drive than the one shown.
-    let isThisDrive: Bool
+    @ObservedObject var progress: ImageCopyProgress
     let cancel: () -> Void
 
     var body: some View {
@@ -218,12 +236,17 @@ private struct ImageCopyCard: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
-                Button(job.cancelRequested ? "Cancelling…" : "Cancel", action: cancel)
-                    .disabled(job.cancelRequested)
+                Button(progress.cancelRequested ? "Cancelling…" : "Cancel", action: cancel)
+                    .disabled(progress.cancelRequested || progress.progress?.finishing == true)
+                    .help(progress.progress?.finishing == true
+                          ? "The file is being written to the drive. Cancel is back for the next file."
+                          : "Stop copying. The file being copied is removed from the drive; files already copied stay.")
             }
-            if let p = job.progress, p.bytesTotal > 0 {
+            if let p = progress.progress, p.bytesTotal > 0 {
                 ProgressView(value: Double(p.bytesDone), total: Double(p.bytesTotal))
-                Text("\(Self.bytes(p.bytesDone)) of \(Self.bytes(p.bytesTotal))")
+                Text(p.finishing
+                     ? "Writing the last of \(p.fileName) to the drive…"
+                     : "\(Self.bytes(p.bytesDone)) of \(Self.bytes(p.bytesTotal))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -237,13 +260,34 @@ private struct ImageCopyCard: View {
     }
 
     private var title: String {
-        let target = isThisDrive ? "" : " to /dev/\(job.diskBSD)"
-        guard let p = job.progress else { return "Getting ready to copy\(target)…" }
+        guard let p = progress.progress else { return "Getting ready to copy to \(job.diskName)…" }
         let position = p.fileCount > 1 ? " (\(p.fileNumber) of \(p.fileCount))" : ""
-        return "Copying \(p.fileName)\(target)\(position)"
+        return "Copying \(p.fileName) to \(job.diskName)\(position)"
     }
 
     private static func bytes(_ n: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(clamping: n), countStyle: .file)
+    }
+}
+
+/// What the last copy did, until dismissed.
+private struct ImageCopyReportCard: View {
+    let report: AppState.ImageCopyReport
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: report.succeeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(report.succeeded ? Color.green : Color.orange)
+            Text(report.text)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            Spacer()
+            Button("Dismiss", action: dismiss)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .mactoyCard(cornerRadius: 14)
     }
 }
