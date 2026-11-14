@@ -13,14 +13,15 @@
   - Images that don't fit in the free space are refused before anything is copied, as are images of 4 GB or more on a FAT-formatted drive. A file already on the drive is skipped and reported, never replaced, and the others are still copied. If the drive is unplugged, the copy stops and says so.
   - Install, Update and Flash Image wait while files are copied to a drive, so a drive can't be erased mid-copy. Quitting during a copy asks first.
   - Progress and the result stay at the top of Manage Disk whichever drive is selected, and the list of images refreshes when the copy ends.
-- **Manage Disk showed an empty window when the selected drive had no Ventoy volume.** The window's split view sized itself from its columns' minimum heights, and wrapped text outside a scroll view reports a taller minimum the narrower it's measured; on Manage Disk that made the split view about 3,500 points tall, and the window showed an empty slice of it, sidebar included. The columns now have no minimum height of their own. The screenshot job now fails if the split view doesn't fit the window on any screen.
+- **Manage Disk showed an empty window when the selected drive had no Ventoy volume.** The window's split view sized itself from its columns' minimum heights, and wrapped text outside a scroll view reports a taller minimum the narrower it's measured; on Manage Disk that made the split view about 3,500 points tall, and the window showed an empty slice of it, sidebar included. The columns now have no minimum height of their own. The screenshot job now checks, on every screen and at the smallest window size, that the split view fits the window exactly, and fails if it doesn't.
 - **Likely fix for a crash right after confirming Install or Update** ([#46](https://github.com/cashcon57/mactoy/issues/46), reported on macOS 27.2). The crash report shows AppKit stopping the app after a layout loop in the same split-view sizing as the Manage Disk bug above, and the recordings show the same symptoms (the sidebar disappears, the content jumps) just before it. Changes:
   - The columns no longer take their minimum size from their content (the Manage Disk fix).
   - On macOS 26 and later, the status that appears when a run starts no longer resizes the content area: the bottom bar floats over the content in a space of fixed height and grows upward, and the content gets matching scroll space.
   - The drive list is reopened only if it's actually collapsed, a moment later and at most three times in five seconds, instead of being forced open whenever macOS reports the sidebar in any other state.
 
   The crash doesn't happen on macOS 27.0, so this is still to be confirmed by the reporter.
-- Manage Disk no longer shows an empty main button when there's nothing to run.
+- Manage Disk no longer shows an empty main button and bar when there's nothing to run.
+- **View > Show Sidebar** brings the drive list back if it's ever hidden.
 - Changing a drive's boot theme in Manage Disk, or saving its theme to My Themes before replacing it, checks right before it touches the drive that the volume is still on that drive, in case another drive is now mounted at the same path.
 
 ## [0.8.1] — 2026-11-02

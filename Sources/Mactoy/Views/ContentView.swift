@@ -31,7 +31,9 @@ struct ContentView: View {
                 // this, Manage Disk's text (not in a scroll view) made the split view thousands
                 // of points tall, leaving the window blank, and a status appearing at the
                 // bottom could keep resizing it (#46).
-                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                // Top-aligned: if content is taller than a short window, it runs off the
+                // bottom, not up under the toolbar.
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
                 .background { WindowTranslucency(material: .underWindowBackground).ignoresSafeArea() }
         }
         .toolbar {
@@ -129,6 +131,12 @@ private struct FloatingActionBar: ViewModifier {
     /// The bar's real height, measured: more than `reservedHeight` while a status shows.
     @State private var barHeight: CGFloat = 0
 
+    /// Manage Disk with no run status has nothing to show in the bar.
+    private var barIsEmpty: Bool {
+        guard state.mode == .manageDisk, case .idle = state.status else { return false }
+        return true
+    }
+
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
             // A fixed inset with the bar floating on top, rather than the bar itself as the
@@ -141,11 +149,12 @@ private struct FloatingActionBar: ViewModifier {
             // a whole (its list does), so it gets padding instead; no run starts there, so a
             // status never appears on it at run start.
             let extra = max(0, barHeight - Self.reservedHeight)
+            let manageDisk = state.mode == .manageDisk
             content
-                .contentMargins(.bottom, extra, for: .scrollContent)
-                .padding(.bottom, state.mode == .manageDisk ? extra : 0)
+                .contentMargins(.bottom, manageDisk ? 0 : extra, for: .scrollContent)
+                .padding(.bottom, manageDisk ? extra : 0)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    Color.clear.frame(height: Self.reservedHeight)
+                    Color.clear.frame(height: barIsEmpty ? 0 : Self.reservedHeight)
                 }
                 .overlay(alignment: .bottom) {
                     ActionBar()
@@ -161,11 +170,13 @@ private struct FloatingActionBar: ViewModifier {
             .scrollEdgeEffectStyle(.soft, for: .top)
         } else {
             content.safeAreaInset(edge: .bottom, spacing: 0) {
-                VStack(spacing: 0) {
-                    Divider()
-                    ActionBar().padding(20)
+                if !barIsEmpty {
+                    VStack(spacing: 0) {
+                        Divider()
+                        ActionBar().padding(20)
+                    }
+                    .background(.bar)
                 }
-                .background(.bar)
             }
         }
     }
