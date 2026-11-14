@@ -164,6 +164,24 @@ struct ThemeStoreTests {
         #expect(checked.value == "disk4")
     }
 
+    @Test("the drive check comes after the theme is downloaded, right before the write")
+    func driveCheckAfterDownload() async throws {
+        let offline = GatedTransport()
+        await offline.open()
+        let gate = GatedTransport()
+        await gate.open()   // answers nothing: the download fails
+        let store = try makeStore(bundledIDs: ["busy-one"], loaderTransport: offline, fetcherTransport: gate)
+        await store.load()
+        let asked = DiskCheckRecord()
+        // A failed download ends the change before the drive is checked.
+        await #expect(throws: DriverError.self) {
+            _ = try await store.apply(.catalog(id: "busy-one"), to: try tempDir(), onDisk: "disk4",
+                                      isOnDisk: { _, bsd in asked.set(bsd); return false })
+        }
+        #expect(await gate.requestCount == 1)
+        #expect(asked.value == nil)
+    }
+
     @Test("a second change to a drive that is already being changed is refused; other drives and later changes are not")
     func busyVolume() async throws {
         let gate = GatedTransport()   // the theme download waits here

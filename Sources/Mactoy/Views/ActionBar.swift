@@ -6,12 +6,20 @@ struct ActionBar: View {
     /// Here rather than on the button, whose view changes with every status.
     @State private var confirmingCancel = false
 
+    private var hidesButton: Bool {
+        guard state.mode == .manageDisk, case .idle = state.status else { return false }
+        return true
+    }
+
     var body: some View {
         VStack(spacing: 10) {
             StatusRow()
-            HStack {
-                Spacer()
-                PrimaryButton(confirmingCancel: $confirmingCancel)
+            // Manage Disk has no main action; Done or Retry still show after a run.
+            if !hidesButton {
+                HStack {
+                    Spacer()
+                    PrimaryButton(confirmingCancel: $confirmingCancel)
+                }
             }
         }
         .confirmationDialog("Stop flashing?", isPresented: $confirmingCancel) {

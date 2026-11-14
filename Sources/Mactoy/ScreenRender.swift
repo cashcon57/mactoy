@@ -114,7 +114,30 @@ enum ScreenRender {
     /// Captures one window (never the screen) with `screencapture -l`, which
     /// includes the window frame and toolbar. If that fails, for example
     /// without Screen Recording permission, it draws the window's views instead.
+    /// Screens where the window's split view didn't fit the window (see `checkLayout`).
+    private static var layoutProblems: [String] = []
+
+    /// The split view must be exactly the window's content size. In v0.8.1 text that wraps,
+    /// outside a scroll view, made it thousands of points tall on Manage Disk, so the window
+    /// showed an empty slice of it (and #46 crashed in the same layout code). CI fails on this.
+    private static func checkLayout(_ window: NSWindow, _ name: String, into folder: URL) {
+        guard let content = window.contentView else { return }
+        func find(_ v: NSView) -> NSView? {
+            if String(describing: type(of: v)).contains("NavigationSplit") { return v }
+            for s in v.subviews { if let f = find(s) { return f } }
+            return nil
+        }
+        guard let split = find(content) else { return }
+        let frame = split.convert(split.bounds, to: content)
+        guard abs(frame.height - content.bounds.height) > 1 || frame.minY < -1 else { return }
+        layoutProblems.append("\(name): split view \(NSStringFromRect(frame)) in window content \(NSStringFromSize(content.bounds.size))")
+        try? layoutProblems.joined(separator: "\n").appending("\n")
+            .write(to: folder.appendingPathComponent("layout-problems.txt"), atomically: true, encoding: .utf8)
+        FileHandle.standardError.write("screen render: LAYOUT PROBLEM \(layoutProblems.last!)\n".data(using: .utf8)!)
+    }
+
     private static func capture(_ window: NSWindow, _ name: String, into folder: URL) {
+        checkLayout(window, name, into: folder)
         let file = folder.appendingPathComponent("\(name).png")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")

@@ -45,7 +45,7 @@ struct ManageDiskPanel: View {
                 DriveThemeSection(volumeURL: volumeURL, diskBSD: disk.bsdName)
                     .id(VolumeKey(url: volumeURL, diskBSD: disk.bsdName))
 
-                // `id: volumeURL` forces the library to rebuild its state
+                // The id forces the library to rebuild its state
                 // when the user switches between disks, instead of
                 // keeping stale items from the previously-selected
                 // drive.

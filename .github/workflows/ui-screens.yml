@@ -72,6 +72,11 @@ jobs:
           fi
           ls -la screens
           test -n "$(ls screens/*.png 2>/dev/null)" || { echo "::error::no screenshots"; exit 1; }
+          # The split view must fit the window on every screen (it didn't on Manage Disk in 0.8.1).
+          if [ -s screens/layout-problems.txt ]; then
+            while read -r line; do echo "::error::layout: $line"; done < screens/layout-problems.txt
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

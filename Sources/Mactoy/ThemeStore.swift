@@ -86,7 +86,7 @@ enum ThemeStoreError: Error, Equatable, LocalizedError {
         switch self {
         case .busy: return "Mactoy is already changing this drive's theme."
         case .nothingToSave: return "Mactoy couldn't find a theme on this drive that it can save."
-        case .driveChanged: return "The drive is no longer mounted here, so its theme wasn't changed. Select it again in the sidebar."
+        case .driveChanged: return "The drive is no longer mounted here. Select it again in the sidebar."
         }
     }
 }
