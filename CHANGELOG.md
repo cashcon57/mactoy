@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.8.2] — 2026-11-13
+## [0.8.2] — 2026-11-16
 
 Fixes: adding images in Manage Disk no longer freezes the window, Manage Disk no longer shows an empty window, and a likely fix for a crash when starting a run on macOS 27.2.
 
