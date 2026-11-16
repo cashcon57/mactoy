@@ -197,8 +197,9 @@ struct HelperXPCLoopbackTests {
             updates.phases.append(update.phase)
             if let b = update.bytesDone { updates.lastBytes = b }
         }
-        // Progress hops to the main actor; give the last ones a moment to land.
-        try await Task.sleep(nanoseconds: 200_000_000)
+        // Progress hops to the main actor and can land after the reply; wait for the last one
+        // rather than a fixed time, which a busy CI machine can overrun.
+        try await waitFor("the final progress update") { updates.phases.last == .done }
 
         #expect(seen.imageSHA == sha)
         #expect(seen.imageIsRegularFile)
@@ -352,8 +353,7 @@ struct HelperXPCLoopbackTests {
         defer { try? device.close() }
         let onDisk = try device.read(upToCount: image.count + 4096 - (image.count % 4096)) ?? Data()
         #expect(onDisk.prefix(image.count) == image)
-        try await Task.sleep(nanoseconds: 200_000_000)
-        #expect(updates.phases.contains(.verifying))
+        try await waitFor("the verifying progress update") { updates.phases.contains(.verifying) }
     }
 
     @Test("Full stack: install Ventoy onto a disk image over XPC", .enabled(if: e2eDisk != nil))
